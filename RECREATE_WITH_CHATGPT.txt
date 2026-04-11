@@ -1,0 +1,712 @@
+=== CRITICAL BUILD RULE (READ FIRST) ===
+Any build that produces downloadable artifacts MUST output BOTH ZIPs:
+
+1) Canonical normalized release ZIP
+   - Deterministic / normalized build output
+   - Used for verification and rebuilding
+
+2) Updated source ZIP
+   - Full source tree (client/, server/, tools/, tests/, docs, etc.)
+   - Intended for inspection, editing, and iterative development
+
+A build is INVALID if either artifact is missing.
+Both SHA-256 hashes MUST be reported.
+========================================
+
+Project: IA Film Rater (React + Flask + SQLite) with Admin/Judge mode
+Collection: 2026-public-domain-day-film-contest
+
+Version: 1.1.44
+Build SHA256: 70e61c6e55ad9a294307a77196025c188b21069b7e70d99aeb20c6ed0c4644fd
+IMPORTANT — BUILD SHA DEFINITION
+
+The “Build SHA256” recorded in this file MUST ALWAYS refer to the
+NORMALIZED BUILD SHA, NOT the raw ZIP file hash.
+
+Definition:
+- The normalized Build SHA256 is the SHA256 of the ZIP produced by
+  running tools/build_zip.py successfully.
+- Raw sha256sum *.zip values are NOT authoritative and MUST NOT
+  be used for the Build SHA field.
+
+Validation rules:
+- If tools/build_zip.py fails, the Build SHA is INVALID.
+- If the normalized build is re-run and produces a different SHA,
+  the Build SHA in this file MUST be updated.
+- Any ChatGPT session recreating or validating this project MUST
+  verify the normalized Build SHA, not the raw ZIP hash.
+
+DOCUMENTATION REQUIREMENT (NON-NEGOTIABLE)
+
+RECREATE INTEGRITY RULE (HARD REQUIREMENT)
+
+This file MUST remain a complete, self-contained specification for recreating this project from an empty environment.
+
+If any edit to this file removes or weakens:
+- Environment setup instructions
+- Client build steps
+- Server run steps
+- Database initialization or migrations
+- Admin / sync workflows
+- Normalized build rules
+
+…the edit is INVALID, even if the build succeeds.
+
+Any functional, behavioral, schema, API, or UI change to this project MUST be documented in this file (RECREATE_WITH_CHATGPT.txt).
+
+This includes, but is not limited to:
+- Database schema or migrations
+- API request/response fields
+- Client UI behavior or layout
+- External data sources or fields pulled from them
+- Build or release semantics
+
+If a change is made without a corresponding update to this file, the change is considered INCOMPLETE.
+
+Any ChatGPT session making changes MUST:
+1) Update this file to describe the change
+2) Bump the version if the change is user-visible or affects data
+3) Regenerate the normalized release
+
+=== META-INSTRUCTION (IMPORTANT) ===
+This file MUST be included verbatim every time a downloadable ZIP of this project is created.
+If a ZIP is created or recreated for any reason, ensure that:
+  1) This file exists at the project root as: RECREATE_WITH_CHATGPT.txt
+  2) Its contents reflect the current, complete instructions needed to recreate the entire project from an empty ChatGPT session.
+  3) The VERSION is bumped when meaningful changes are made.
+  4) A new entry is appended to the embedded changelog section below AND to CHANGELOG.md.
+  5) A build hash is computed and written into the "Build SHA256" field using the NORMALIZED rule below.
+
+NORMALIZED Build SHA256 rule (avoids self-referential hashing):
+- When computing the build hash, treat the line "Build SHA256: <value>" in RECREATE_WITH_CHATGPT.txt as if it were exactly:
+  "Build SHA256: TBD"
+- Then compute SHA-256 of the resulting ZIP bytes.
+- The value written into "Build SHA256" is that normalized ZIP SHA-256.
+====================================
+
+Goal
+- Build a web application that:
+  0) Stores each film's Internet Archive description (when available) in the database and displays it above the embed player.
+  1) Pulls all films in the Internet Archive collection "2026-public-domain-day-film-contest"
+  2) Allows authenticated users to rate films across multiple criteria
+  3) Supports an admin/judge mode with CSV export
+
+Description field support (v1.1.18+)
+
+- Server sync: Internet Archive advancedsearch requests `description` and stores it in `films.description`.
+- Database: `films` table includes `description` (migration v3 adds it for existing DBs).
+- API responses:
+  - GET /api/films/next returns: identifier, title, description, embedUrl
+  - GET /api/films/<identifier> returns: identifier, title, description, embedUrl
+- Client: displays `film.description` above the embed viewer (iframe) when present.
+
+Tech Stack
+- Client: React + Vite
+- Server: Flask (Blueprints)
+- Database: SQLite
+- Auth: Session-based
+
+Canonical API Endpoints (UPDATED TO MATCH IMPLEMENTATION)
+
+Auth
+- POST   /api/auth/register
+- POST   /api/auth/login
+- POST   /api/auth/logout
+- GET    /api/me
+
+Criteria
+- GET    /api/criteria
+
+Films
+- GET    /api/films/next        # returns the next unrated film for the user
+
+Ratings
+- POST   /api/films/<identifier>/ratings
+  Payload:
+  {
+    "scores": { "<criteria_key>": number }
+  }
+
+Admin
+- POST   /api/admin/sync        # sync films from Internet Archive
+- GET    /api/admin/ratings.csv # CSV export of all ratings
+
+Client UI: Film + Criteria Scoring Grid (Table Layout)
+
+Client film panel layout (description)
+
+When a film is loaded, the client displays:
+1) Title + basic metadata
+2) The film `description` (if present) in a text panel ABOVE the embedded player
+3) The embedded player (iframe) using `embedUrl`
+
+Overview
+- The client presents ONE film at a time ("next unrated") and a table/grid for entering scores across all criteria.
+- This UI is implemented in the client (React) and is driven by two API calls:
+  - GET /api/films/next
+  - GET /api/criteria
+
+Primary Source Files
+- client/src/App.jsx
+  - Owns auth state, loads `me`, and conditionally renders the rater UI.
+  - Loads `film` from GET /api/films/next.
+  - Loads `criteria` from GET /api/criteria.
+- Optional refactor:
+  - client/src/components/RatingGrid.jsx
+    - If you split the UI, this component renders the grid and emits `onSubmit(scores)`.
+
+Film Display (above the grid)
+- When authenticated, the client requests the next unrated film via GET /api/films/next.
+- The returned film object is stored in client state as `film`.
+- The UI displays:
+  - Film title (fallback to identifier)
+  - Internet Archive identifier
+  - A link to the film page on archive.org
+  - An embedded player when available (e.g., iframe to an embed URL)
+
+Grid/Table Layout (criteria × 1 film)
+- Criteria are rendered as an HTML <table> to form a true grid.
+- Recommended columns:
+  1) Criterion (label)
+  2) Range (min–max)
+  3) Score (numeric input)
+  4) Quick-select buttons (optional)
+
+Suggested structure (conceptual)
+- <table>
+    <thead>
+      <tr>
+        <th scope="col">Criterion</th>
+        <th scope="col">Range</th>
+        <th scope="col">Score</th>
+        <th scope="col">Quick</th>
+      </tr>
+    </thead>
+    <tbody>
+      {criteria.map(c => (
+        <tr key={c.key}>
+          <td>{c.label}</td>
+          <td>{c.min}–{c.max}</td>
+          <td>
+            <input
+              type="number"
+              min={c.min}
+              max={c.max}
+              value={scores[c.key] ?? ""}
+              aria-label={`Score for ${c.label}`}
+            />
+          </td>
+          <td>
+            {/* optional buttons e.g. 1..5 */}
+          </td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
+
+State Model
+- `criteria`: array of criterion objects from GET /api/criteria
+- `film`: current film object from GET /api/films/next
+- `scores`: object mapping criterion key -> integer score
+  - Example: { "originality": 4, "use_of_archive_materials": 5 }
+
+Validation Rules (client)
+- The Submit button is disabled until:
+  - A film is loaded AND film.identifier exists
+  - Every criterion has a score present (non-empty)
+  - Every score is an integer within the criterion range
+- Inline per-row validation is recommended:
+  - If out-of-range: show a hint (e.g., "Must be 1–5") and mark the row
+
+Keyboard and Accessibility
+- Inputs are focusable in row order (tab navigation).
+- Table headers use <th scope="col">.
+- Each input has an accessible label (aria-label or a <label>).
+
+Submission Flow
+1) User fills in scores in the grid
+2) Client POSTs to:
+   POST /api/films/<identifier>/ratings
+   Payload:
+   {
+     "scores": { "<criteria_key>": number }
+   }
+3) On success:
+   - Scores are cleared
+   - Client automatically requests the next film
+
+Error Handling
+- Network errors and server validation errors are displayed inline near submit controls.
+- Submission failures do not advance to the next film.
+
+UI Scope Note
+- The rating UI is one-film-at-a-time (single-film, single-user view).
+- There is no multi-film comparison table, batch editing, or judge dashboard UI in the rater screen by design.
+
+Layout, Styling, and Responsiveness (Recommended)
+
+Table Layout
+- The scoring grid uses a fixed-layout HTML table:
+  - table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+- Column width guidance:
+  - Criterion: 40%
+  - Range: 15%
+  - Score: 20%
+  - Quick: 25%
+- Headers are visually distinct using <th> with bold text and a bottom border.
+
+Row Styling
+- Each criterion row has:
+  - A subtle bottom border for visual separation
+  - Vertical centering of inputs and buttons
+- Invalid rows (out-of-range or missing score) should be highlighted:
+  - Light background (e.g., pale red)
+  - Optional inline hint text below the input
+
+Inputs
+- Score inputs are numeric fields sized for quick entry:
+  - width: 4–5em
+  - text-align: center
+- On focus, inputs receive a visible outline for accessibility.
+
+Quick-Select Buttons (Optional)
+- For small ranges (e.g., 1–5), render buttons inline in the Quick column:
+  - Buttons labeled with the score value
+  - Clicking a button fills the score input for that row
+- Buttons visually indicate selection when active.
+
+Responsive Behavior (Mobile / Narrow Screens)
+- Below ~768px width, the table switches to a stacked layout:
+  - Each criterion row becomes a vertical card:
+    - Criterion label on top
+    - Range below
+    - Score input and quick buttons grouped together
+- This can be implemented via CSS media queries or conditional rendering in React.
+
+Film Panel Layout
+- The film title and identifier appear above the grid.
+- The embedded player:
+  - Max-width: 100%
+  - Maintains aspect ratio (16:9)
+  - Stacks above the grid on small screens
+
+Submit Controls
+- Submit & Next button is placed below the table, right-aligned on desktop.
+- On mobile, the button spans full width for easy tapping.
+- Disabled state is visually distinct (reduced opacity, no hover).
+
+Accessibility Notes
+- Sufficient color contrast for text and validation states.
+- Table headers use <th scope="col">.
+- Inputs include aria-labels tied to criterion labels.
+- Focus order follows visual order (top-to-bottom, left-to-right).
+
+Database Schema (summary)
+- users(id, email, password_hash, is_admin, created_at)
+- films(id, ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
+- criteria(id, key, label, weight)
+- ratings(id, user_id, film_id, created_at)
+- rating_scores(rating_id, criteria_id, score)
+
+Clarification — films.metadata_json vs films.description
+
+- Note: the column name is `metadata_json` (RECREATE previously used the shorthand `metadata`).
+
+- `metadata_json` (JSON):
+  - Raw Internet Archive item metadata captured at ingest time.
+  - Stored as a JSON blob for lossless preservation, auditing, and future use.
+  - Includes fields such as creators, subjects, collections, licenses, technical info,
+    AND may include a `description` field as provided by Internet Archive.
+
+- `description` (TEXT):
+  - A normalized, first-class column extracted from Internet Archive metadata.
+  - Used directly by the client UI and displayed above the embedded player.
+  - Duplicated intentionally from `metadata_json.description` (when present) so the app
+    can query, index, and display it without parsing JSON.
+
+Design note:
+- If Internet Archive provides a description, it is stored twice:
+  1) verbatim inside `metadata` (lossless source of truth)
+  2) normalized into `description` for application use
+
+
+Build / Run Instructions
+1) Server
+   - python -m venv .venv && source .venv/bin/activate
+   - pip install -r requirements.txt
+   - python -m server.app
+
+2) Client
+   - cd client
+   - npm install
+   - npm run dev
+
+Admin tool requirements (how to perform admin-only actions)
+
+Invariant
+- If the observable admin requirements change (listed below), the project VERSION MUST be bumped and this section updated.
+
+Admin model (no tokens)
+- A user is an admin if and only if the SQLite users table has is_admin = 1 for that user.
+- The client discovers this via GET /api/me and conditionally shows the Admin panel.
+
+How to make an admin user
+1) Create the user normally (register via UI or POST /api/auth/register).
+2) Promote the user in the DB using the CLI helper:
+   - python tools/print_db.py --make-admin you@example.com
+   - (to revoke) python tools/print_db.py --revoke-admin you@example.com
+
+Database location for admin operations
+- By default the server uses: server/app.db
+- If your DB is elsewhere, pass --db /path/to/app.db or set DB_PATH=/path/to/app.db for tools/print_db.py.
+
+Admin endpoints (require an admin session cookie)
+- POST /api/admin/sync
+  - Syncs the Internet Archive collection into the films table.
+  - Must be called while logged in as an admin (cookie session).
+- GET /api/admin/ratings.csv
+  - Downloads all ratings as CSV.
+  - Must be called while logged in as an admin (cookie session).
+
+Client requirement for admin calls
+- Admin fetches must include cookies:
+  - fetch(url, { credentials: "include" })
+
+Notes / troubleshooting
+- If admin controls do not appear in the UI, confirm:
+  - You are logged in, and
+  - The user row has is_admin=1 (use python tools/print_db.py --table users).
+- If sync fails with 401/403, you are not authenticated as an admin.
+
+Command-line Utility: build_zip.py
+
+Invariant
+- If the observable behaviors of this tool change (listed below), the project VERSION MUST be bumped and this section updated.
+
+Purpose
+- Produce a deterministic release ZIP that matches this RECREATE spec and refuses to build if required artifacts/markers are missing.
+
+High-level behaviors
+- Builds a ZIP named `release_v<version>.zip` in the output directory.
+- Excludes common non-release directories (e.g., .venv, node_modules, caches).
+- Performs preflight validation (required project structure + RECREATE markers + README sanity).
+- Computes and records a normalized Build SHA256 in RECREATE (so hashing is stable).
+- Performs postflight validation (required contents present, exclusions honored).
+
+Supported options
+- --out-dir DIR
+  - Output directory for the release ZIP.
+  - Default: /mnt/data
+
+Command-line Utility: release_check.py
+
+Invariant
+- If the observable behaviors of this tool change (listed below), the project VERSION MUST be bumped and this section updated.
+
+Purpose
+- One-command “release sanity check” wrapper for local development.
+
+High-level behaviors
+- Runs the Python test suite (pytest).
+- If tests pass, invokes `tools/build_zip.py` to produce the release ZIP.
+- Fails fast (non-zero exit) if tests or build validations fail.
+
+Supported options
+- --out-dir DIR
+  - Output directory for the release ZIP.
+  - Default: /mnt/data
+
+Command-line Utility: print_db.py
+
+Invariant
+- If any of the observable behaviors listed below change, the project VERSION MUST be bumped and this section updated.
+
+Purpose
+- A local, developer-facing tool for viewing the app’s SQLite data and performing one narrowly-scoped admin change.
+
+Supported options
+- --db PATH
+  - Path to SQLite DB.
+  - Default: server/app.db
+- --tables
+  - List tables and row counts (this is also the default if no --table is provided).
+- --table NAME
+  - Dump rows from the named table (e.g. users, films, criteria, ratings, rating_scores).
+- --where "SQL"
+  - Filter rows with a SQL WHERE clause (passed through as-is).
+- --order-by "SQL"
+  - Sort rows with a SQL ORDER BY clause (passed through as-is).
+- --limit N
+  - Limit rows returned.
+- --offset N
+  - Offset into the result set.
+- --json
+  - Output inspection results as JSON (array of objects).
+- --schema
+  - Print CREATE TABLE statements for user tables.
+- --make-admin EMAIL
+  - Set users.is_admin=1 for the user with this email (CLI-only mutation).
+- --revoke-admin EMAIL
+  - Set users.is_admin=0 for the user with this email (CLI-only mutation).
+
+Behavioral contract (what it does)
+- **Lists database tables** with row counts when run in its “overview” mode.
+- **Shows records** from a selected table in a readable format for debugging.
+- **Can emit JSON** for scripting or inspection instead of a human table.
+- **Can show schema** information for user tables for debugging.
+- **Admin toggle:** can promote/demote a user to admin status by email.
+  - Admin is defined solely by `users.is_admin = 1` in the SQLite database.
+  - There is no token/header-based admin auth mechanism.
+
+Non-goals
+- Not a migration tool.
+- Not an automated backup/restore tool.
+- Not intended for untrusted input or remote execution.
+
+Safety expectations
+- Intended for trusted, local use.
+- All operations are read-only except the explicit admin toggle.
+- If the DB is missing or unreadable, it should fail with a clear message instructing how to point at the correct DB or create one by running the server.
+ZIP Creation Rules
+- Use tools/build_zip.py
+- ZIP must contain client/ and server/
+- Exclude .venv/, node_modules/, __pycache__/, .pytest_cache/
+- Verify presence of RECREATE_WITH_CHATGPT.txt at root
+
+Embedded Changelog
+- 1.1.2: Updated canonical API endpoints to match implemented routes (/api/films/next and POST /api/films/<identifier>/ratings).
+- 1.1.3: Documented the client rating UI as a true table/grid layout (criteria rows, score inputs, validation, accessibility) and identified primary source files (App.jsx / optional RatingGrid.jsx).
+- 1.1.4: Added concrete layout/styling/responsiveness guidance for the scoring grid and updated ZIP builder to exclude .pytest_cache.
+- 1.1.6: Repaired RECREATE version/build-hash consistency and updated tools/build_zip.py with strict pre/postflight validation plus normalized build hashing (prevents doc/build drift).
+- 1.1.7: Added tools/release_check.py to run pytest and then build the release ZIP via tools/build_zip.py (single-command release workflow).
+- 1.1.8: Restored tools/print_db.py documentation and added build guardrail to fail if RECREATE drops required CLI tool sections.
+- 1.1.9: Documented admin tool requirements (admin model via users.is_admin, promotion via tools/print_db.py, and admin endpoint/session requirements).
+- 1.1.11: Canonicalized release after updating print_db.py documentation; bumped version, normalized Build SHA256, and rebuilt ZIP.
+- 1.1.12: Rewrote RECREATE instructions for tools/print_db.py so a fresh session can accurately recreate the CLI tool (flags, DB path resolution, default behavior, and admin mutations).
+- 1.1.13: Added invariants for build tools (build_zip.py and release_check.py) and tightened RECREATE to focus on observable behaviors; rebuilt canonical ZIP.
+- 1.1.14: Tightened print_db.py documentation to describe observable behaviors only and rebuilt canonical ZIP.
+- 1.1.15: Converted print_db.py documentation to a strictly behavioral contract (no implementation-level details) and rebuilt canonical ZIP.
+- 1.1.16: Documented supported CLI options for all command-line utilities (from the actual Python argparse definitions) in RECREATE_WITH_CHATGPT.txt.
+- 1.1.17: Updated client App.jsx to implement the RECREATE-specified one-film-at-a-time rating grid as an HTML table with validation, archive links, and cookie-authenticated admin sync.
+
+Changelog
+
+- 2026-01-27: v1.1.18 - Store IA film description in DB and display it in client; add films.description migration and sync.
+
+- 2026-01-27: v1.1.19 - Documented IA film description field in RECREATE (API + UI behavior).
+
+CHANGE REQUEST TEMPLATE (COPY/PASTE)
+
+When requesting changes, include this sentence verbatim at the end:
+"This change is not complete unless it is documented in RECREATE_WITH_CHATGPT.txt."
+
+CLIENT
+
+CLIENT BUILD AND RUNTIME (AUTHORITATIVE)
+
+- Client is a React application built with Vite.
+- Development:
+  - Run `npm install`
+  - Run `npm run dev`
+  - Vite dev server proxies API calls to the Flask backend.
+- Production:
+  - Run `npm run build`
+  - Build output is static assets served separately or via a reverse proxy.
+- Networking:
+  - Client uses `fetch()` with relative `/api/*` paths.
+  - Auth state loaded from `/api/me`.
+  - Film data loaded from `/api/films/*`.
+- Film panel layout:
+  - Title and metadata
+  - Film description (if present) rendered ABOVE the embedded player
+  - Embedded player iframe using `embedUrl`
+
+CANONICAL PROJECT STRUCTURE
+
+CHANGELOG.md
+README.md
+RECREATE_GUARDRAILS.md
+RECREATE_WITH_CHATGPT.txt
+client/
+  index.html
+  package.json
+  vite.config.js
+  src/
+    App.jsx
+    logger.ts
+    main.jsx
+server/
+  __init__.py
+  app.py
+  config.py
+  db.py
+  logging_config.py
+  pytest.ini
+  requirements-dev.txt
+  requirements.txt
+  models/
+    __init__.py
+    criteria.py
+    film.py
+    rating.py
+    user.py
+  repositories/
+    __init__.py
+    criteria_repo.py
+    film_repo.py
+    rating_repo.py
+    user_repo.py
+  routes/
+    __init__.py
+    admin.py
+    auth.py
+    films.py
+    user.py
+  services/
+    __init__.py
+    auth_service.py
+    ia_service.py
+    rating_service.py
+    summary_service.py
+  tests/
+    conftest.py
+    helpers.py
+    test_admin.py
+    test_auth.py
+    test_criteria.py
+    test_films_and_ratings.py
+tools/
+  build_zip.py
+  print_db.py
+  release_check.py
+
+FILM DISPLAY
+
+FILM DISPLAY (CLIENT)
+
+When a film is loaded, the client displays:
+- Title + creator/year (when available)
+- Film description (if present) as readable text
+- The embedded player iframe using the film's `embedUrl`
+
+FILM PANEL LAYOUT
+
+FILM PANEL LAYOUT (CLIENT)
+
+Order in the film panel:
+1) Title / basic metadata
+2) Description (if present) rendered ABOVE the embedded player
+3) Embedded player (iframe) rendered from `embedUrl`
+
+
+Example — films.metadata_json JSON (excerpt)
+
+{
+  "identifier": "example_film_1923",
+  "title": "Example Public Domain Film",
+  "description": "A short silent film demonstrating early montage techniques.",
+  "creator": ["Doe, Jane"],
+  "year": "1923",
+  "subjects": ["silent film", "public domain"],
+  "mediatype": "movies"
+}
+
+Notes:
+- `metadata_json.description` (if present) is duplicated into `films.description`
+- The full IA metadata blob is preserved verbatim in `films.metadata_json`
+
+
+BUILD INVARIANT — DESCRIPTION NORMALIZATION
+
+If Internet Archive metadata includes a `description` field (i.e., `metadata_json.description` is present):
+- `films.description` MUST be populated (same text), because the UI and API rely on the normalized column.
+- The build enforces this invariant when a SQLite database file is present.
+
+Enforcement: `tools/build_zip.py` checks the invariant when `server/app.db` exists.
+
+
+BUILD-TIME ENFORCEMENT — SCHEMA SUMMARY MUST MATCH CODE
+
+The build validates that the `Database Schema (summary)` section in this file matches the
+actual SQLite schema defined in `server/db.py` (CREATE TABLE column lists). If they differ,
+the build fails and you must update RECREATE to match the code change.
+
+
+TWO-ZIP ARTIFACT REQUIREMENT (HARD)
+
+Whenever you "regenerate the ZIP", "build", "rebuild", or otherwise produce downloadable artifacts, you MUST produce TWO ZIP files:
+
+- Canonical release ZIP: release_v<version>.zip (normalized)
+- Updated source ZIP:   rv110_source_fixed_v<version>.zip (full source)
+
+The build tooling enforces this requirement.
+
+
+BEHAVIORAL CANON (BINDING)
+
+This section removes ambiguity. A fresh ChatGPT session MUST implement behavior exactly as described here.
+
+FILM DESCRIPTION CANONICAL BEHAVIOR
+
+Ingestion (Internet Archive -> DB)
+- Source field: Internet Archive item metadata key `description`.
+- Types:
+  - If IA `description` is a list/array: join elements with "\n\n" in order.
+  - If IA `description` is non-string: cast to string via `str(value)`.
+  - If missing/null: treat as empty string.
+- Normalization:
+  - Trim leading/trailing whitespace.
+  - Preserve internal whitespace (do not collapse).
+  - Treat content as plain text (do NOT render or sanitize HTML at ingest; store as received after trimming/joining).
+- Storage:
+  - `films.metadata_json` stores the raw IA metadata blob (JSON) as captured at ingest (lossless).
+  - If `metadata_json.description` is present (non-empty after normalization), `films.description` MUST be populated with the normalized description text.
+  - If `metadata_json.description` is absent/empty, `films.description` MUST be the empty string ("").
+
+API contract (server -> client)
+- `description` is ALWAYS present in film objects returned by the API.
+  - If unknown/missing: return "" (empty string), not null.
+- `metadata_json` is NOT required to be returned to the client UI; it may be omitted from list endpoints.
+  - The UI must not rely on metadata_json for description.
+
+Client rendering (Film panel)
+- The film description is rendered ABOVE the embedded player inside the Film Panel.
+- Rendering rules:
+  - If `description` == "" after trimming: do not show the description block at all.
+  - Otherwise show it as plain text with preserved newlines (\n renders as line breaks).
+  - No HTML rendering (`dangerouslySetInnerHTML` must not be used).
+
+Golden-path example (binding)
+Input IA metadata excerpt:
+{
+  "identifier": "example_film_1923",
+  "title": "Example Public Domain Film",
+  "description": ["Line one.", "Line two."]
+}
+
+DB storage:
+- metadata_json.description = ["Line one.", "Line two."] (raw JSON preserved)
+- films.description          = "Line one.\n\nLine two."
+
+API:
+{
+  "ia_identifier": "example_film_1923",
+  "title": "Example Public Domain Film",
+  "description": "Line one.\n\nLine two."
+}
+
+UI:
+- Shows two paragraphs of text above the embedded player.
+
+
+CLIENT–SERVER API CONTRACT (BINDING)
+
+The authoritative description of the client–server API lives in:
+
+- `API_CLIENT_SERVER.md`
+
+Recreation rule:
+- API_CLIENT_SERVER.md MUST match the Canonical API Endpoints list below, including request/response shapes.
+- This file MUST be recreated verbatim (content and structure) when rebuilding the project.
+- Any change to server endpoints or client API usage REQUIRES updating this file.
+- Builds are invalid if the API behavior diverges from this document.

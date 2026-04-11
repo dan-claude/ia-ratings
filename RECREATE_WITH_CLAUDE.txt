@@ -1,0 +1,1507 @@
+=== CRITICAL BUILD RULE (READ FIRST) ===
+Any build that produces downloadable artifacts MUST output BOTH ZIPs:
+
+1) Canonical normalized release ZIP
+   - Deterministic / normalized build output
+   - Used for verification and rebuilding
+
+2) Updated source ZIP
+   - Full source tree (client/, server/, tools/, tests/, docs, etc.)
+   - Intended for inspection, editing, and iterative development
+
+A build is INVALID if either artifact is missing.
+Both SHA-256 hashes MUST be reported.
+========================================
+
+Project: IA Film Rater (React + Flask + SQLite) with Admin/Judge mode
+Collection: 2026-public-domain-day-film-contest
+Version: 1.1.44
+
+=== HOW TO USE THIS FILE ===
+This file is a complete, self-contained specification for recreating this
+project from scratch using Claude. It contains the EXACT implementation
+of every server file and behavioral spec for the client.
+
+When recreating, Claude should read this file fully before writing any code,
+then create each file with the exact content shown.
+
+NORMALIZED Build SHA256 rule (avoids self-referential hashing):
+- When computing the build hash, treat the line "Build SHA256: <value>" as
+  if it were exactly: "Build SHA256: TBD"
+
+============================
+GOAL
+============================
+Build a web application that:
+0) Stores each film's Internet Archive description in the database and
+   displays it above the embed player.
+1) Pulls all films in the Internet Archive collection
+   "2026-public-domain-day-film-contest"
+2) Allows authenticated users to rate films across multiple criteria
+3) Supports an admin/judge mode with CSV export
+
+============================
+TECH STACK
+============================
+- Client: React + Vite (single-file App.jsx, no external UI libraries)
+- Server: Flask with Blueprints
+- Database: SQLite (WAL mode, 5s busy_timeout)
+- Auth: Flask session-based (cookie), uses werkzeug password hashing
+- Python: 3.12
+- Relative imports: all server modules EXCEPT app.py use relative imports (e.g. from ..db import Database)
+- app.py uses ABSOLUTE imports (e.g. from server.config import load_settings) because it is the entry point
+
+============================
+CANONICAL PROJECT STRUCTURE
+============================
+ia_ratings/
+  CHANGELOG.md
+  README.md
+  RECREATE_GUARDRAILS.md
+  RECREATE_WITH_CHATGPT.txt
+  RECREATE_WITH_CLAUDE.txt       <- this file
+  API_CLIENT_SERVER.md
+  Makefile
+  justfile
+  package-lock.json
+  client/
+    index.html
+    package.json
+    vite.config.js
+    src/
+      App.jsx
+      logger.ts
+      main.jsx
+  server/
+    __init__.py
+    app.py
+    config.py
+    db.py
+    logging_config.py
+    pytest.ini
+    requirements-dev.txt
+    requirements.txt
+    app.db                      <- created at runtime
+    models/
+      __init__.py
+      criteria.py
+      film.py
+      rating.py
+      user.py
+    repositories/
+      __init__.py
+      criteria_repo.py
+      film_repo.py
+      rating_repo.py
+      user_repo.py
+    routes/
+      __init__.py
+      admin.py
+      auth.py
+      films.py
+      user.py
+    services/
+      __init__.py
+      auth_service.py
+      ia_service.py
+      rating_service.py
+      summary_service.py
+    tests/
+      conftest.py
+      helpers.py
+      test_admin.py
+      test_auth.py
+      test_criteria.py
+      test_films_and_ratings.py
+  tools/
+    build_zip.py
+    print_db.py
+    release_check.py
+
+============================
+DATABASE SCHEMA (AUTHORITATIVE)
+============================
+
+Table: schema_migrations
+  version    INTEGER PRIMARY KEY
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+
+Table: users
+  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  email         TEXT NOT NULL UNIQUE
+  password_hash TEXT NOT NULL
+  is_admin      INTEGER NOT NULL DEFAULT 0
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+
+Table: films
+  id            INTEGER PRIMARY KEY AUTOINCREMENT
+  ia_identifier TEXT NOT NULL UNIQUE
+  title         TEXT
+  description   TEXT           <- normalized plain-text description
+  collection    TEXT NOT NULL
+  mediatype     TEXT
+  metadata_json TEXT           <- NULL in current upsert implementation
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+
+Table: criteria
+  id         INTEGER PRIMARY KEY AUTOINCREMENT
+  key        TEXT NOT NULL UNIQUE
+  label      TEXT NOT NULL
+  min_score  INTEGER NOT NULL DEFAULT 1
+  max_score  INTEGER NOT NULL DEFAULT 5
+  sort_order INTEGER NOT NULL
+  active     INTEGER NOT NULL DEFAULT 1
+
+Table: ratings
+  id         INTEGER PRIMARY KEY AUTOINCREMENT
+  user_id    INTEGER NOT NULL
+  film_id    INTEGER NOT NULL
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  UNIQUE(user_id, film_id)
+  FOREIGN KEY(user_id) REFERENCES users(id)
+  FOREIGN KEY(film_id) REFERENCES films(id)
+
+Table: rating_scores
+  rating_id   INTEGER NOT NULL
+  criteria_id INTEGER NOT NULL
+  score       INTEGER NOT NULL
+  PRIMARY KEY (rating_id, criteria_id)
+  FOREIGN KEY(rating_id) REFERENCES ratings(id)
+  FOREIGN KEY(criteria_id) REFERENCES criteria(id)
+
+Indexes:
+  idx_ratings_user     ON ratings(user_id)
+  idx_films_collection ON films(collection)
+
+MIGRATIONS (run at startup in db.py):
+  v1: ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0
+  v2: ALTER TABLE ratings ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  v3: ALTER TABLE films ADD COLUMN description TEXT
+
+SEED DATA (INSERT OR IGNORE at startup):
+  criteria: ('originality', 'Originality', 1)
+  criteria: ('use_of_archive_materials', 'Use of Archive Materials', 2)
+
+============================
+CANONICAL API ENDPOINTS
+============================
+
+Auth:
+  POST   /api/auth/register  { email, password } -> { ok: true } (auto-logs in, sets session)
+  POST   /api/auth/login     { email, password } -> { ok: true }
+  POST   /api/auth/logout    -> { ok: true }
+
+User:
+  GET    /api/me             -> { id, email, created_at, is_admin }
+
+Criteria: (requires auth, defined in routes/user.py NOT films.py)
+  GET    /api/criteria       -> [{ key, label, min, max, sortOrder, active }]
+  IMPORTANT: field names are "min" and "max" (NOT "min_score"/"max_score")
+
+Films: (requires auth)
+  GET    /api/films/next     -> { identifier, title, description, embedUrl }
+                                or 404 { error: "No unrated films left (did you sync?)" }
+  GET    /api/films/<id>     -> { identifier, title, description, embedUrl }
+                                or 404 { error: "Film not found" }
+
+Ratings: (requires auth)
+  POST   /api/films/<id>/ratings
+         Payload: { "scores": { "<key>": number } }
+         ALL active criteria MUST be present (validates completeness)
+         Response: { ok: true }
+
+Admin: (requires is_admin=1 session)
+  POST   /api/admin/sync     -> { ok: true, added: N, synced: N }
+  GET    /api/admin/ratings.csv -> CSV download
+
+Health:
+  GET    /api/health         -> { ok: true }
+
+API film object shape:
+{
+  "identifier": "<ia_identifier>",
+  "title": "<title>",
+  "description": "<plain text or null>",   <- CAN BE NULL
+  "embedUrl": "https://archive.org/embed/<identifier>"
+}
+
+Error response shape: { "error": "<message>" }
+  Note: key is "error", NOT "ok: false"
+
+Auth error codes:
+  register ValueError  -> 400
+  register duplicate   -> 409 (KeyError)
+  login ValueError     -> 400
+  login bad creds      -> 401 (PermissionError)
+  not logged in        -> 401
+  not admin            -> 403
+
+============================
+FILE: server/config.py
+============================
+import os
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Settings:
+    collection: str = "2026-public-domain-day-film-contest"
+    db_path: str = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "app.db"))
+    session_secret: str = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
+    admin_token: str | None = os.environ.get("ADMIN_TOKEN")
+
+def load_settings() -> Settings:
+    return Settings()
+
+============================
+FILE: server/db.py
+============================
+import sqlite3
+from typing import Any, Iterable, Optional
+
+class Database:
+    def __init__(self, path: str):
+        self.path = path
+        self._init_schema()
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA synchronous = NORMAL;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
+        return conn
+
+    def _init_schema(self) -> None:
+        conn = self.connect()
+        try:
+            conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+              version INTEGER PRIMARY KEY,
+              applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS users (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              email TEXT NOT NULL UNIQUE,
+              password_hash TEXT NOT NULL,
+              is_admin INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS films (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ia_identifier TEXT NOT NULL UNIQUE,
+              title TEXT,
+              description TEXT,
+              collection TEXT NOT NULL,
+              mediatype TEXT,
+              metadata_json TEXT,
+              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS criteria (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              key TEXT NOT NULL UNIQUE,
+              label TEXT NOT NULL,
+              min_score INTEGER NOT NULL DEFAULT 1,
+              max_score INTEGER NOT NULL DEFAULT 5,
+              sort_order INTEGER NOT NULL,
+              active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS ratings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              film_id INTEGER NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              UNIQUE(user_id, film_id),
+              FOREIGN KEY(user_id) REFERENCES users(id),
+              FOREIGN KEY(film_id) REFERENCES films(id)
+            );
+            CREATE TABLE IF NOT EXISTS rating_scores (
+              rating_id INTEGER NOT NULL,
+              criteria_id INTEGER NOT NULL,
+              score INTEGER NOT NULL,
+              PRIMARY KEY (rating_id, criteria_id),
+              FOREIGN KEY(rating_id) REFERENCES ratings(id),
+              FOREIGN KEY(criteria_id) REFERENCES criteria(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ratings_user ON ratings(user_id);
+            CREATE INDEX IF NOT EXISTS idx_films_collection ON films(collection);
+            """)
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "is_admin" not in cols:
+                conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);")
+            rcols = {r["name"] for r in conn.execute("PRAGMA table_info(ratings)").fetchall()}
+            if "updated_at" not in rcols:
+                conn.execute("ALTER TABLE ratings ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'));")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);")
+            fcols = {r["name"] for r in conn.execute("PRAGMA table_info(films)").fetchall()}
+            if "description" not in fcols:
+                conn.execute("ALTER TABLE films ADD COLUMN description TEXT;")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);")
+            conn.execute("""
+              INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES
+                ('originality', 'Originality', 1),
+                ('use_of_archive_materials', 'Use of Archive Materials', 2)
+            """)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def fetchone(self, sql: str, params: Iterable[Any] = ()) -> Optional[sqlite3.Row]:
+        conn = self.connect()
+        try:
+            return conn.execute(sql, tuple(params)).fetchone()
+        finally:
+            conn.close()
+
+    def fetchall(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
+        conn = self.connect()
+        try:
+            return conn.execute(sql, tuple(params)).fetchall()
+        finally:
+            conn.close()
+
+============================
+FILE: server/models/user.py
+============================
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class User:
+    id: int
+    email: str
+    created_at: str
+    is_admin: bool = False
+
+============================
+FILE: server/models/film.py
+============================
+from dataclasses import dataclass
+from typing import Optional
+
+@dataclass(frozen=True)
+class Film:
+    id: int
+    identifier: str
+    title: Optional[str]
+
+============================
+FILE: server/models/criteria.py
+============================
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Criterion:
+    id: int
+    key: str
+    label: str
+    min_score: int
+    max_score: int
+    sort_order: int
+    active: int
+
+============================
+FILE: server/models/rating.py
+============================
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Rating:
+    id: int
+    user_id: int
+    film_id: int
+    created_at: str
+    updated_at: str
+
+============================
+FILE: server/repositories/user_repo.py
+============================
+import sqlite3
+from typing import Optional
+from ..db import Database
+
+class UserRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def create_user(self, email: str, password_hash: str) -> int:
+        conn = self.db.connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+                (email, password_hash),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+        finally:
+            conn.close()
+
+    def get_by_email(self, email: str) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            "SELECT id, email, password_hash, is_admin, created_at FROM users WHERE email = ?",
+            (email,),
+        )
+
+    def get_by_id(self, user_id: int) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            "SELECT id, email, is_admin, created_at FROM users WHERE id = ?",
+            (user_id,),
+        )
+
+    def set_admin(self, user_id: int, is_admin: bool) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE users SET is_admin = ? WHERE id = ?",
+                (1 if is_admin else 0, int(user_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+============================
+FILE: server/repositories/film_repo.py
+============================
+import sqlite3
+from typing import Optional
+from ..db import Database
+
+class FilmRepository:
+    @staticmethod
+    def _html_to_text(s: str) -> str:
+        """Convert IA HTML description to plain text preserving line structure."""
+        import re
+        # Block-level and list tags -> newline
+        s = re.sub(r'<br\s*/?>', '\n', s, flags=re.IGNORECASE)
+        s = re.sub(r'</div>', '\n', s, flags=re.IGNORECASE)
+        s = re.sub(r'<div[^>]*>', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'<li[^>]*>', '\n', s, flags=re.IGNORECASE)
+        s = re.sub(r'</li>', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'</?ul[^>]*>', '\n', s, flags=re.IGNORECASE)
+        s = re.sub(r'</?ol[^>]*>', '\n', s, flags=re.IGNORECASE)
+        s = re.sub(r'</?p[^>]*>', '\n', s, flags=re.IGNORECASE)
+        # Strip all remaining tags (keep text content, e.g. URLs inside <a>)
+        s = re.sub(r'<[^>]+>', '', s)
+        # Decode common HTML entities
+        entities = [('&amp;', '&'), ('&lt;', '<'), ('&gt;', '>'),
+                    ('&quot;', '"'), ('&#39;', "'"), ('&nbsp;', ' ')]
+        for ent, char in entities:
+            s = s.replace(ent, char)
+        # Replace residual non-breaking spaces with regular spaces
+        s = s.replace('\xa0', ' ')
+        # Lines that are now only whitespace become empty (blank lines)
+        s = '\n'.join(line if line.strip() else '' for line in s.split('\n'))
+        # Collapse 3+ newlines to a single blank line
+        s = re.sub(r'\n{3,}', '\n\n', s)
+        return s.strip()
+
+    @staticmethod
+    def _looks_like_html(s: str) -> bool:
+        import re
+        return bool(re.search(r'<(br|div|p|b|i|a|span)\b', s, flags=re.IGNORECASE))
+
+    def _clean_plain_text(self, s: str) -> str:
+        """Clean plain-text descriptions that use \xa0 as line-break surrogates."""
+        import re
+        # \xa0 \xa0 (two or more nbsp) = paragraph break
+        s = re.sub(r'[ \xa0]*\xa0[ \xa0]*\xa0[ \xa0]*', '\n\n', s)
+        # single \xa0 = line break
+        s = re.sub(r'[ ]*\xa0[ ]*', '\n', s)
+        s = re.sub(r'\n{3,}', '\n\n', s)
+        return s.strip()
+
+    def _normalize_description(self, v):
+        # IA may return description as str, list, or HTML string.
+        if v is None:
+            return None
+        if isinstance(v, list):
+            parts = [str(x) for x in v if x is not None and str(x).strip()]
+            if not parts:
+                return None
+            v = "\n\n".join(parts)
+        s = str(v).strip()
+        if not s:
+            return None
+        if self._looks_like_html(s):
+            return self._html_to_text(s)
+        return self._clean_plain_text(s)
+
+    def __init__(self, db: Database, collection: str):
+        self.db = db
+        self.collection = collection
+
+    def upsert_many_from_ia(self, docs: list[dict]) -> int:
+        conn = self.db.connect()
+        try:
+            total = 0
+            for d in docs:
+                ident = d.get("identifier")
+                if not ident:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?, NULL, datetime('now'))
+                    ON CONFLICT(ia_identifier) DO UPDATE SET
+                      title=excluded.title,
+                      description=excluded.description,
+                      collection=excluded.collection,
+                      mediatype=excluded.mediatype,
+                      updated_at=datetime('now')
+                    """,
+                    (ident, d.get("title"), self._normalize_description(d.get("description")), self.collection, "movies"),
+                )
+                total += 1
+            conn.commit()
+            return total
+        finally:
+            conn.close()
+
+    def get_by_identifier(self, identifier: str) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            "SELECT id, ia_identifier, title, description FROM films WHERE ia_identifier = ?",
+            (identifier,),
+        )
+
+    def get_next_unrated_for_user(self, user_id: int) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            """
+            SELECT f.ia_identifier, f.title, f.description
+            FROM films f
+            WHERE f.collection = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM ratings r
+                WHERE r.user_id = ?
+                  AND r.film_id = f.id
+              )
+            ORDER BY RANDOM()
+            LIMIT 1
+            """,
+            (self.collection, user_id),
+        )
+
+    def list_all_in_collection(self) -> list[sqlite3.Row]:
+        return self.db.fetchall(
+            "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
+            (self.collection,),
+        )
+
+============================
+FILE: server/repositories/criteria_repo.py
+============================
+import sqlite3
+from typing import Optional
+from ..db import Database
+
+class CriteriaRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def list_active(self) -> list[sqlite3.Row]:
+        return self.db.fetchall(
+            "SELECT id, key, label, min_score, max_score, sort_order, active "
+            "FROM criteria WHERE active=1 ORDER BY sort_order"
+        )
+
+    def list_all(self) -> list[sqlite3.Row]:
+        return self.db.fetchall(
+            "SELECT id, key, label, min_score, max_score, sort_order, active "
+            "FROM criteria ORDER BY sort_order"
+        )
+
+    def get_by_id(self, cid: int) -> Optional[sqlite3.Row]:
+        return self.db.fetchone("SELECT * FROM criteria WHERE id=?", (cid,))
+
+    def insert(self, key: str, label: str, min_score: int, max_score: int, sort_order: int, active: int) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO criteria (key,label,min_score,max_score,sort_order,active) VALUES (?,?,?,?,?,?)",
+                (key, label, min_score, max_score, sort_order, active),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update(self, cid: int, label: str, min_score: int, max_score: int, sort_order: int, active: int) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE criteria SET label=?, min_score=?, max_score=?, sort_order=?, active=? WHERE id=?",
+                (label, min_score, max_score, sort_order, active, cid),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+============================
+FILE: server/repositories/rating_repo.py
+============================
+import sqlite3
+from ..db import Database
+
+class RatingRepository:
+    def __init__(self, db: Database):
+        self.db = db
+
+    def upsert_rating(self, user_id: int, film_id: int) -> int:
+        conn = self.db.connect()
+        try:
+            self._upsert_rating_row(conn, user_id, film_id)
+            row = conn.execute(
+                "SELECT id FROM ratings WHERE user_id=? AND film_id=?",
+                (user_id, film_id),
+            ).fetchone()
+            conn.commit()
+            return int(row["id"])
+        finally:
+            conn.close()
+
+    def upsert_scores_bulk(self, rating_id: int, scores: list[tuple[int,int]]) -> None:
+        conn = self.db.connect()
+        try:
+            self._upsert_scores_bulk(conn, rating_id, scores)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def upsert_rating_with_scores(self, user_id: int, film_id: int, scores: list[tuple[int,int]]) -> int:
+        """Atomically upsert a rating and all its scores in one transaction."""
+        conn = self.db.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._upsert_rating_row(conn, user_id, film_id)
+            row = conn.execute(
+                "SELECT id FROM ratings WHERE user_id=? AND film_id=?",
+                (user_id, film_id),
+            ).fetchone()
+            rating_id = int(row["id"])
+            self._upsert_scores_bulk(conn, rating_id, scores)
+            conn.commit()
+            return rating_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _upsert_rating_row(self, conn: sqlite3.Connection, user_id: int, film_id: int) -> None:
+        conn.execute(
+            """
+            INSERT INTO ratings (user_id, film_id, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(user_id, film_id) DO UPDATE SET updated_at=datetime('now')
+            """,
+            (user_id, film_id),
+        )
+
+    def _upsert_scores_bulk(self, conn: sqlite3.Connection, rating_id: int, scores: list[tuple[int,int]]) -> None:
+        for criteria_id, score in scores:
+            conn.execute(
+                """
+                INSERT INTO rating_scores (rating_id, criteria_id, score)
+                VALUES (?, ?, ?)
+                ON CONFLICT(rating_id, criteria_id) DO UPDATE SET score=excluded.score
+                """,
+                (rating_id, criteria_id, score),
+            )
+
+    def list_active_criteria_for_export(self) -> list[sqlite3.Row]:
+        conn = self.db.connect()
+        try:
+            return conn.execute(
+                "SELECT id, key, sort_order FROM criteria WHERE active=1 ORDER BY sort_order"
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def list_ratings_for_export(self, collection: str) -> list[sqlite3.Row]:
+        conn = self.db.connect()
+        try:
+            return conn.execute(
+                """
+                SELECT r.id as rating_id, r.created_at, u.email as user_email,
+                       f.ia_identifier as identifier, f.title as title
+                FROM ratings r
+                JOIN users u ON u.id = r.user_id
+                JOIN films f ON f.id = r.film_id
+                WHERE f.collection=?
+                ORDER BY r.created_at DESC
+                """,
+                (collection,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def get_score(self, rating_id: int, criteria_id: int) -> int | None:
+        row = self.db.fetchone(
+            "SELECT score FROM rating_scores WHERE rating_id=? AND criteria_id=?",
+            (rating_id, criteria_id),
+        )
+        return None if not row else int(row["score"])
+
+    def count_ratings_for_film(self, film_id: int) -> int:
+        row = self.db.fetchone("SELECT COUNT(*) as n FROM ratings WHERE film_id=?", (film_id,))
+        return int(row["n"]) if row else 0
+
+    def avg_score_for_film_criterion(self, film_id: int, criteria_id: int) -> float | None:
+        row = self.db.fetchone(
+            """
+            SELECT AVG(rs.score) as avgScore
+            FROM ratings r
+            JOIN rating_scores rs ON rs.rating_id = r.id
+            WHERE r.film_id = ? AND rs.criteria_id = ?
+            """,
+            (film_id, criteria_id),
+        )
+        return None if (not row or row["avgScore"] is None) else float(row["avgScore"])
+
+============================
+FILE: server/services/auth_service.py
+============================
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+from ..models.user import User
+from ..repositories.user_repo import UserRepository
+
+class AuthService:
+    def __init__(self, users: UserRepository):
+        self.users = users
+
+    def register(self, email: str, password: str) -> int:
+        email = email.strip().lower()
+        if not email or not password:
+            raise ValueError("email and password required")
+        ph = generate_password_hash(password)
+        try:
+            return self.users.create_user(email, ph)
+        except sqlite3.IntegrityError as e:
+            raise KeyError("Email already registered") from e
+
+    def login(self, email: str, password: str) -> int:
+        email = email.strip().lower()
+        if not email or not password:
+            raise ValueError("email and password required")
+        row = self.users.get_by_email(email)
+        if not row or not check_password_hash(row["password_hash"], password):
+            raise PermissionError("Invalid credentials")
+        return int(row["id"])
+
+    def get_me(self, user_id: int) -> User:
+        row = self.users.get_by_id(user_id)
+        if not row:
+            raise LookupError("User not found")
+        return User(
+            id=int(row["id"]),
+            email=str(row["email"]),
+            created_at=str(row["created_at"]),
+            is_admin=("is_admin" in row.keys() and bool(row["is_admin"]))
+        )
+
+============================
+FILE: server/services/ia_service.py
+============================
+import logging
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Iterator, Optional
+
+logger = logging.getLogger(__name__)
+
+class InternetArchiveService:
+    def __init__(self, collection: str):
+        self.collection = collection
+
+    def iter_collection_movies(self, rows: int = 100) -> Iterator[dict]:
+        page = 1
+        while True:
+            payload = self._advancedsearch(page=page, rows=rows)
+            docs = (payload.get("response") or {}).get("docs") or []
+            if not docs:
+                return
+            for d in docs:
+                yield d
+            num_found = (payload.get("response") or {}).get("numFound") or 0
+            if page * rows >= num_found or len(docs) < rows:
+                return
+            page += 1
+
+    def sync_collection(self, films_repo, rows: int = 100, max_pages: Optional[int] = None) -> int:
+        """Fetch movie docs from IA and upsert into films table.
+
+        Fetches HTML descriptions concurrently via the metadata API (20 workers).
+        Falls back to plain-text description from search API if metadata fetch fails.
+        Returns count inserted/updated.
+        """
+        # Collect all docs first
+        all_docs: list[dict] = []
+        for d in self.iter_collection_movies(rows=rows):
+            all_docs.append(d)
+            if max_pages is not None and len(all_docs) >= max_pages * rows:
+                break
+
+        if not all_docs:
+            return 0
+
+        # Fetch HTML descriptions concurrently
+        identifiers = [d.get("identifier") for d in all_docs if d.get("identifier")]
+        html_map: dict[str, str] = {}
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_id = {
+                executor.submit(self.fetch_description_html, ident): ident
+                for ident in identifiers
+            }
+            for future in as_completed(future_to_id):
+                ident = future_to_id[future]
+                try:
+                    result = future.result()
+                    if result:
+                        html_map[ident] = result
+                except Exception as e:
+                    logger.warning("fetch_description_html failed for %s: %s", ident, e)
+
+        # Enrich docs with HTML descriptions and upsert
+        enriched = []
+        for d in all_docs:
+            ident = d.get("identifier")
+            if ident and ident in html_map:
+                d = dict(d)
+                d["description"] = html_map[ident]
+                d["description_is_html"] = True
+            enriched.append(d)
+
+        return films_repo.upsert_many_from_ia(enriched)
+
+    def fetch_description_html(self, identifier: str) -> Optional[str]:
+        """Fetch the HTML description from the metadata API. Returns None on failure."""
+        url = f"https://archive.org/metadata/{identifier}/metadata/description"
+        try:
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            result = data.get("result")
+            if isinstance(result, str) and result.strip():
+                return result
+            return None
+        except Exception as e:
+            logger.warning("fetch_description_html failed for %s: %s", identifier, e)
+            return None
+
+    def _advancedsearch(self, page: int, rows: int) -> dict:
+        q = f"collection:{self.collection} AND mediatype:movies"
+        url = "https://archive.org/advancedsearch.php"
+        params = {
+            "q": q,
+            "fl[]": ["identifier", "title", "description"],
+            "rows": rows,
+            "page": page,
+            "output": "json",
+        }
+        r = requests.get(url, params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+============================
+FILE: server/services/rating_service.py
+============================
+from typing import Dict
+from ..repositories.film_repo import FilmRepository
+from ..repositories.criteria_repo import CriteriaRepository
+from ..repositories.rating_repo import RatingRepository
+
+class RatingService:
+    def __init__(self, films: FilmRepository, criteria: CriteriaRepository, ratings: RatingRepository):
+        self.films = films
+        self.criteria = criteria
+        self.ratings = ratings
+
+    def list_active_criteria(self) -> list[dict]:
+        return [dict(r) for r in self.criteria.list_active()]
+
+    def get_next_unrated_film(self, user_id: int) -> dict | None:
+        row = self.films.get_next_unrated_for_user(user_id)
+        if not row:
+            return None
+        return {
+            "identifier": row["ia_identifier"],
+            "title": row["title"],
+            "description": (row["description"] if ("description" in row.keys()) else None)
+        }
+
+    def get_film_by_identifier(self, identifier: str) -> dict | None:
+        row = self.films.get_by_identifier(identifier)
+        if not row:
+            return None
+        return {
+            "identifier": row["ia_identifier"],
+            "title": row["title"],
+            "description": (row["description"] if ("description" in row.keys()) else None)
+        }
+
+    def submit_rating(self, user_id: int, identifier: str, scores: Dict[str, int]) -> None:
+        if not isinstance(scores, dict):
+            raise ValueError("scores object required")
+        film_row = self.films.get_by_identifier(identifier)
+        if not film_row:
+            raise LookupError("Film not found (sync first)")
+        crit = self.criteria.list_active()
+        for c in crit:
+            if c["key"] not in scores:
+                raise ValueError(f"Missing score for: {c['key']}")
+        validated: list[tuple[int, int]] = []
+        for c in crit:
+            try:
+                n = int(scores[c["key"]])
+            except Exception as e:
+                raise ValueError(f"Score for {c['key']} must be integer") from e
+            if n < c["min_score"] or n > c["max_score"]:
+                raise ValueError(f"Score for {c['key']} must be {c['min_score']}-{c['max_score']}")
+            validated.append((int(c["id"]), n))
+        self.ratings.upsert_rating_with_scores(user_id, int(film_row["id"]), validated)
+
+============================
+FILE: server/services/summary_service.py
+============================
+import csv
+import re
+import sqlite3
+from io import StringIO
+from ..repositories.criteria_repo import CriteriaRepository
+from ..repositories.film_repo import FilmRepository
+from ..repositories.rating_repo import RatingRepository
+
+class SummaryService:
+    def __init__(self, criteria: CriteriaRepository, films: FilmRepository,
+                 ratings: RatingRepository, collection: str):
+        self.criteria = criteria
+        self.films = films
+        self.ratings = ratings
+        self.collection = collection
+
+    def admin_list_criteria(self) -> list[dict]:
+        return [dict(r) for r in self.criteria.list_all()]
+
+    def admin_add_criterion(self, key: str, label: str, min_score: int,
+                            max_score: int, sort_order: int, active: int) -> None:
+        if not key or not label:
+            raise ValueError("key and label required")
+        if not re.match(r"^[a-z0-9_]+$", key):
+            raise ValueError("key must be lowercase letters/numbers/underscore")
+        if min_score >= max_score:
+            raise ValueError("invalid min/max")
+        try:
+            self.criteria.insert(key, label, min_score, max_score, sort_order, active)
+        except sqlite3.IntegrityError as e:
+            raise KeyError("criterion key already exists") from e
+
+    def admin_patch_criterion(self, cid: int, label, min_score, max_score,
+                              sort_order, active) -> None:
+        row = self.criteria.get_by_id(cid)
+        if not row:
+            raise LookupError("not found")
+        new_label = label if label is not None else row["label"]
+        new_min = int(min_score) if min_score is not None else int(row["min_score"])
+        new_max = int(max_score) if max_score is not None else int(row["max_score"])
+        new_so = int(sort_order) if sort_order is not None else int(row["sort_order"])
+        new_active = int(active) if active is not None else int(row["active"])
+        if new_min >= new_max:
+            raise ValueError("invalid min/max")
+        self.criteria.update(cid, new_label, new_min, new_max, new_so, new_active)
+
+    def admin_summary(self) -> dict:
+        crit = self.criteria.list_active()
+        films = self.films.list_all_in_collection()
+        out_films = []
+        for f in films:
+            film_id = int(f["id"])
+            rated_n = self.ratings.count_ratings_for_film(film_id)
+            averages = {}
+            for c in crit:
+                avg = self.ratings.avg_score_for_film_criterion(film_id, int(c["id"]))
+                averages[c["key"]] = avg
+            out_films.append({
+                "identifier": f["identifier"],
+                "title": f["title"],
+                "ratingsCount": rated_n,
+                "averages": averages,
+            })
+        return {
+            "criteria": [{"key": c["key"], "label": c["label"], "sortOrder": c["sort_order"]} for c in crit],
+            "films": out_films,
+        }
+
+    def admin_ratings_csv(self) -> str:
+        crit = self.ratings.list_active_criteria_for_export()
+        ratings = self.ratings.list_ratings_for_export(self.collection)
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["created_at", "user_email", "identifier", "title", *[c["key"] for c in crit]])
+        for r in ratings:
+            scores = []
+            for c in crit:
+                s = self.ratings.get_score(int(r["rating_id"]), int(c["id"]))
+                scores.append("" if s is None else s)
+            writer.writerow([r["created_at"], r["user_email"], r["identifier"], r["title"], *scores])
+        return output.getvalue()
+
+============================
+FILE: server/logging_config.py
+============================
+from __future__ import annotations
+import logging
+import os
+import sys
+
+def configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(level)
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter(
+        fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
+    handler.setFormatter(formatter)
+    root.setLevel(level)
+    root.addHandler(handler)
+    logging.getLogger("werkzeug").setLevel(level)
+
+============================
+FILE: server/routes/auth.py
+============================
+from flask import Blueprint, request, jsonify, session, current_app
+
+auth_bp = Blueprint("auth", __name__)
+
+@auth_bp.post("/api/auth/register")
+def register():
+    svc = current_app.services["auth"]
+    data = request.get_json(silent=True) or {}
+    try:
+        uid = svc.register(data.get("email") or "", data.get("password") or "")
+        session["user_id"] = uid
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except KeyError as e:
+        return jsonify({"error": str(e)}), 409
+
+@auth_bp.post("/api/auth/login")
+def login():
+    svc = current_app.services["auth"]
+    data = request.get_json(silent=True) or {}
+    try:
+        uid = svc.login(data.get("email") or "", data.get("password") or "")
+        session["user_id"] = uid
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 401
+
+@auth_bp.post("/api/auth/logout")
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+============================
+FILE: server/routes/user.py
+============================
+IMPORTANT: /api/criteria is defined here (not in films.py)
+
+from flask import Blueprint, jsonify, session, current_app
+
+user_bp = Blueprint("user", __name__)
+
+def _require_auth():
+    uid = session.get("user_id")
+    if not uid:
+        return None, (jsonify({"error": "Not logged in"}), 401)
+    return int(uid), None
+
+@user_bp.get("/api/me")
+def me():
+    uid, err = _require_auth()
+    if err:
+        return err
+    svc = current_app.services["auth"]
+    try:
+        me_obj = svc.get_me(uid)
+        return jsonify({
+            "id": me_obj.id,
+            "email": me_obj.email,
+            "created_at": me_obj.created_at,
+            "is_admin": me_obj.is_admin
+        })
+    except LookupError:
+        return jsonify({"error": "Not logged in"}), 401
+
+@user_bp.get("/api/criteria")
+def criteria():
+    uid, err = _require_auth()
+    if err:
+        return err
+    rs = current_app.services["rating"]
+    rows = rs.list_active_criteria()
+    return jsonify([{
+        "key": r["key"],
+        "label": r["label"],
+        "min": r["min_score"],        # "min" not "min_score"
+        "max": r["max_score"],        # "max" not "max_score"
+        "sortOrder": r["sort_order"],
+        "active": r["active"],
+    } for r in rows])
+
+============================
+FILE: server/routes/films.py
+============================
+from flask import Blueprint, jsonify, session, current_app, request
+
+films_bp = Blueprint("films", __name__)
+
+def _require_auth():
+    uid = session.get("user_id")
+    if not uid:
+        return None, (jsonify({"error": "Not logged in"}), 401)
+    return int(uid), None
+
+@films_bp.get("/api/films/next")
+def next_film():
+    uid, err = _require_auth()
+    if err:
+        return err
+    rs = current_app.services["rating"]
+    film = rs.get_next_unrated_film(uid)
+    if not film:
+        return jsonify({"error": "No unrated films left (did you sync?)"}), 404
+    return jsonify({
+        "identifier": film["identifier"],
+        "title": film["title"],
+        "description": film.get("description"),
+        "embedUrl": f"https://archive.org/embed/{film['identifier']}",
+    })
+
+@films_bp.get("/api/films/<identifier>")
+def film(identifier: str):
+    uid, err = _require_auth()
+    if err:
+        return err
+    rs = current_app.services["rating"]
+    film_obj = rs.get_film_by_identifier(identifier)
+    if not film_obj:
+        return jsonify({"error": "Film not found"}), 404
+    return jsonify({
+        "identifier": film_obj["identifier"],
+        "title": film_obj["title"],
+        "description": film_obj.get("description"),
+        "embedUrl": f"https://archive.org/embed/{film_obj['identifier']}",
+    })
+
+@films_bp.post("/api/films/<identifier>/ratings")
+def rate(identifier: str):
+    uid, err = _require_auth()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    scores = data.get("scores")
+    rs = current_app.services["rating"]
+    try:
+        rs.submit_rating(uid, identifier, scores)
+        return jsonify({"ok": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+
+============================
+FILE: server/routes/admin.py
+============================
+from flask import Blueprint, jsonify, current_app, Response, session
+
+admin_bp = Blueprint("admin", __name__)
+
+def _require_admin_user():
+    uid = session.get("user_id")
+    if not uid:
+        return False, (jsonify({"error": "Not logged in"}), 401)
+    users = current_app.repos["users"]
+    row = users.get_by_id(int(uid))
+    if not row:
+        return False, (jsonify({"error": "Not logged in"}), 401)
+    if not ("is_admin" in row.keys() and bool(row["is_admin"])):
+        return False, (jsonify({"error": "Forbidden"}), 403)
+    return True, None
+
+@admin_bp.post("/api/admin/sync")
+def sync():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    ia = current_app.services["ia"]
+    films = current_app.repos["films"]
+    added = ia.sync_collection(films)
+    return jsonify({"ok": True, "added": added, "synced": added})
+
+@admin_bp.get("/api/admin/ratings.csv")
+def ratings_csv():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    ss = current_app.services["summary"]
+    csv_text = ss.admin_ratings_csv()
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="ratings.csv"'},
+    )
+
+============================
+FILE: server/app.py — BEHAVIORS
+============================
+Key behaviors (implement fully):
+- Uses create_app() factory pattern
+- Uses ABSOLUTE imports (from server.config import ...) since it is the entry point
+- Loads settings via load_settings(), configures logging via configure_logging()
+- client_dist = Path(__file__).resolve().parents[1] / "client" / "dist"
+- If client_dist.exists(): Flask(static_folder=str(client_dist), static_url_path="/")
+  else: Flask(__name__)
+- Sets app.secret_key = settings.session_secret
+- Creates Database, repos, services:
+    app.settings = settings
+    app.db = db
+    app.repos  = { "users": UserRepository, "films": FilmRepository,
+                   "criteria": CriteriaRepository, "ratings": RatingRepository }
+    app.services = { "ia": InternetArchiveService, "auth": AuthService,
+                     "rating": RatingService, "summary": SummaryService }
+- Startup schema check: fetchall PRAGMA table_info(users), log column names,
+  warn if is_admin missing
+- Registers blueprints: auth_bp, user_bp, films_bp, admin_bp
+- GET /api/health -> { ok: True }
+- GET / -> send_from_directory(static_folder, "index.html")
+  or 500 JSON { ok: False, error: "Client not built",
+    hint: "Run: cd client && npm install && npm run build (then restart the server)." }
+- GET /<path:path> -> serve file if exists AND is_file(), else serve index.html
+  same 500 JSON if client not built
+- before_request: g.request_id = uuid4().hex[:12], g.request_start = time.time()
+- after_request: log rid/status/dur_ms/method/path, set X-Request-Id header
+- errorhandler(Exception): pass through HTTPException, else log + 500 JSON
+  response: { "ok": False, "error": "Internal Server Error", "request_id": rid }
+- main(): parses --host/--port/--debug/--no-debug/--with-client
+  reads FLASK_RUN_HOST (default 0.0.0.0), FLASK_RUN_PORT (default 5000),
+  FLASK_DEBUG (default "1") from env
+  _pick_available_port: tries requested port, increments up to 100 times if busy
+- --with-client flag: runs _build_client(repo_root) before create_app()
+  _build_client(repo_root): runs ["npm", "install"] then ["npm", "run", "build"]
+  in client/ dir, streaming output, raises SystemExit on non-zero returncode
+
+============================
+FILE: server/requirements.txt
+============================
+flask>=3.0
+requests>=2.28
+werkzeug>=3.0
+
+============================
+FILE: server/requirements-dev.txt
+============================
+pytest>=8.0
+pytest-flask
+
+============================
+CLIENT: package.json
+============================
+{
+  "name": "ia-ratings-client",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": { "dev": "vite", "build": "vite build", "preview": "vite preview" },
+  "dependencies": { "react": "^18.0.0", "react-dom": "^18.0.0" },
+  "devDependencies": { "@vitejs/plugin-react": "^4.0.0", "vite": "^5.0.0" }
+}
+
+============================
+CLIENT: vite.config.js
+============================
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+export default defineConfig({
+  plugins: [react()],
+  server: { proxy: { '/api': 'http://localhost:5000' } },
+})
+
+============================
+CLIENT: App.jsx — EXACT BEHAVIORS
+============================
+Imports: { useEffect, useMemo, useState } from 'react'
+
+Helper functions at module level:
+  archiveDetailsUrl(identifier) -> "https://archive.org/details/<id>" or null
+  isIntString(s) -> /^-?\d+$/.test(String(s).trim())  (returns false for null/undefined)
+
+State:
+  me, email, password
+  film, criteria (sorted by sortOrder ascending), scores (key->string)
+  syncing (bool), syncResult (string)
+  loading, error, submitError
+
+apiJson(path, opts):
+  fetch with credentials:'include', parse JSON if content-type includes json,
+  else text as { message: text }. Returns { ok, status, data }.
+
+loadMe(): GET /api/me -> setMe(data) or setMe(null)
+loadCriteria(): GET /api/criteria -> sort by sortOrder, setCriteria
+loadNextFilm(): GET /api/films/next
+  ok -> setFilm(data), setScores({})
+  fail -> setFilm(null), setError(data?.error || 'No unrated films left...')
+  Note: 404 = all films rated, not a crash
+
+login(isRegister): POST register or login
+  ok -> loadMe()
+  fail -> setError(data?.error || 'Authentication failed')
+
+logout(): POST /api/auth/logout -> clear me/film/criteria/scores
+
+submit():
+  POST /api/films/{film.identifier}/ratings
+  payload: { scores: { key: parseInt(v) } }  (parseInt, not parseFloat)
+  ok -> loadNextFilm()
+  fail -> setSubmitError(data?.error || 'Submit failed')
+
+adminSync():
+  setSyncing(true), setSyncResult(''), setError('')
+  POST /api/admin/sync
+  setSyncing(false)
+  ok -> setSyncResult(`Sync complete — ${data.synced ?? '?'} films updated.`), loadNextFilm()
+  fail -> setError(data?.error || 'Admin sync failed')
+
+useEffect on mount: loadMe()
+useEffect on [me]: if me -> setLoading(true), Promise.all([loadCriteria(), loadNextFilm()]).finally(setLoading(false))
+
+validation useMemo([criteria, scores, film]):
+  For each criterion c:
+    raw = scores[c.key]
+    present = raw !== undefined && String(raw).trim() !== ''
+    isInt = present && isIntString(raw)
+    n = isInt ? parseInt(...) : null
+    inRange = isInt && n >= c.min && n <= c.max
+    ok = present && inRange
+    hint: 'Required' | 'Must be an integer' | 'Must be {c.min}-{c.max}' | ''
+  allOk = !!film?.identifier && criteria.length > 0 && all perKey ok
+
+Render (me===null): login form
+  - h2 "IA Film Rater"
+  - error div (color #a00)
+  - email input, password input (type="password")
+  - Login button, Register button side by side
+
+Render (me set):
+  - Inline <style> block with CSS (see below)
+  - topbar div: h2 "IA Film Rater", email span + Logout button
+  - Admin panel (me.is_admin only):
+      "Sync Collection" button (disabled while syncing, label changes to "Syncing…")
+      While syncing: inline message "Fetching descriptions from Internet Archive — this may take a few minutes…" (color #666)
+      On success: inline message "Sync complete — N films updated." (color #060)
+      Note: NO CSV download link in current client (CSV only via direct URL)
+  - loading paragraph
+  - error div
+  - Film panel (if film):
+      h3: film.title || film.identifier
+      film-meta div: identifier display + "View on archive.org" link
+      film-desc div: film.description (only if truthy, white-space:pre-wrap)
+      iframe.player: src=film.embedUrl, allowFullScreen
+      grid-table table (Criterion | Range | Score | Quick columns)
+        Quick buttons shown when (c.max - c.min) >= 1 AND <= 6
+        row-invalid class on invalid rows
+      Submit & Next button (disabled when !validation.allOk)
+      submitError div
+  - "No films left." paragraph (if !film)
+
+Required CSS classes (define in inline <style>):
+  .grid-table: width:100%, border-collapse:collapse, table-layout:fixed
+  .grid-table th: text-align:left, font-weight:600, border-bottom:2px solid #ddd, padding:10px 8px
+  .grid-table td: border-bottom:1px solid #eee, padding:10px 8px, vertical-align:middle
+  .col-crit:40%, .col-range:15%, .col-score:20%, .col-quick:25%
+  .score-input: width:5em, text-align:center, padding:6px 8px
+  .row-invalid: background:#fff5f5
+  .hint: font-size:12px, color:#a00, margin-top:4px
+  .quick: display:flex, flex-wrap:wrap, gap:6px
+  .quick button: padding:4px 8px
+  .btn-primary: padding:10px 14px
+  .btn-primary[disabled]: opacity:0.5, cursor:not-allowed
+  .topbar: display:flex, align-items:center, justify-content:space-between, gap:12px
+  .film-description: margin:12px 0, padding:12px 14px, background:#fafafa,
+    border:1px solid #e5e5e5, border-radius:8px, color:#333, white-space:pre-wrap
+  .film-panel: margin-top:14px
+  .film-meta: display:flex, flex-wrap:wrap, gap:10px, font-size:14px, color:#444
+  .film-desc: margin:10px 0 8px, padding:10px 12px, border:1px solid #eee,
+    border-radius:10px, background:#fafafa, color:#333, white-space:pre-wrap,
+    word-break:break-word, overflow-wrap:break-word
+  .player: width:100%, max-width:900px, aspect-ratio:16/9, border:0, margin:12px 0 16px
+  @media(max-width:768px): grid-table rows become block, thead hidden,
+    each tr gets border+border-radius+margin-bottom+padding
+
+============================
+ADMIN USER SETUP
+============================
+A user is an admin if users.is_admin = 1.
+  python tools/print_db.py --make-admin you@example.com
+  python tools/print_db.py --revoke-admin you@example.com
+Default DB: server/app.db. Override: --db PATH or DB_PATH env var.
+
+============================
+BUILD / RUN INSTRUCTIONS
+============================
+Server:
+  python -m venv .venv && source .venv/bin/activate
+  pip install -r server/requirements.txt
+  python -m server.app
+
+Client (dev):
+  cd client && npm install && npm run dev
+  # /api proxies to http://localhost:5000
+
+Client (prod):
+  cd client && npm run build
+  # Restart Flask; it serves client/dist automatically
+
+============================
+TOOLS
+============================
+tools/print_db.py:
+  --db PATH, --tables, --table NAME, --where SQL, --order-by SQL
+  --limit N, --offset N, --json, --schema
+  --make-admin EMAIL, --revoke-admin EMAIL
+
+tools/build_zip.py:
+  Produces release_v<version>.zip + source zip
+  Excludes: .venv node_modules __pycache__ .pytest_cache .git .DS_Store
+  Options: --out-dir DIR (default: /mnt/data)
+
+tools/release_check.py:
+  Runs pytest then build_zip.py. Options: --out-dir DIR
+
+============================
+CHANGELOG
+============================
+- 1.1.2-1.1.19: See RECREATE_WITH_CHATGPT.txt for full history
+- 1.1.44: Created RECREATE_WITH_CLAUDE.txt — verified against actual implementation
+- 1.1.44+: session changes —
+    server/app.py: added --with-client flag (_build_client runs npm install + build)
+    server/repositories/film_repo.py: replaced _normalize_description with
+      _html_to_text (handles div/br/li/ul/p/ol, entities, nbsp, blank lines),
+      _looks_like_html, _clean_plain_text (nbsp-as-linebreak for plain-text fallback)
+    server/services/ia_service.py: sync_collection now fetches HTML descriptions
+      from metadata API (archive.org/metadata/<id>/metadata/description) using
+      ThreadPoolExecutor(max_workers=20) for concurrency; fetch_description_html added
+    client/src/App.jsx: added syncing/syncResult state; adminSync shows
+      "Syncing..." button + progress message + success/error feedback;
+      film-desc CSS adds word-break/overflow-wrap for long URLs;
+      fixed missing loading state declaration (was accidentally deleted)
+    RECREATE_GUARDRAILS.md: rewritten to add code editing rules (read before edit,
+      verify after edit, one change per edit)
