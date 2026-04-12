@@ -28,14 +28,20 @@ def bootstrap_admin():
         return jsonify({"error": "Forbidden"}), 403
     data = request.get_json(silent=True) or {}
     ia_username = data.get("ia_username", "").strip()
-    if not ia_username:
-        return jsonify({"error": "ia_username required"}), 400
+    email = data.get("email", "").strip()
+    if not ia_username and not email:
+        return jsonify({"error": "ia_username or email required"}), 400
     users = current_app.repos["users"]
-    row = users.get_by_ia_username(ia_username)
+    if ia_username:
+        row = users.get_by_ia_username(ia_username)
+        identifier = ia_username
+    else:
+        row = users.get_by_email(email)
+        identifier = email
     if not row:
-        return jsonify({"error": f"User not found: {ia_username}"}), 404
+        return jsonify({"error": f"User not found: {identifier}"}), 404
     users.set_admin(int(row["id"]), True)
-    return jsonify({"ok": True, "promoted": ia_username})
+    return jsonify({"ok": True, "promoted": identifier})
 
 
 @admin_bp.post("/api/admin/sync")
