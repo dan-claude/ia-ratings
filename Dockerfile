@@ -21,4 +21,5 @@ RUN cd client && npm run build
 # Copy server source
 COPY server/ server/
 
-CMD PYTHONPATH=. python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
+ENV PYTHONPATH=/app
+CMD python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
