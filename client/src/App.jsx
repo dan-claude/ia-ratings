@@ -27,6 +27,13 @@ function isIntString(s) {
 function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
   const [tab, setTab] = useState('actions')
 
+  // Criteria state
+  const [criteria, setCriteria] = useState(null)
+  const [criteriaLoading, setCriteriaLoading] = useState(false)
+  const [criteriaError, setCriteriaError] = useState('')
+  const [editingCriterion, setEditingCriterion] = useState(null)   // { id?, key, label, min_score, max_score, sort_order, active }
+  const [criteriaMsg, setCriteriaMsg] = useState('')
+
   // Backup/restore state
   const [backupStatus, setBackupStatus] = useState('')
   const [restoreStatus, setRestoreStatus] = useState('')
@@ -99,6 +106,47 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
     }
   }
 
+  async function loadCriteriaAdmin() {
+    setCriteriaLoading(true)
+    setCriteriaError('')
+    const { ok, data } = await apiJson('/api/admin/criteria')
+    setCriteriaLoading(false)
+    if (ok) setCriteria(data)
+    else setCriteriaError(data?.error || 'Failed to load criteria')
+  }
+
+  function blankCriterion() {
+    return { key: '', label: '', min_score: 1, max_score: 5, sort_order: 0, active: true }
+  }
+
+  async function saveCriterion() {
+    if (!editingCriterion) return
+    setCriteriaMsg('')
+    const isNew = !editingCriterion.id
+    const path = isNew ? '/api/admin/criteria' : `/api/admin/criteria/${editingCriterion.id}`
+    const method = isNew ? 'POST' : 'PUT'
+    const body = {
+      key:        editingCriterion.key,
+      label:      editingCriterion.label,
+      min_score:  Number(editingCriterion.min_score),
+      max_score:  Number(editingCriterion.max_score),
+      sort_order: Number(editingCriterion.sort_order),
+      active:     editingCriterion.active,
+    }
+    const { ok, data } = await apiJson(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (ok) {
+      setCriteriaMsg(isNew ? 'Criterion created.' : 'Criterion updated.')
+      setEditingCriterion(null)
+      loadCriteriaAdmin()
+    } else {
+      setCriteriaMsg(`Error: ${data?.error || 'Save failed'}`)
+    }
+  }
+
   async function downloadBackup() {
     setBackupStatus('Preparing backup…')
     try {
@@ -167,8 +215,9 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
   }
 
   useEffect(() => {
-    if (tab === 'db' && tables === null) loadTables()
-    if (tab === 'users' && users === null) loadUsers()
+    if (tab === 'db'       && tables   === null) loadTables()
+    if (tab === 'users'    && users    === null) loadUsers()
+    if (tab === 'criteria' && criteria === null) loadCriteriaAdmin()
   }, [tab])
 
   const tabStyle = (t) => ({
@@ -189,9 +238,9 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'db', 'users', 'backup'].map(t => (
+        {['actions', 'criteria', 'users', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {t === 'actions' ? 'Actions' : t === 'db' ? 'DB Browser' : t === 'users' ? 'Users' : 'Backup'}
+            {{ actions: 'Actions', criteria: 'Criteria', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
           </button>
         ))}
       </div>
@@ -211,6 +260,128 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
             <div>
               <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
             </div>
+          </div>
+        )}
+
+        {/* ── Criteria ── */}
+        {tab === 'criteria' && (
+          <div>
+            {criteriaError && <div style={{ color: '#a00', marginBottom: 8 }}>{criteriaError}</div>}
+            {criteriaMsg && (
+              <div style={{ marginBottom: 8, fontSize: 13, color: criteriaMsg.startsWith('Error') ? '#a00' : '#060' }}>
+                {criteriaMsg}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button onClick={loadCriteriaAdmin} disabled={criteriaLoading} style={{ fontSize: 12 }}>
+                {criteriaLoading ? 'Loading…' : '↻ Refresh'}
+              </button>
+              <button onClick={() => { setCriteriaMsg(''); setEditingCriterion(blankCriterion()) }}>
+                + New criterion
+              </button>
+            </div>
+
+            {/* Inline editor */}
+            {editingCriterion && (
+              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #aac', borderRadius: 8, background: '#f5f8ff' }}>
+                <div style={{ fontWeight: 600, marginBottom: 10 }}>
+                  {editingCriterion.id ? `Edit criterion #${editingCriterion.id}` : 'New criterion'}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '8px 12px', alignItems: 'center', maxWidth: 480 }}>
+                  <label style={{ fontSize: 13 }}>Key</label>
+                  <input
+                    value={editingCriterion.key}
+                    onChange={e => setEditingCriterion({ ...editingCriterion, key: e.target.value })}
+                    placeholder="snake_case identifier"
+                    disabled={!!editingCriterion.id}
+                    style={{ fontFamily: 'monospace', fontSize: 13 }}
+                  />
+                  <label style={{ fontSize: 13 }}>Label</label>
+                  <input
+                    value={editingCriterion.label}
+                    onChange={e => setEditingCriterion({ ...editingCriterion, label: e.target.value })}
+                    placeholder="Display name"
+                  />
+                  <label style={{ fontSize: 13 }}>Min score</label>
+                  <input
+                    type="number"
+                    value={editingCriterion.min_score}
+                    onChange={e => setEditingCriterion({ ...editingCriterion, min_score: e.target.value })}
+                    style={{ width: 80 }}
+                  />
+                  <label style={{ fontSize: 13 }}>Max score</label>
+                  <input
+                    type="number"
+                    value={editingCriterion.max_score}
+                    onChange={e => setEditingCriterion({ ...editingCriterion, max_score: e.target.value })}
+                    style={{ width: 80 }}
+                  />
+                  <label style={{ fontSize: 13 }}>Sort order</label>
+                  <input
+                    type="number"
+                    value={editingCriterion.sort_order}
+                    onChange={e => setEditingCriterion({ ...editingCriterion, sort_order: e.target.value })}
+                    style={{ width: 80 }}
+                  />
+                  <label style={{ fontSize: 13 }}>Active</label>
+                  <label style={{ fontSize: 13 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!editingCriterion.active}
+                      onChange={e => setEditingCriterion({ ...editingCriterion, active: e.target.checked })}
+                      style={{ marginRight: 6 }}
+                    />
+                    Shown to raters
+                  </label>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button onClick={saveCriterion}>Save</button>
+                  <button onClick={() => { setEditingCriterion(null); setCriteriaMsg('') }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* Criteria table */}
+            {criteria && (
+              criteria.length === 0
+                ? <p style={{ color: '#666' }}>(no criteria)</p>
+                : (
+                  <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th>id</th>
+                        <th>key</th>
+                        <th>label</th>
+                        <th>range</th>
+                        <th>sort</th>
+                        <th>active</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {criteria.map(c => (
+                        <tr key={c.id} style={{ opacity: c.active ? 1 : 0.5 }}>
+                          <td>{c.id}</td>
+                          <td style={{ fontFamily: 'monospace' }}>{c.key}</td>
+                          <td>{c.label}</td>
+                          <td>{c.min_score}–{c.max_score}</td>
+                          <td>{c.sort_order}</td>
+                          <td>{c.active ? '✓' : '—'}</td>
+                          <td>
+                            <button
+                              style={{ fontSize: 12 }}
+                              onClick={() => { setCriteriaMsg(''); setEditingCriterion({ ...c, active: !!c.active }) }}
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+            )}
           </div>
         )}
 

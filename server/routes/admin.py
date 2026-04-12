@@ -266,6 +266,78 @@ def db_restore():
 
 
 # ---------------------------------------------------------------------------
+# Criteria management
+# ---------------------------------------------------------------------------
+
+@admin_bp.get("/api/admin/criteria")
+def list_criteria():
+    """List all criteria (including inactive)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    criteria = current_app.repos["criteria"]
+    rows = criteria.list_all()
+    return jsonify([dict(r) for r in rows])
+
+
+@admin_bp.post("/api/admin/criteria")
+def create_criterion():
+    """Create a new criterion."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    key       = (data.get("key") or "").strip()
+    label     = (data.get("label") or "").strip()
+    min_score = data.get("min_score", 1)
+    max_score = data.get("max_score", 5)
+    sort_order = data.get("sort_order", 0)
+    active    = int(bool(data.get("active", True)))
+
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    if not isinstance(min_score, int) or not isinstance(max_score, int):
+        return jsonify({"error": "min_score and max_score must be integers"}), 400
+    if min_score >= max_score:
+        return jsonify({"error": "min_score must be less than max_score"}), 400
+
+    try:
+        current_app.repos["criteria"].insert(key, label, min_score, max_score, sort_order, active)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True}), 201
+
+
+@admin_bp.put("/api/admin/criteria/<int:cid>")
+def update_criterion(cid: int):
+    """Update an existing criterion."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    criteria = current_app.repos["criteria"]
+    row = criteria.get_by_id(cid)
+    if not row:
+        return jsonify({"error": f"Criterion not found: {cid}"}), 404
+
+    data = request.get_json(silent=True) or {}
+    label      = (data.get("label") or row["label"]).strip()
+    min_score  = data.get("min_score",  row["min_score"])
+    max_score  = data.get("max_score",  row["max_score"])
+    sort_order = data.get("sort_order", row["sort_order"])
+    active     = int(bool(data.get("active", bool(row["active"]))))
+
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    if min_score >= max_score:
+        return jsonify({"error": "min_score must be less than max_score"}), 400
+
+    criteria.update(cid, label, min_score, max_score, sort_order, active)
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Film / ratings management
 # ---------------------------------------------------------------------------
 
