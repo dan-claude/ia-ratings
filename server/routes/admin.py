@@ -96,7 +96,17 @@ def db_table(table: str):
         limit    = request.args.get("limit", type=int)
         offset   = request.args.get("offset", type=int)
 
-        sql = f"SELECT * FROM {table}"
+        # For the films table, automatically include a per-film rating count.
+        if table == "films":
+            base = (
+                "SELECT *, "
+                "(SELECT COUNT(*) FROM ratings WHERE film_id = films.id) AS rating_count "
+                "FROM films"
+            )
+        else:
+            base = f"SELECT * FROM {table}"
+
+        sql = base
         params: list = []
         if where:
             sql += f" WHERE {where}"
