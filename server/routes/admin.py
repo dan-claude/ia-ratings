@@ -1,6 +1,5 @@
 import os
-import os
-from flask import Blueprint, jsonify, current_app, Response, session, request, request
+from flask import Blueprint, jsonify, current_app, Response, session, request
 
 admin_bp = Blueprint("admin", __name__)
 
@@ -21,28 +20,6 @@ def bootstrap_admin():
     """Temporary one-shot endpoint: promote a user to admin.
     Requires BOOTSTRAP_TOKEN env var to be set and passed as X-Bootstrap-Token header.
     Remove this endpoint after use.
-    """
-    token = os.environ.get("BOOTSTRAP_TOKEN")
-    if not token:
-        return jsonify({"error": "Bootstrap not enabled"}), 403
-    if request.headers.get("X-Bootstrap-Token") != token:
-        return jsonify({"error": "Forbidden"}), 403
-    data = request.get_json(silent=True) or {}
-    ia_username = data.get("ia_username", "").strip()
-    if not ia_username:
-        return jsonify({"error": "ia_username required"}), 400
-    users = current_app.repos["users"]
-    row = users.get_by_ia_username(ia_username)
-    if not row:
-        return jsonify({"error": f"User not found: {ia_username}"}), 404
-    users.set_admin(int(row["id"]), True)
-    return jsonify({"ok": True, "promoted": ia_username})
-
-
-@admin_bp.post("/api/admin/bootstrap")
-def bootstrap_admin():
-    """Temporary one-shot endpoint to promote a user to admin.
-    Protected by BOOTSTRAP_TOKEN env var. Remove after use.
     """
     token = os.environ.get("BOOTSTRAP_TOKEN")
     if not token:
