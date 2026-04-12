@@ -20,6 +20,260 @@ function isIntString(s) {
   return /^-?\d+$/.test(t)
 }
 
+// ---------------------------------------------------------------------------
+// AdminPanel
+// ---------------------------------------------------------------------------
+
+function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
+  const [tab, setTab] = useState('actions')
+
+  // DB browser state
+  const [tables, setTables] = useState(null)   // { tableName: rowCount }
+  const [selTable, setSelTable] = useState('')
+  const [rows, setRows] = useState(null)
+  const [where, setWhere] = useState('')
+  const [orderBy, setOrderBy] = useState('')
+  const [limit, setLimit] = useState('100')
+  const [dbError, setDbError] = useState('')
+  const [dbLoading, setDbLoading] = useState(false)
+
+  // Users state
+  const [users, setUsers] = useState(null)
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [usersError, setUsersError] = useState('')
+  const [actionMsg, setActionMsg] = useState('')
+
+  async function loadTables() {
+    setDbLoading(true)
+    setDbError('')
+    const { ok, data } = await apiJson('/api/admin/db/tables')
+    setDbLoading(false)
+    if (ok) setTables(data)
+    else setDbError(data?.error || 'Failed to load tables')
+  }
+
+  async function loadRows(table, opts = {}) {
+    const t = table || selTable
+    if (!t) return
+    setDbLoading(true)
+    setDbError('')
+    setRows(null)
+    const params = new URLSearchParams()
+    const w = opts.where  !== undefined ? opts.where  : where
+    const o = opts.orderBy !== undefined ? opts.orderBy : orderBy
+    const l = opts.limit  !== undefined ? opts.limit  : limit
+    if (w)  params.set('where',    w)
+    if (o)  params.set('order_by', o)
+    if (l)  params.set('limit',    l)
+    const { ok, data } = await apiJson(`/api/admin/db/${t}?${params}`)
+    setDbLoading(false)
+    if (ok) setRows(data)
+    else setDbError(data?.error || 'Failed to load rows')
+  }
+
+  async function loadUsers() {
+    setUsersLoading(true)
+    setUsersError('')
+    setActionMsg('')
+    const { ok, data } = await apiJson('/api/admin/db/users?order_by=id')
+    setUsersLoading(false)
+    if (ok) setUsers(data)
+    else setUsersError(data?.error || 'Failed to load users')
+  }
+
+  async function setAdmin(userId, makeAdmin) {
+    setActionMsg('')
+    const action = makeAdmin ? 'make-admin' : 'revoke-admin'
+    const { ok, data } = await apiJson(`/api/admin/users/${userId}/${action}`, { method: 'POST' })
+    if (ok) {
+      setActionMsg(`User ${userId} ${makeAdmin ? 'promoted to' : 'removed from'} admin.`)
+      loadUsers()
+    } else {
+      setActionMsg(data?.error || 'Action failed')
+    }
+  }
+
+  useEffect(() => {
+    if (tab === 'db' && tables === null) loadTables()
+    if (tab === 'users' && users === null) loadUsers()
+  }, [tab])
+
+  const tabStyle = (t) => ({
+    padding: '6px 14px',
+    cursor: 'pointer',
+    border: '1px solid #ccc',
+    borderBottom: tab === t ? '1px solid #fff' : '1px solid #ccc',
+    background: tab === t ? '#fff' : '#f5f5f5',
+    marginBottom: -1,
+    fontWeight: tab === t ? 600 : 400,
+    borderRadius: '6px 6px 0 0',
+  })
+
+  const cols = rows && rows.length > 0 ? Object.keys(rows[0]) : []
+
+  return (
+    <div style={{ marginTop: 12, border: '1px solid #ddd', borderRadius: 10, overflow: 'hidden' }}>
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
+        <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
+        {['actions', 'db', 'users'].map(t => (
+          <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
+            {t === 'actions' ? 'Actions' : t === 'db' ? 'DB Browser' : 'Users'}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding: 14 }}>
+
+        {/* ── Actions ── */}
+        {tab === 'actions' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button onClick={onSync} disabled={syncing}>
+                {syncing ? 'Syncing…' : 'Sync Collection'}
+              </button>
+              {syncing && <span style={{ fontSize: 13, color: '#666' }}>Fetching from Internet Archive — may take a few minutes…</span>}
+              {syncResult && <span style={{ fontSize: 13, color: '#060' }}>{syncResult}</span>}
+            </div>
+            <div>
+              <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
+            </div>
+          </div>
+        )}
+
+        {/* ── DB Browser ── */}
+        {tab === 'db' && (
+          <div>
+            {dbError && <div style={{ color: '#a00', marginBottom: 8 }}>{dbError}</div>}
+
+            {/* Table list */}
+            {tables && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                {Object.entries(tables).map(([t, count]) => (
+                  <button
+                    key={t}
+                    onClick={() => { setSelTable(t); setWhere(''); setOrderBy(''); setLimit('100'); loadRows(t, { where: '', orderBy: '', limit: '100' }) }}
+                    style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? '#e8f0fe' : '' }}
+                  >
+                    {t} <span style={{ fontSize: 12, color: '#666' }}>({count})</span>
+                  </button>
+                ))}
+                <button onClick={loadTables} style={{ marginLeft: 4, fontSize: 12 }}>↻ Refresh</button>
+              </div>
+            )}
+
+            {/* Filter bar */}
+            {selTable && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+                <input
+                  placeholder="WHERE …"
+                  value={where}
+                  onChange={e => setWhere(e.target.value)}
+                  style={{ width: 200, fontFamily: 'monospace', fontSize: 13 }}
+                />
+                <input
+                  placeholder="ORDER BY …"
+                  value={orderBy}
+                  onChange={e => setOrderBy(e.target.value)}
+                  style={{ width: 160, fontFamily: 'monospace', fontSize: 13 }}
+                />
+                <input
+                  placeholder="LIMIT"
+                  value={limit}
+                  onChange={e => setLimit(e.target.value)}
+                  style={{ width: 70, fontFamily: 'monospace', fontSize: 13 }}
+                />
+                <button onClick={() => loadRows()} disabled={dbLoading}>
+                  {dbLoading ? 'Loading…' : 'Run'}
+                </button>
+              </div>
+            )}
+
+            {/* Results table */}
+            {rows && (
+              rows.length === 0
+                ? <p style={{ color: '#666' }}>(no rows)</p>
+                : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+                      <thead>
+                        <tr>{cols.map(c => <th key={c} style={{ whiteSpace: 'nowrap' }}>{c}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row, i) => (
+                          <tr key={i}>
+                            {cols.map(c => (
+                              <td key={c} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 400 }}>
+                                {row[c] === null ? <span style={{ color: '#aaa' }}>NULL</span> : String(row[c])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>{rows.length} row{rows.length !== 1 ? 's' : ''}</div>
+                  </div>
+                )
+            )}
+
+            {dbLoading && !rows && <p style={{ color: '#666' }}>Loading…</p>}
+          </div>
+        )}
+
+        {/* ── Users ── */}
+        {tab === 'users' && (
+          <div>
+            {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.includes('failed') || actionMsg.includes('error') ? '#a00' : '#060', fontSize: 13 }}>{actionMsg}</div>}
+            {usersError && <div style={{ color: '#a00', marginBottom: 8 }}>{usersError}</div>}
+            <button onClick={loadUsers} disabled={usersLoading} style={{ marginBottom: 10, fontSize: 12 }}>
+              {usersLoading ? 'Loading…' : '↻ Refresh'}
+            </button>
+            {users && (
+              <div style={{ overflowX: 'auto' }}>
+                <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th>id</th>
+                      <th>email</th>
+                      <th>ia_username</th>
+                      <th>is_admin</th>
+                      <th>created_at</th>
+                      <th>actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map(u => (
+                      <tr key={u.id}>
+                        <td>{u.id}</td>
+                        <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
+                        <td>{u.ia_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
+                        <td>{u.is_admin ? '✓' : ''}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{u.created_at}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          {u.is_admin
+                            ? <button onClick={() => setAdmin(u.id, false)} style={{ fontSize: 12 }}>Revoke admin</button>
+                            : <button onClick={() => setAdmin(u.id, true)}  style={{ fontSize: 12 }}>Make admin</button>
+                          }
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>{users.length} user{users.length !== 1 ? 's' : ''}</div>
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main App
+// ---------------------------------------------------------------------------
+
 export default function App() {
   const [me, setMe] = useState(null)
   const [authScheme, setAuthScheme] = useState('ia') // default matches server default
@@ -271,14 +525,12 @@ export default function App() {
       </div>
 
       {me?.is_admin ? (
-        <div style={{ marginTop: 12, padding: 12, border: '1px solid #eee', borderRadius: 10 }}>
-          <div style={{ fontWeight: 600, marginBottom: 8 }}>Admin</div>
-          <button onClick={adminSync} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Sync Collection'}
-          </button>
-          {syncing ? <span style={{ marginLeft: 10, fontSize: 13, color: '#666' }}>Fetching descriptions from Internet Archive — this may take a few minutes…</span> : null}
-          {syncResult ? <span style={{ marginLeft: 10, fontSize: 13, color: '#060' }}>{syncResult}</span> : null}
-        </div>
+        <AdminPanel
+          syncing={syncing}
+          syncResult={syncResult}
+          onSync={adminSync}
+          apiJson={apiJson}
+        />
       ) : null}
 
       {loading ? <p>Loading…</p> : null}
