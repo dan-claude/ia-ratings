@@ -76,6 +76,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         app = Flask(__name__)
 
     app.secret_key = settings.session_secret
+    app.config["DB_PATH"] = settings.db_path
 
     # --- Database + repos ---
     db = Database(settings.db_path)
