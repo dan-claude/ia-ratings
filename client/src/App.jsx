@@ -27,6 +27,12 @@ function isIntString(s) {
 function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
   const [tab, setTab] = useState('actions')
 
+  // Backup/restore state
+  const [backupStatus, setBackupStatus] = useState('')
+  const [restoreStatus, setRestoreStatus] = useState('')
+  const [restorePending, setRestorePending] = useState(null)  // parsed JSON waiting for confirm
+  const [restoring, setRestoring] = useState(false)
+
   // DB browser state
   const [tables, setTables] = useState(null)   // { tableName: rowCount }
   const [selTable, setSelTable] = useState('')
@@ -93,6 +99,73 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
     }
   }
 
+  async function downloadBackup() {
+    setBackupStatus('Preparing backup…')
+    try {
+      const res = await fetch('/api/admin/db/backup', { credentials: 'include' })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        setBackupStatus(`Error: ${d.error || res.statusText}`)
+        return
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') || ''
+      const match = disposition.match(/filename="([^"]+)"/)
+      const filename = match ? match[1] : 'ia_ratings_backup.json'
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = filename; a.click()
+      URL.revokeObjectURL(url)
+      setBackupStatus(`Downloaded ${filename}`)
+    } catch (e) {
+      setBackupStatus(`Error: ${e.message}`)
+    }
+  }
+
+  function handleRestoreFile(e) {
+    setRestoreStatus('')
+    setRestorePending(null)
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result)
+        if (parsed.app !== 'ia_ratings') {
+          setRestoreStatus('Error: not an ia_ratings backup file')
+          return
+        }
+        setRestorePending(parsed)
+        setRestoreStatus('')
+      } catch {
+        setRestoreStatus('Error: could not parse JSON')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''  // reset so same file can be re-selected
+  }
+
+  async function confirmRestore() {
+    if (!restorePending) return
+    setRestoring(true)
+    setRestoreStatus('Restoring…')
+    const { ok, data } = await apiJson('/api/admin/db/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(restorePending),
+    })
+    setRestoring(false)
+    setRestorePending(null)
+    if (ok) {
+      const counts = Object.entries(data.restored || {}).map(([t, n]) => `${t}: ${n}`).join(', ')
+      setRestoreStatus(`Restored from ${data.exported_at} — ${counts}`)
+      // Invalidate cached DB browser data
+      setTables(null); setRows(null); setUsers(null)
+    } else {
+      setRestoreStatus(`Error: ${data?.error || 'Restore failed'}`)
+    }
+  }
+
   useEffect(() => {
     if (tab === 'db' && tables === null) loadTables()
     if (tab === 'users' && users === null) loadUsers()
@@ -116,9 +189,9 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'db', 'users'].map(t => (
+        {['actions', 'db', 'users', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {t === 'actions' ? 'Actions' : t === 'db' ? 'DB Browser' : 'Users'}
+            {t === 'actions' ? 'Actions' : t === 'db' ? 'DB Browser' : t === 'users' ? 'Users' : 'Backup'}
           </button>
         ))}
       </div>
@@ -262,6 +335,78 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
                 <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>{users.length} user{users.length !== 1 ? 's' : ''}</div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Backup / Restore ── */}
+        {tab === 'backup' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+            {/* Download */}
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Download backup</div>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: '#555' }}>
+                Exports all tables (users, films, ratings, criteria, etc.) as a single
+                versioned JSON file. The filename includes the UTC timestamp.
+              </p>
+              <button onClick={downloadBackup}>⬇ Download backup</button>
+              {backupStatus && (
+                <div style={{ marginTop: 8, fontSize: 13, color: backupStatus.startsWith('Error') ? '#a00' : '#060' }}>
+                  {backupStatus}
+                </div>
+              )}
+            </div>
+
+            <hr style={{ border: 0, borderTop: '1px solid #eee' }} />
+
+            {/* Restore */}
+            <div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Restore from backup</div>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: '#555' }}>
+                Select a <code>.json</code> backup file. You'll be asked to confirm before
+                any data is overwritten.
+              </p>
+              <input type="file" accept=".json,application/json" onChange={handleRestoreFile} />
+
+              {restorePending && (
+                <div style={{ marginTop: 12, padding: 12, border: '1px solid #f0a030', borderRadius: 8, background: '#fffbf0' }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>⚠ Confirm restore</div>
+                  <div style={{ fontSize: 13, marginBottom: 8 }}>
+                    <div>Exported: <strong>{restorePending.exported_at}</strong></div>
+                    <div>Schema version: <strong>{restorePending.schema_version}</strong></div>
+                    <div style={{ marginTop: 4 }}>
+                      Tables:{' '}
+                      {Object.entries(restorePending.tables || {}).map(([t, rows]) => (
+                        <span key={t} style={{ marginRight: 8 }}>{t} ({rows.length})</span>
+                      ))}
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 13, color: '#a00', margin: '0 0 10px' }}>
+                    This will <strong>permanently replace</strong> all existing rows in every
+                    table included in the backup. This cannot be undone.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      onClick={confirmRestore}
+                      disabled={restoring}
+                      style={{ background: '#c00', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 4, cursor: 'pointer' }}
+                    >
+                      {restoring ? 'Restoring…' : 'Yes, restore now'}
+                    </button>
+                    <button onClick={() => { setRestorePending(null); setRestoreStatus('') }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {restoreStatus && (
+                <div style={{ marginTop: 8, fontSize: 13, color: restoreStatus.startsWith('Error') ? '#a00' : '#060' }}>
+                  {restoreStatus}
+                </div>
+              )}
+            </div>
+
           </div>
         )}
 

@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
 admin_bp = Blueprint("admin", __name__)
@@ -139,6 +141,129 @@ def revoke_admin(user_id: int):
         return jsonify({"error": f"User not found: {user_id}"}), 404
     users.set_admin(user_id, False)
     return jsonify({"ok": True, "user_id": user_id, "is_admin": False})
+
+# ---------------------------------------------------------------------------
+# Backup / restore
+# ---------------------------------------------------------------------------
+
+# Tables in dependency order for restore (parents before children).
+_RESTORE_ORDER = [
+    "schema_migrations",
+    "users",
+    "criteria",
+    "films",
+    "ratings",
+    "rating_scores",
+]
+
+BACKUP_FORMAT_VERSION = 1
+
+
+@admin_bp.get("/api/admin/db/backup")
+def db_backup():
+    """Export the entire database as a versioned JSON file."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    conn = _db_conn()
+    try:
+        # Resolve schema version from migrations table.
+        try:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_migrations").fetchone()
+            schema_version = int(row["v"]) if row and row["v"] is not None else 0
+        except Exception:
+            schema_version = 0
+
+        exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        tables = _list_tables(conn)
+        tables_data = {}
+        for t in tables:
+            rows = conn.execute(f"SELECT * FROM {t}").fetchall()
+            tables_data[t] = [{k: r[k] for k in r.keys()} for r in rows]
+
+        backup = {
+            "app": "ia_ratings",
+            "format_version": BACKUP_FORMAT_VERSION,
+            "schema_version": schema_version,
+            "exported_at": exported_at,
+            "tables": tables_data,
+        }
+
+        filename = f"ia_ratings_backup_{exported_at.replace(':', '-')}.json"
+        return Response(
+            json.dumps(backup, indent=2, ensure_ascii=False),
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    finally:
+        conn.close()
+
+
+@admin_bp.post("/api/admin/db/restore")
+def db_restore():
+    """
+    Restore the database from a backup JSON produced by /api/admin/db/backup.
+    DESTRUCTIVE: all existing rows in every restored table are replaced.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+
+    backup = request.get_json(silent=True)
+    if not backup:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    if backup.get("app") != "ia_ratings":
+        return jsonify({"error": "Invalid backup: unexpected app identifier"}), 400
+    if backup.get("format_version") != BACKUP_FORMAT_VERSION:
+        return jsonify({"error": f"Unsupported format_version: {backup.get('format_version')}"}), 400
+
+    tables_data = backup.get("tables")
+    if not isinstance(tables_data, dict):
+        return jsonify({"error": "Invalid backup: 'tables' must be an object"}), 400
+
+    conn = _db_conn()
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        restored = {}
+        try:
+            with conn:  # single atomic transaction
+                for table in _RESTORE_ORDER:
+                    rows = tables_data.get(table)
+                    if rows is None:
+                        continue  # table not in backup — leave as-is
+                    conn.execute(f"DELETE FROM {table}")
+                    if not rows:
+                        restored[table] = 0
+                        continue
+                    cols = list(rows[0].keys())
+                    placeholders = ", ".join("?" * len(cols))
+                    col_names = ", ".join(f'"{c}"' for c in cols)
+                    for r in rows:
+                        conn.execute(
+                            f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})",
+                            [r.get(c) for c in cols],
+                        )
+                    # Keep SQLite AUTOINCREMENT sequences consistent.
+                    ids = [r["id"] for r in rows if r.get("id") is not None]
+                    if ids:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES (?, ?)",
+                            (table, max(ids)),
+                        )
+                    restored[table] = len(rows)
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
+        return jsonify({
+            "ok": True,
+            "exported_at": backup.get("exported_at"),
+            "schema_version": backup.get("schema_version"),
+            "restored": restored,
+        })
+    finally:
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Film / ratings management
