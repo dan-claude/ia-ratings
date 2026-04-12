@@ -20,6 +20,5 @@ RUN cd client && npm run build
 
 # Copy server source
 COPY server/ server/
-COPY server/__init__.py server/__init__.py 2>/dev/null || true
 
 CMD PYTHONPATH=. python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
