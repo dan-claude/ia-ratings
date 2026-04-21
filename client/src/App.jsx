@@ -7,11 +7,17 @@ function archiveDetailsUrl(identifier) {
 function linkifyText(text) {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts = text.split(urlRegex)
-  return parts.map((part, i) =>
-    urlRegex.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noreferrer">{part}</a>
-      : part
-  )
+  return parts.map((part, i) => {
+    if (!urlRegex.test(part)) return part
+    // L3: Validate URL before rendering as a link — guard against javascript:/data: schemes.
+    try {
+      const parsed = new URL(part)
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return part
+    } catch {
+      return part
+    }
+    return <a key={i} href={part} target="_blank" rel="noreferrer">{part}</a>
+  })
 }
 
 function isIntString(s) {
@@ -44,7 +50,6 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
   const [tables, setTables] = useState(null)   // { tableName: rowCount }
   const [selTable, setSelTable] = useState('')
   const [rows, setRows] = useState(null)
-  const [where, setWhere] = useState('')
   const [orderBy, setOrderBy] = useState('')
   const [limit, setLimit] = useState('100')
   const [dbError, setDbError] = useState('')
@@ -72,12 +77,10 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
     setDbError('')
     setRows(null)
     const params = new URLSearchParams()
-    const w = opts.where  !== undefined ? opts.where  : where
     const o = opts.orderBy !== undefined ? opts.orderBy : orderBy
-    const l = opts.limit  !== undefined ? opts.limit  : limit
-    if (w)  params.set('where',    w)
-    if (o)  params.set('order_by', o)
-    if (l)  params.set('limit',    l)
+    const l = opts.limit   !== undefined ? opts.limit   : limit
+    if (o) params.set('order_by', o)
+    if (l) params.set('limit',    l)
     const { ok, data } = await apiJson(`/api/admin/db/${t}?${params}`)
     setDbLoading(false)
     if (ok) setRows(data)
@@ -396,7 +399,7 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
                 {Object.entries(tables).map(([t, count]) => (
                   <button
                     key={t}
-                    onClick={() => { setSelTable(t); setWhere(''); setOrderBy(''); setLimit('100'); loadRows(t, { where: '', orderBy: '', limit: '100' }) }}
+                    onClick={() => { setSelTable(t); setOrderBy(''); setLimit('100'); loadRows(t, { orderBy: '', limit: '100' }) }}
                     style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? '#e8f0fe' : '' }}
                   >
                     {t} <span style={{ fontSize: 12, color: '#666' }}>({count})</span>
@@ -410,16 +413,10 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
             {selTable && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
                 <input
-                  placeholder="WHERE …"
-                  value={where}
-                  onChange={e => setWhere(e.target.value)}
-                  style={{ width: 200, fontFamily: 'monospace', fontSize: 13 }}
-                />
-                <input
-                  placeholder="ORDER BY …"
+                  placeholder="ORDER BY column [ASC|DESC]"
                   value={orderBy}
                   onChange={e => setOrderBy(e.target.value)}
-                  style={{ width: 160, fontFamily: 'monospace', fontSize: 13 }}
+                  style={{ width: 220, fontFamily: 'monospace', fontSize: 13 }}
                 />
                 <input
                   placeholder="LIMIT"

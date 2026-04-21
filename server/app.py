@@ -24,12 +24,13 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory, g
 from werkzeug.exceptions import HTTPException
 
-from server.config import load_settings
+from server.config import load_settings, _DEV_SECRET
 from server.db import Database
 from server.logging_config import configure_logging
 
@@ -45,7 +46,7 @@ from server.services.summary_service import SummaryService
 
 # Blueprints
 from server.routes.admin import admin_bp
-from server.routes.auth import auth_bp
+from server.routes.auth import auth_bp, limiter as auth_limiter
 from server.routes.films import films_bp
 from server.routes.user import user_bp
 
@@ -75,8 +76,24 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     else:
         app = Flask(__name__)
 
+    # H2: Refuse to start in production with the default insecure secret.
+    if settings.session_secret == _DEV_SECRET:
+        import warnings
+        warnings.warn(
+            "SESSION_SECRET is not set — using the insecure development default. "
+            "Set SESSION_SECRET to a random secret before deploying.",
+            stacklevel=2,
+        )
+
     app.secret_key = settings.session_secret
     app.config["DB_PATH"] = settings.db_path
+
+    # M4 + M5: Secure session cookie settings.
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=8)
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # Only send the cookie over HTTPS in production (not on localhost dev).
+    app.config["SESSION_COOKIE_SECURE"] = not (settings.session_secret == _DEV_SECRET)
 
     # --- Database + repos ---
     db = Database(settings.db_path)
@@ -152,6 +169,12 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         rid = getattr(g, "request_id", "-")
         logger.exception("unhandled.error rid=%s", rid)
         return jsonify({"ok": False, "error": "Internal Server Error", "request_id": rid}), 500
+
+    # M3: Initialise rate limiter (configured per-route in auth.py).
+    # Uses in-memory storage by default; set RATELIMIT_STORAGE_URI=redis://...
+    # in production if running multiple instances.
+    app.config.setdefault("RATELIMIT_STORAGE_URI", "memory://")
+    auth_limiter.init_app(app)
 
     # --- Register API blueprints ---
     # NOTE: Route modules already include full /api/... paths.
@@ -236,7 +259,7 @@ def _build_client(repo_root: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     env_host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")
     env_port = int(os.getenv("FLASK_RUN_PORT", "5000"))
-    env_debug = os.getenv("FLASK_DEBUG", "1")
+    env_debug = os.getenv("FLASK_DEBUG", "0")
 
     parser = argparse.ArgumentParser(description="Run the IA Ratings Flask server")
     parser.add_argument("--host", default=env_host, help="Bind host (default: %(default)s)")

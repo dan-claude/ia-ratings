@@ -1,4 +1,6 @@
 import json
+import re
+import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
@@ -73,14 +75,19 @@ def db_schema():
     finally:
         conn.close()
 
+_ORDER_BY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\s+(ASC|DESC))?$", re.IGNORECASE)
+
+
 @admin_bp.get("/api/admin/db/<table>")
 def db_table(table: str):
     """
     Dump rows from any table.  Query params:
-      where     — SQL WHERE clause  (e.g. "is_admin=1")
-      order_by  — SQL ORDER BY clause (e.g. "id DESC")
+      order_by  — column name with optional ASC/DESC (e.g. "id DESC")
       limit     — integer row limit
       offset    — integer row offset
+
+    Note: freeform WHERE is intentionally not supported to prevent SQL injection.
+    Use the purpose-built endpoints (e.g. /api/admin/users) for filtered views.
     """
     ok, err = _require_admin_user()
     if err:
@@ -91,25 +98,29 @@ def db_table(table: str):
         if table not in allowed:
             return jsonify({"error": f"Unknown table: {table}"}), 404
 
-        where    = request.args.get("where")
-        order_by = request.args.get("order_by")
+        order_by = request.args.get("order_by", "").strip()
         limit    = request.args.get("limit", type=int)
         offset   = request.args.get("offset", type=int)
 
-        # For the films table, automatically include a per-film rating count.
+        # H1: Validate order_by to only allow a column name + optional ASC/DESC.
+        if order_by and not _ORDER_BY_RE.match(order_by):
+            return jsonify({"error": "order_by must be a column name with optional ASC/DESC"}), 400
+
+        # For the films table, include a per-film rating count.
+        # L5: For the users table, exclude the password_hash column.
         if table == "films":
             base = (
                 "SELECT *, "
                 "(SELECT COUNT(*) FROM ratings WHERE film_id = films.id) AS rating_count "
                 "FROM films"
             )
+        elif table == "users":
+            base = "SELECT id, email, ia_username, is_admin, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 
         sql = base
         params: list = []
-        if where:
-            sql += f" WHERE {where}"
         if order_by:
             sql += f" ORDER BY {order_by}"
         if limit is not None:
@@ -237,7 +248,7 @@ def db_restore():
         conn.execute("PRAGMA foreign_keys = OFF")
         restored = {}
         try:
-            with conn:  # single atomic transaction
+            with conn:  # single atomic transaction — rolls back on any exception
                 for table in _RESTORE_ORDER:
                     rows = tables_data.get(table)
                     if rows is None:
@@ -246,7 +257,18 @@ def db_restore():
                     if not rows:
                         restored[table] = 0
                         continue
-                    cols = list(rows[0].keys())
+                    # M2: Validate column names against the real schema before use.
+                    actual_cols = {
+                        r["name"]
+                        for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    }
+                    given_cols = set(rows[0].keys())
+                    unknown = given_cols - actual_cols
+                    if unknown:
+                        raise ValueError(
+                            f"Backup contains unknown columns for table '{table}': {sorted(unknown)}"
+                        )
+                    cols = [c for c in rows[0].keys() if c in actual_cols]
                     placeholders = ", ".join("?" * len(cols))
                     col_names = ", ".join(f'"{c}"' for c in cols)
                     for r in rows:
@@ -262,6 +284,8 @@ def db_restore():
                             (table, max(ids)),
                         )
                     restored[table] = len(rows)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
 
@@ -315,8 +339,11 @@ def create_criterion():
 
     try:
         current_app.repos["criteria"].insert(key, label, min_score, max_score, sort_order, active)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    except sqlite3.IntegrityError:
+        return jsonify({"error": f"A criterion with key '{key}' already exists"}), 409
+    except Exception:
+        current_app.logger.exception("Failed to create criterion")
+        return jsonify({"error": "Failed to create criterion"}), 500
     return jsonify({"ok": True}), 201
 
 
