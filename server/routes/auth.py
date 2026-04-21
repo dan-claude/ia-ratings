@@ -57,3 +57,4 @@ def login():
 def logout():
     session.clear()
     return jsonify({"ok": True})
+# test

@@ -1,5 +1,17 @@
 # IA Film Rater
 
+## Instructions for Claude
+
+Before finishing any task that touches any of the following, check whether `CLAUDE.md` needs updating and update it if so:
+- API routes (any file under `server/routes/`)
+- Configuration or environment variables (`server/config.py`)
+- Auth scheme or login flow (`server/services/auth_service.py`, `server/routes/auth.py`)
+- Deployment config (`Dockerfile`, `railway.toml`, `.github/workflows/`)
+- Database schema or migrations (`server/db.py`)
+- Admin tooling (`tools/`, `server/routes/admin.py`)
+
+
+
 React + Flask + SQLite app for rating public-domain films from the Internet Archive collection `2026-public-domain-day-film-contest`.
 
 ## Architecture
