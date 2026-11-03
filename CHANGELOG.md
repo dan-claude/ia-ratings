@@ -1,3 +1,25 @@
+## 1.2.0
+- Documentation refresh to match the code as of 2026-11-03 (no code changes):
+  - README.md rewritten: IA vs local auth, admin panel, config table, first-time admin setup, CLI tools, deployment, doc map; fixed the requirements path and the dev proxy port (5001).
+  - API_CLIENT_SERVER.md now covers every route: `/api/config`, IA login body, rate limits, `/api/films/<identifier>`, admin criteria, user admin, DB browser, backup/restore, error/500 shapes. `description` is documented as string or `null`, which is what the server returns.
+  - CLAUDE.md: corrected password hashing (werkzeug, not bcrypt); added the DB migration table, `LOG_LEVEL` / `FLASK_RUN_*` / `VITE_LOG_LEVEL`, the Vite proxy port, `tools/sync.py`, the test DB-sharing quirk, and a docs map.
+  - RECREATE_WITH_CLAUDE.txt: regenerated all embedded server source from the current files (18 of 23 sections had drifted) and updated the schema, endpoints, app.py behaviors, client admin panel, tools and deployment sections.
+  - RECREATE_WITH_CHATGPT.txt: marked as historical; version bumped to match.
+- Fix: tests now each get their own temp database. `Settings` read env vars once at import time, so every test after the first reused the first test's DB. `server/config.py` now uses `default_factory`; added `server/tests/test_isolation.py`.
+- (Superseded by the removal above) Fix: `tools/build_zip.py` crashed with `NameError` (missing `import os`) while writing the source ZIP.
+- Removed the ChatGPT-era release-ZIP workflow: `RECREATE_WITH_CHATGPT.txt`, `RECREATE_GUARDRAILS.md`, `tools/build_zip.py`, `tools/release_check.py`. Releases ship through git, GitHub Actions and Railway.
+- Removed `justfile` (duplicate of `Makefile`), the empty root `package-lock.json` and `.gitignore~`.
+- `.gitignore`: ignore only the root `package-lock.json` so `client/package-lock.json` can be committed (CI's npm cache needs it); also ignore `.pytest_cache/` and `.claude/settings.local.json`.
+- (Superseded by the removal above) Fix: release and source ZIPs no longer include `server/app.db` (user emails and password hashes), `client/dist/`, `.claude/settings.local.json`, `.DS_Store` or `*~` backup files.
+
+## Unreleased (between 1.1.44 and 1.2.0, from git history)
+- Archive.org login (`AUTH_SCHEME=ia`, default) with auto-created users and `users.ia_username` (migration v4); `--auth-scheme` CLI flag; `GET /api/config`.
+- Admin panel in the client (Actions, Criteria, Users, DB Browser, Backup tabs) and the matching admin API.
+- Database backup/restore as versioned JSON.
+- Security hardening: session cookie flags and 8h lifetime, login/register rate limiting, session rotation on login, `order_by` validation, `password_hash` hidden from the DB browser, restore column validation, safe link rendering in descriptions.
+- Description sync now uses aiohttp for concurrent fetches; added `tools/sync.py`.
+- Railway deployment: multi-stage Dockerfile, `railway.toml`, GitHub Actions CI with auto-deploy.
+
 ## 1.1.44
 - Updated API_CLIENT_SERVER.md to include all endpoints implemented in client and server (auth/register, criteria, films/next, admin sync, etc.)
 

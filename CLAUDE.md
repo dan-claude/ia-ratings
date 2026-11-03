@@ -10,6 +10,8 @@ Before finishing any task that touches any of the following, check whether `CLAU
 - Database schema or migrations (`server/db.py`)
 - Admin tooling (`tools/`, `server/routes/admin.py`)
 
+When an API route changes, also update `API_CLIENT_SERVER.md` (the binding API contract) and add a `CHANGELOG.md` entry.
+
 
 
 React + Flask + SQLite app for rating public-domain films from the Internet Archive collection `2026-public-domain-day-film-contest`.
@@ -40,19 +42,26 @@ Controlled by the `AUTH_SCHEME` env var (or `--auth-scheme` CLI flag). Default: 
 
 | Scheme | Login flow | Register |
 |--------|-----------|----------|
-| `ia` | Username + password proxied to `archive.org/services/xauthn/`; account auto-created on first login with synthesised email `{username}@users.archive.org` | Not supported |
-| `local` | Email + bcrypt password stored locally | Supported via `/api/auth/register` |
+| `ia` | Username + password proxied to `archive.org/services/xauthn/`; account auto-created on first login with synthesised email `{username}@users.archive.org`, `ia_username` set, and `password_hash='IA_AUTH'` | Not supported (400) |
+| `local` | Email + password stored locally (werkzeug `generate_password_hash`) | Supported via `/api/auth/register` |
+
+Login body is `{username, password}` in `ia` mode and `{email, password}` in `local` mode. `/api/auth/login` and `/api/auth/register` are rate-limited (10/min, 50/hour per IP). Sessions: 8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` unless the dev default secret is in use.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PATH` | `server/app.db` | Path to SQLite database file |
-| `SESSION_SECRET` | *(insecure dev default)* | Flask session signing key — **must be set in production** |
+| `SESSION_SECRET` | *(insecure dev default)* | Flask session signing key — **must be set in production**. With the default the server only warns, and cookies are not `Secure` |
 | `AUTH_SCHEME` | `ia` | Auth scheme: `ia` or `local` |
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port (used by Railway via Dockerfile CMD) |
+| `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
+| `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app` |
+| `VITE_LOG_LEVEL` | `info` | Client console log level (`client/src/logger.ts`) |
+
+`Settings` in `server/config.py` reads env vars via `default_factory`, i.e. each time `load_settings()` / `Settings()` is called. Don't go back to plain `= os.environ.get(...)` defaults: those are frozen at import time and break per-test DBs.
 
 ## Running locally
 
@@ -71,6 +80,8 @@ npm install
 npm run dev
 ```
 
+`client/vite.config.js` proxies `/api` to `http://127.0.0.1:5001`. Flask defaults to 5000 but falls back to the next free port (on macOS, 5000 is usually taken by AirPlay, so it lands on 5001). `.claude/launch.json` also starts Flask on 5001.
+
 ### Client (production build, served by Flask)
 ```bash
 python -m server.app --with-client
@@ -84,6 +95,8 @@ make test         # or: PYTHONPATH=. pytest -q
 ```
 
 Tests run with `AUTH_SCHEME=local` (set in `conftest.py`).
+
+Each test gets its own temp DB (`tmp_path/test.db`); `server/tests/test_isolation.py` guards this.
 
 ## Deployment
 
@@ -127,7 +140,22 @@ Push to `main` triggers CI → auto-deploy via Railway. To force a redeploy with
 railway up --detach   # from repo root, with RAILWAY_TOKEN or railway login
 ```
 
+## Database
+
+Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `schema_migrations`. Migrations recorded in `schema_migrations`:
+
+| Version | Change |
+|---------|--------|
+| 1 | `users.is_admin` |
+| 2 | `ratings.updated_at` |
+| 3 | `films.description` |
+| 4 | `users.ia_username` + partial unique index `idx_users_ia_username` |
+
+Seed criteria (`INSERT OR IGNORE`): `originality`, `use_of_archive_materials`. When adding a migration, add a row here and, if it creates a new table, add that table to `_RESTORE_ORDER` in `routes/admin.py` so backups restore it.
+
 ## Key API endpoints
+
+Full request/response shapes are in `API_CLIENT_SERVER.md`.
 
 ### Public
 | Method | Path | Description |
@@ -139,7 +167,8 @@ railway up --detach   # from repo root, with RAILWAY_TOKEN or railway login
 | POST | `/api/auth/logout` | Logout |
 | GET | `/api/me` | Current user info |
 | GET | `/api/criteria` | Rating criteria list |
-| GET | `/api/films/next` | Next unrated film for current user |
+| GET | `/api/films/next` | Random unrated film for current user |
+| GET | `/api/films/<id>` | One film by IA identifier |
 | POST | `/api/films/<id>/ratings` | Submit scores (`{"scores": {"key": int}}`) |
 
 ### Admin only (`is_admin=1` required)
@@ -166,6 +195,24 @@ railway up --detach   # from repo root, with RAILWAY_TOKEN or railway login
 python tools/print_db.py --table users
 python tools/print_db.py --table films --limit 10 --order-by "id DESC"
 python tools/print_db.py --make-admin user@example.com   # local DB only
+python tools/print_db.py --make-admin name@users.archive.org   # IA-auth user
 ```
 
+`tools/sync.py` — sync the IA collection into a DB from the command line (async description fetches via `aiohttp`, threaded fallback):
+
+```bash
+python tools/sync.py                    # only fetch descriptions that are missing
+python tools/sync.py --workers 20 --force --db server/app.db
+```
+
+
 > Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin API endpoints or the admin UI to inspect/modify the production database.
+
+## Documentation files
+
+| File | Purpose |
+|------|---------|
+| `README.md` | Human-facing overview, local setup, config |
+| `API_CLIENT_SERVER.md` | Binding API contract — update with any route change |
+| `CHANGELOG.md` | Version history |
+| `RECREATE_WITH_CLAUDE.txt` | Rebuild spec that embeds server source verbatim — regenerate the `FILE:` sections when server files change |

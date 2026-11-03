@@ -1,9 +1,12 @@
 __pycache__/
+.pytest_cache/
 .venv/
-package-lock.json
 node_modules/
 .DS_Store
 .*~
 app.db
 client/dist/
-
+# Only the stray root lockfile; client/package-lock.json IS committed (CI caches on it)
+/package-lock.json
+# Machine-specific Claude Code settings
+.claude/settings.local.json

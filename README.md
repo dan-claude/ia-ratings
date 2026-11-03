@@ -1,90 +1,142 @@
 # IA Film Rater
 
-A React + Flask + SQLite web application for rating films from the Internet Archive
-collection **2026-public-domain-day-film-contest**.
+A React + Flask + SQLite web app for judging films from the Internet Archive
+collection **`2026-public-domain-day-film-contest`**.
 
-## Overview
+Judges log in, are shown one unrated film at a time (embedded archive.org player
+plus the film's description), score it against a set of criteria, and move on to
+the next film. Admins sync the collection from archive.org, manage criteria and
+users, browse the database, export ratings as CSV, and back up / restore the
+whole database — all from an admin panel inside the app.
 
-- Users log in and rate **one film at a time**
-- Films are scored across multiple criteria using a table/grid UI
-- Admin users can sync the Internet Archive collection and export ratings as CSV
-- Authentication is **session-based** (cookies), not token-based
+Production runs on Railway: <https://web-production-4edf1.up.railway.app>
 
+## Features
 
-## Tech Stack
+- **One film at a time.** `GET /api/films/next` returns a random film the
+  current user hasn't rated yet. Scores are entered in a criteria grid with
+  per-criterion validation and quick-pick buttons.
+- **Two login modes** (`AUTH_SCHEME`):
+  - `ia` *(default)* — log in with an archive.org username and password. The
+    server checks them against archive.org and creates a local account on first
+    login. No registration step.
+  - `local` — email + password accounts stored locally (werkzeug password
+    hashing), with self-registration.
+- **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
+  - *Actions* — sync the IA collection; download `ratings.csv`
+  - *Criteria* — add, edit, reorder and deactivate rating criteria
+  - *Users* — promote / revoke admins
+  - *DB Browser* — table row counts and paged table dumps
+  - *Backup* — download the full DB as JSON; restore from a backup file
+- Cookie sessions (8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` when a
+  real `SESSION_SECRET` is set) and rate-limited login/register endpoints.
 
-- Client: React + Vite
-- Server: Flask (Blueprints)
-- Database: SQLite
-- Auth: Cookie-based sessions
+## Tech stack
 
-## Authentication
+| Part | Stack |
+|------|-------|
+| Client | React 18 + Vite, single file `client/src/App.jsx`, no UI library |
+| Server | Flask 3 app factory; routes → services → repositories |
+| Database | SQLite (WAL mode), schema + migrations applied at startup in `server/db.py` |
+| Auth | Flask cookie sessions; archive.org `xauthn` or local accounts |
+| Hosting | Railway (Dockerfile build), GitHub Actions CI + auto-deploy |
 
-### Login / Logout
+## Running locally
 
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `POST /api/auth/register`
-- `GET /api/me`
-
-Sessions are stored via cookies. Client requests must include:
-```js
-fetch(url, { credentials: "include" })
-```
-
-### Admin Users
-
-Admins are users with `users.is_admin = true` in the database.
-
-There is no environment variable, token, or header for admin access.
-
-## Rating Flow
-
-1. Client requests next unrated film:
-   - `GET /api/films/next`
-2. Client loads criteria:
-   - `GET /api/criteria`
-3. User enters scores in a criteria grid
-4. Client submits:
-   - `POST /api/films/<identifier>/ratings`
-   - Payload:
-     ```json
-     {
-       "scores": { "criterion_key": 1 }
-     }
-     ```
-5. On success, next film is automatically loaded
-
-## Admin Endpoints
-
-- `POST /api/admin/sync`
-  - Syncs films from the Internet Archive collection
-- `GET /api/admin/ratings.csv`
-  - Exports all ratings
-
-## Running Locally
+Requires Python 3.12 (CI and Docker use 3.12) and Node 20.
 
 ### Server
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python -m server.app
+pip install -r server/requirements.txt
+make dev                                   # = PYTHONPATH=. python -m server.app
+# or, with local email/password accounts instead of archive.org login:
+PYTHONPATH=. python -m server.app --auth-scheme local
 ```
 
-### Client
+Useful flags: `--host`, `--port`, `--debug` / `--no-debug`, `--auth-scheme ia|local`,
+`--with-client` (runs `npm install && npm run build` in `client/` first, so Flask
+serves the built UI at `/`).
+
+If the requested port is busy the server picks the next free one and says so.
+On macOS port 5000 is usually taken by AirPlay, so the server normally ends up
+on **5001** — which is what the Vite dev proxy expects.
+
+### Client (dev server with hot reload)
 
 ```bash
 cd client
 npm install
-npm run dev
+npm run dev        # http://localhost:5173, proxies /api → http://127.0.0.1:5001
 ```
 
-The client dev server proxies API requests to the Flask server.
+If your Flask server is on a different port, change the proxy target in
+`client/vite.config.js`.
 
-## Notes
+### First-time setup
 
-- The rater UI is intentionally **single-film, single-user**
-- There is no batch rating or multi-film comparison UI
-- Canonical project instructions live in `RECREATE_WITH_CHATGPT.txt`
+1. Start the server once so it creates the database (`server/app.db` by default).
+2. Log in once (creates your user row).
+3. Make yourself an admin:
+   ```bash
+   python tools/print_db.py --make-admin you@example.com
+   # IA-auth users are stored with the email <username>@users.archive.org
+   python tools/print_db.py --make-admin yourname@users.archive.org
+   ```
+4. Log out and back in, open the admin panel → *Actions* → **Sync Collection**.
+   (Or sync from the command line: `python tools/sync.py`.)
+
+## Configuration
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DB_PATH` | `server/app.db` | SQLite file location |
+| `SESSION_SECRET` | insecure dev value | Session signing key. **Set this in production.** While unset, the server warns at startup and session cookies are not marked `Secure`. |
+| `AUTH_SCHEME` | `ia` | `ia` or `local` (the `--auth-scheme` flag overrides it) |
+| `LOG_LEVEL` | `INFO` | Server log level |
+| `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` |
+| `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
+| `PORT` | `5000` | Port used by the Docker image's start command (Railway sets it) |
+| `VITE_LOG_LEVEL` | `info` | Client console logging: `debug`, `info`, `warn`, `error`, `silent` |
+
+The film collection slug is fixed in `server/config.py`.
+
+## Testing
+
+```bash
+pip install -r server/requirements-dev.txt
+make test          # = PYTHONPATH=. pytest -q
+```
+
+Tests run against a temporary SQLite file with `AUTH_SCHEME=local`.
+
+## Command-line tools
+
+| Tool | What it does |
+|------|--------------|
+| `tools/print_db.py` | Inspect the local DB (`--tables`, `--table`, `--where`, `--order-by`, `--limit`, `--json`, `--schema`) and `--make-admin` / `--revoke-admin EMAIL` |
+| `tools/sync.py` | Sync the IA collection into a DB from the command line (`--db`, `--workers`, `--collection`, `--force`) |
+
+These tools work on a local database file. For the production database use the
+admin panel or the admin API (see `API_CLIENT_SERVER.md`).
+
+## Deployment
+
+Pushing to `main` runs GitHub Actions (`.github/workflows/ci.yml`): Python tests
+and a client build, then `railway up` using the `RAILWAY_TOKEN` repo secret.
+The multi-stage `Dockerfile` builds the client with Node 20 and runs the server on
+Python 3.12; `railway.toml` sets the `/api/health` health check. The production DB
+lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`).
+See `CLAUDE.md` for the full deployment notes.
+
+## Documentation map
+
+| File | Contents |
+|------|----------|
+| `README.md` | This overview |
+| `API_CLIENT_SERVER.md` | Every API endpoint with request/response shapes |
+| `CLAUDE.md` | Working notes for Claude: architecture, env vars, deployment, admin API |
+| `CHANGELOG.md` | Version history |
+| `RECREATE_WITH_CLAUDE.txt` | Full from-scratch rebuild spec (embeds the server source) |

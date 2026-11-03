@@ -1,21 +1,6 @@
-=== CRITICAL BUILD RULE (READ FIRST) ===
-Any build that produces downloadable artifacts MUST output BOTH ZIPs:
-
-1) Canonical normalized release ZIP
-   - Deterministic / normalized build output
-   - Used for verification and rebuilding
-
-2) Updated source ZIP
-   - Full source tree (client/, server/, tools/, tests/, docs, etc.)
-   - Intended for inspection, editing, and iterative development
-
-A build is INVALID if either artifact is missing.
-Both SHA-256 hashes MUST be reported.
-========================================
-
 Project: IA Film Rater (React + Flask + SQLite) with Admin/Judge mode
 Collection: 2026-public-domain-day-film-contest
-Version: 1.1.44
+Version: 1.2.0
 
 === HOW TO USE THIS FILE ===
 This file is a complete, self-contained specification for recreating this
@@ -25,9 +10,6 @@ of every server file and behavioral spec for the client.
 When recreating, Claude should read this file fully before writing any code,
 then create each file with the exact content shown.
 
-NORMALIZED Build SHA256 rule (avoids self-referential hashing):
-- When computing the build hash, treat the line "Build SHA256: <value>" as
-  if it were exactly: "Build SHA256: TBD"
 
 ============================
 GOAL
@@ -39,6 +21,11 @@ Build a web application that:
    "2026-public-domain-day-film-contest"
 2) Allows authenticated users to rate films across multiple criteria
 3) Supports an admin/judge mode with CSV export
+4) Lets users log in with their archive.org account (AUTH_SCHEME=ia, default)
+   or with local email/password accounts (AUTH_SCHEME=local)
+5) Gives admins an in-app panel: sync, criteria management, user admin
+   promotion, DB browser, JSON backup/restore
+6) Deploys to Railway via a multi-stage Dockerfile and GitHub Actions
 
 ============================
 TECH STACK
@@ -46,7 +33,10 @@ TECH STACK
 - Client: React + Vite (single-file App.jsx, no external UI libraries)
 - Server: Flask with Blueprints
 - Database: SQLite (WAL mode, 5s busy_timeout)
-- Auth: Flask session-based (cookie), uses werkzeug password hashing
+- Auth: Flask session-based (cookie). AUTH_SCHEME=ia proxies login to
+  archive.org xauthn; AUTH_SCHEME=local uses werkzeug password hashing
+- Rate limiting: Flask-Limiter on /api/auth/login and /api/auth/register
+- IA sync: requests for search, aiohttp for concurrent description fetches
 - Python: 3.12
 - Relative imports: all server modules EXCEPT app.py use relative imports (e.g. from ..db import Database)
 - app.py uses ABSOLUTE imports (e.g. from server.config import load_settings) because it is the entry point
@@ -55,15 +45,16 @@ TECH STACK
 CANONICAL PROJECT STRUCTURE
 ============================
 ia_ratings/
+  .github/workflows/ci.yml       <- test + client build + Railway deploy
+  .gitignore
+  CLAUDE.md                      <- working notes for Claude
+  Dockerfile                     <- multi-stage: node:20-slim -> python:3.12-slim
+  railway.toml                   <- dockerfile builder, /api/health healthcheck
   CHANGELOG.md
   README.md
-  RECREATE_GUARDRAILS.md
-  RECREATE_WITH_CHATGPT.txt
   RECREATE_WITH_CLAUDE.txt       <- this file
   API_CLIENT_SERVER.md
   Makefile
-  justfile
-  package-lock.json
   client/
     index.html
     package.json
@@ -113,10 +104,10 @@ ia_ratings/
       test_auth.py
       test_criteria.py
       test_films_and_ratings.py
+      test_isolation.py
   tools/
-    build_zip.py
     print_db.py
-    release_check.py
+    sync.py
 
 ============================
 DATABASE SCHEMA (AUTHORITATIVE)
@@ -132,6 +123,7 @@ Table: users
   password_hash TEXT NOT NULL
   is_admin      INTEGER NOT NULL DEFAULT 0
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  ia_username   TEXT           <- added by migration v4; NULL for local users
 
 Table: films
   id            INTEGER PRIMARY KEY AUTOINCREMENT
@@ -173,11 +165,14 @@ Table: rating_scores
 Indexes:
   idx_ratings_user     ON ratings(user_id)
   idx_films_collection ON films(collection)
+  idx_users_ia_username ON users(ia_username) WHERE ia_username IS NOT NULL  (UNIQUE, v4)
 
 MIGRATIONS (run at startup in db.py):
   v1: ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0
   v2: ALTER TABLE ratings ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   v3: ALTER TABLE films ADD COLUMN description TEXT
+  v4: ALTER TABLE users ADD COLUMN ia_username TEXT
+      + CREATE UNIQUE INDEX idx_users_ia_username ... WHERE ia_username IS NOT NULL
 
 SEED DATA (INSERT OR IGNORE at startup):
   criteria: ('originality', 'Originality', 1)
@@ -187,9 +182,16 @@ SEED DATA (INSERT OR IGNORE at startup):
 CANONICAL API ENDPOINTS
 ============================
 
-Auth:
+(Full request/response detail: API_CLIENT_SERVER.md)
+
+Config: (public)
+  GET    /api/config         -> { auth_scheme: "ia" | "local" }
+
+Auth:  (login/register rate-limited: 10 per minute; 50 per hour, per IP)
   POST   /api/auth/register  { email, password } -> { ok: true } (auto-logs in, sets session)
-  POST   /api/auth/login     { email, password } -> { ok: true }
+                             400 in ia mode (registration not supported)
+  POST   /api/auth/login     ia mode:    { username, password } -> { ok: true }
+                             local mode: { email, password }    -> { ok: true }
   POST   /api/auth/logout    -> { ok: true }
 
 User:
@@ -214,6 +216,19 @@ Ratings: (requires auth)
 Admin: (requires is_admin=1 session)
   POST   /api/admin/sync     -> { ok: true, added: N, synced: N }
   GET    /api/admin/ratings.csv -> CSV download
+  GET    /api/admin/criteria -> all criteria incl. inactive (raw column names)
+  POST   /api/admin/criteria { key, label, min_score, max_score, sort_order, active } -> 201
+  PUT    /api/admin/criteria/<id> (partial; key immutable)
+  POST   /api/admin/users/<id>/make-admin   -> { ok, user_id, is_admin: true }
+  POST   /api/admin/users/<id>/revoke-admin -> { ok, user_id, is_admin: false }
+  GET    /api/admin/db/tables  -> { table: rowCount }
+  GET    /api/admin/db/schema  -> { table: createSql }
+  GET    /api/admin/db/<table>?order_by=&limit=&offset=
+         order_by must match ^col( ASC| DESC)?$; films adds rating_count;
+         users omits password_hash
+  GET    /api/admin/db/backup  -> JSON attachment
+         { app:"ia_ratings", format_version:1, schema_version, exported_at, tables }
+  POST   /api/admin/db/restore (body = backup JSON; destructive, one transaction)
 
 Health:
   GET    /api/health         -> { ok: true }
@@ -233,7 +248,7 @@ Auth error codes:
   register ValueError  -> 400
   register duplicate   -> 409 (KeyError)
   login ValueError     -> 400
-  login bad creds      -> 401 (PermissionError)
+  login bad creds      -> 401 (PermissionError; also "Could not reach archive.org")
   not logged in        -> 401
   not admin            -> 403
 
@@ -241,14 +256,30 @@ Auth error codes:
 FILE: server/config.py
 ============================
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+_DEV_SECRET = "dev-secret-change-me"
+_DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
+
+
+def _env(name: str, default: str):
+    """Field default that reads the env var each time Settings() is created.
+
+    (A plain `= os.environ.get(...)` default is evaluated once, at import time,
+    so later env changes such as per-test DB_PATH values would be ignored.)
+    """
+    return field(default_factory=lambda: os.environ.get(name, default))
+
 
 @dataclass(frozen=True)
 class Settings:
     collection: str = "2026-public-domain-day-film-contest"
-    db_path: str = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "app.db"))
-    session_secret: str = os.environ.get("SESSION_SECRET", "dev-secret-change-me")
-    admin_token: str | None = os.environ.get("ADMIN_TOKEN")
+    db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
+    session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
+    # "ia"    — delegate login to archive.org (default)
+    # "local" — local email/password accounts
+    auth_scheme: str = _env("AUTH_SCHEME", "ia")
+
 
 def load_settings() -> Settings:
     return Settings()
@@ -265,9 +296,19 @@ class Database:
         self._init_schema()
 
     def connect(self) -> sqlite3.Connection:
+        # NOTE: each call returns a fresh connection.
+        # SQLite itself is ACID-capable, but application-level atomicity requires
+        # grouping related writes in a single transaction on a single connection.
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
+        # Enforce referential integrity.
         conn.execute("PRAGMA foreign_keys = ON;")
+
+        # Concurrency + durability tuning suitable for a small web app.
+        # - WAL improves read/write concurrency.
+        # - synchronous=NORMAL is a common durability/performance trade-off.
+        #   If you need maximum durability, use FULL.
+        # - busy_timeout avoids immediate 'database is locked' errors under load.
         conn.execute("PRAGMA journal_mode = WAL;")
         conn.execute("PRAGMA synchronous = NORMAL;")
         conn.execute("PRAGMA busy_timeout = 5000;")
@@ -276,11 +317,13 @@ class Database:
     def _init_schema(self) -> None:
         conn = self.connect()
         try:
+            # Base schema (idempotent).
             conn.executescript("""
             CREATE TABLE IF NOT EXISTS schema_migrations (
               version INTEGER PRIMARY KEY,
               applied_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
             CREATE TABLE IF NOT EXISTS users (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               email TEXT NOT NULL UNIQUE,
@@ -288,6 +331,7 @@ class Database:
               is_admin INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
             CREATE TABLE IF NOT EXISTS films (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               ia_identifier TEXT NOT NULL UNIQUE,
@@ -298,6 +342,7 @@ class Database:
               metadata_json TEXT,
               updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
             CREATE TABLE IF NOT EXISTS criteria (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               key TEXT NOT NULL UNIQUE,
@@ -307,6 +352,7 @@ class Database:
               sort_order INTEGER NOT NULL,
               active INTEGER NOT NULL DEFAULT 1
             );
+
             CREATE TABLE IF NOT EXISTS ratings (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               user_id INTEGER NOT NULL,
@@ -317,6 +363,7 @@ class Database:
               FOREIGN KEY(user_id) REFERENCES users(id),
               FOREIGN KEY(film_id) REFERENCES films(id)
             );
+
             CREATE TABLE IF NOT EXISTS rating_scores (
               rating_id INTEGER NOT NULL,
               criteria_id INTEGER NOT NULL,
@@ -325,21 +372,40 @@ class Database:
               FOREIGN KEY(rating_id) REFERENCES ratings(id),
               FOREIGN KEY(criteria_id) REFERENCES criteria(id)
             );
+
             CREATE INDEX IF NOT EXISTS idx_ratings_user ON ratings(user_id);
             CREATE INDEX IF NOT EXISTS idx_films_collection ON films(collection);
             """)
+
+            # ---- MIGRATIONS ----
+            # v1: Add users.is_admin for older databases.
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
             if "is_admin" not in cols:
                 conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (1);")
+
+            
+
+            # v2: Add ratings.updated_at for older databases.
             rcols = {r["name"] for r in conn.execute("PRAGMA table_info(ratings)").fetchall()}
             if "updated_at" not in rcols:
                 conn.execute("ALTER TABLE ratings ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'));")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2);")
+            
+            # v3: Add films.description for older databases.
             fcols = {r["name"] for r in conn.execute("PRAGMA table_info(films)").fetchall()}
             if "description" not in fcols:
                 conn.execute("ALTER TABLE films ADD COLUMN description TEXT;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3);")
+
+            # v4: Add users.ia_username for Internet Archive SSO.
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "ia_username" not in ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN ia_username TEXT;")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ia_username ON users(ia_username) WHERE ia_username IS NOT NULL;")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);")
+
+# ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES
                 ('originality', 'Originality', 1),
@@ -348,6 +414,7 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+
 
     def fetchone(self, sql: str, params: Iterable[Any] = ()) -> Optional[sqlite3.Row]:
         conn = self.connect()
@@ -420,7 +487,9 @@ FILE: server/repositories/user_repo.py
 ============================
 import sqlite3
 from typing import Optional
+
 from ..db import Database
+
 
 class UserRepository:
     def __init__(self, db: Database):
@@ -450,6 +519,24 @@ class UserRepository:
             (user_id,),
         )
 
+    def get_by_ia_username(self, ia_username: str) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            "SELECT id, email, is_admin, created_at FROM users WHERE ia_username = ?",
+            (ia_username,),
+        )
+
+    def create_ia_user(self, ia_username: str) -> int:
+        conn = self.db.connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (email, password_hash, ia_username) VALUES (?, 'IA_AUTH', ?)",
+                (f"{ia_username}@users.archive.org", ia_username),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+        finally:
+            conn.close()
+
     def set_admin(self, user_id: int, is_admin: bool) -> None:
         conn = self.db.connect()
         try:
@@ -473,7 +560,7 @@ class FilmRepository:
     def _html_to_text(s: str) -> str:
         """Convert IA HTML description to plain text preserving line structure."""
         import re
-        # Block-level and list tags -> newline
+        # Block-level and list tags → newline
         s = re.sub(r'<br\s*/?>', '\n', s, flags=re.IGNORECASE)
         s = re.sub(r'</div>', '\n', s, flags=re.IGNORECASE)
         s = re.sub(r'<div[^>]*>', '', s, flags=re.IGNORECASE)
@@ -513,14 +600,15 @@ class FilmRepository:
         return s.strip()
 
     def _normalize_description(self, v):
-        # IA may return description as str, list, or HTML string.
+        # IA may return description as str or list; store a single text blob.
         if v is None:
             return None
         if isinstance(v, list):
             parts = [str(x) for x in v if x is not None and str(x).strip()]
             if not parts:
                 return None
-            v = "\n\n".join(parts)
+            joined = "\n\n".join(parts)
+            v = joined
         s = str(v).strip()
         if not s:
             return None
@@ -588,6 +676,22 @@ class FilmRepository:
             (self.collection,),
         )
 
+    def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
+        """Return the subset of identifiers that have no description stored yet."""
+        if not identifiers:
+            return set()
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" * len(identifiers))
+            rows = conn.execute(
+                f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({placeholders})"
+                f" AND (description IS NULL OR description = '')",
+                identifiers,
+            ).fetchall()
+            return {r["ia_identifier"] for r in rows}
+        finally:
+            conn.close()
+
 ============================
 FILE: server/repositories/criteria_repo.py
 ============================
@@ -647,6 +751,11 @@ class RatingRepository:
         self.db = db
 
     def upsert_rating(self, user_id: int, film_id: int) -> int:
+        """Create or update a rating row and return its id.
+
+        Note: This method commits within its own transaction. For application-
+        level atomicity when also writing scores, prefer upsert_rating_with_scores().
+        """
         conn = self.db.connect()
         try:
             self._upsert_rating_row(conn, user_id, film_id)
@@ -660,6 +769,12 @@ class RatingRepository:
             conn.close()
 
     def upsert_scores_bulk(self, rating_id: int, scores: list[tuple[int,int]]) -> None:
+        """Upsert a set of criterion scores for a rating.
+
+        Note: This method commits within its own transaction. For application-
+        level atomicity when also creating/updating the rating row, prefer
+        upsert_rating_with_scores().
+        """
         conn = self.db.connect()
         try:
             self._upsert_scores_bulk(conn, rating_id, scores)
@@ -667,10 +782,23 @@ class RatingRepository:
         finally:
             conn.close()
 
-    def upsert_rating_with_scores(self, user_id: int, film_id: int, scores: list[tuple[int,int]]) -> int:
-        """Atomically upsert a rating and all its scores in one transaction."""
+    def upsert_rating_with_scores(
+        self,
+        user_id: int,
+        film_id: int,
+        scores: list[tuple[int,int]],
+    ) -> int:
+        """Atomically upsert a rating and all of its scores in one transaction.
+
+        This is the primary method the service layer should use. It guarantees
+        that the rating row and its per-criterion scores are written together.
+
+        Returns:
+            rating_id: the id of the rating row.
+        """
         conn = self.db.connect()
         try:
+            # IMMEDIATE: acquire a write lock up front to reduce mid-transaction lock errors.
             conn.execute("BEGIN IMMEDIATE")
             self._upsert_rating_row(conn, user_id, film_id)
             row = conn.execute(
@@ -688,25 +816,27 @@ class RatingRepository:
             conn.close()
 
     def _upsert_rating_row(self, conn: sqlite3.Connection, user_id: int, film_id: int) -> None:
+        """Internal: upsert rating row using an existing connection."""
         conn.execute(
-            """
-            INSERT INTO ratings (user_id, film_id, updated_at)
-            VALUES (?, ?, datetime('now'))
-            ON CONFLICT(user_id, film_id) DO UPDATE SET updated_at=datetime('now')
-            """,
-            (user_id, film_id),
-        )
+                """
+                INSERT INTO ratings (user_id, film_id, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(user_id, film_id) DO UPDATE SET updated_at=datetime('now')
+                """,
+                (user_id, film_id),
+            )
 
     def _upsert_scores_bulk(self, conn: sqlite3.Connection, rating_id: int, scores: list[tuple[int,int]]) -> None:
+        """Internal: upsert score rows using an existing connection."""
         for criteria_id, score in scores:
             conn.execute(
-                """
-                INSERT INTO rating_scores (rating_id, criteria_id, score)
-                VALUES (?, ?, ?)
-                ON CONFLICT(rating_id, criteria_id) DO UPDATE SET score=excluded.score
-                """,
-                (rating_id, criteria_id, score),
-            )
+                    """
+                    INSERT INTO rating_scores (rating_id, criteria_id, score)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(rating_id, criteria_id) DO UPDATE SET score=excluded.score
+                    """,
+                    (rating_id, criteria_id, score),
+                )
 
     def list_active_criteria_for_export(self) -> list[sqlite3.Row]:
         conn = self.db.connect()
@@ -762,6 +892,7 @@ class RatingRepository:
 FILE: server/services/auth_service.py
 ============================
 import sqlite3
+import requests as _requests
 from werkzeug.security import generate_password_hash, check_password_hash
 from ..models.user import User
 from ..repositories.user_repo import UserRepository
@@ -789,26 +920,45 @@ class AuthService:
             raise PermissionError("Invalid credentials")
         return int(row["id"])
 
+    def login_via_ia(self, username: str, password: str) -> int:
+        username = username.strip()
+        if not username or not password:
+            raise ValueError("username and password required")
+        try:
+            resp = _requests.post(
+                "https://archive.org/services/xauthn/?op=login",
+                json={"email": username, "password": password},
+                timeout=10,
+            )
+            data = resp.json()
+        except _requests.exceptions.RequestException as exc:
+            raise PermissionError("Could not reach archive.org") from exc
+        except Exception:
+            data = {}
+        if not data.get("success"):
+            reason = (data.get("values") or {}).get("reason") or "Invalid archive.org credentials"
+            raise PermissionError(reason)
+        row = self.users.get_by_ia_username(username)
+        if row:
+            return int(row["id"])
+        return self.users.create_ia_user(username)
+
     def get_me(self, user_id: int) -> User:
         row = self.users.get_by_id(user_id)
         if not row:
             raise LookupError("User not found")
-        return User(
-            id=int(row["id"]),
-            email=str(row["email"]),
-            created_at=str(row["created_at"]),
-            is_admin=("is_admin" in row.keys() and bool(row["is_admin"]))
-        )
+        return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])))
 
 ============================
 FILE: server/services/ia_service.py
 ============================
+import asyncio
 import logging
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
+
 
 class InternetArchiveService:
     def __init__(self, collection: str):
@@ -828,12 +978,13 @@ class InternetArchiveService:
                 return
             page += 1
 
-    def sync_collection(self, films_repo, rows: int = 100, max_pages: Optional[int] = None) -> int:
-        """Fetch movie docs from IA and upsert into films table.
+    def sync_collection(self, films_repo, rows: int = 100, max_pages: Optional[int] = None, workers: int = 20, force: bool = False) -> int:
+        """Fetch movie docs from Internet Archive and upsert them into the films table.
 
-        Fetches HTML descriptions concurrently via the metadata API (20 workers).
-        Falls back to plain-text description from search API if metadata fetch fails.
-        Returns count inserted/updated.
+        Uses asyncio + aiohttp for non-blocking concurrent description fetches.
+        workers: max concurrent requests (semaphore limit).
+        force: if True, re-fetch descriptions even for films already in DB.
+        Returns number of films inserted/updated.
         """
         # Collect all docs first
         all_docs: list[dict] = []
@@ -845,41 +996,105 @@ class InternetArchiveService:
         if not all_docs:
             return 0
 
-        # Fetch HTML descriptions concurrently
+        # Decide which films need a metadata fetch BEFORE upserting, so that
+        # films with only a search-API description (plain, run-on) are still
+        # treated as needing enrichment on first sync.
         identifiers = [d.get("identifier") for d in all_docs if d.get("identifier")]
-        html_map: dict[str, str] = {}
+        if force:
+            need_desc = set(identifiers)
+            print(f"  Force mode: re-fetching descriptions for all {len(need_desc)} films...")
+        else:
+            need_desc = films_repo.get_identifiers_without_description(identifiers)
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        # Upsert with search-API data first so all films exist in DB
+        films_repo.upsert_many_from_ia(all_docs)
+
+        if not need_desc:
+            print(f"  All {len(identifiers)} films already have descriptions — skipping metadata fetch.")
+            return len(all_docs)
+
+        if not force:
+            print(f"  Fetching descriptions for {len(need_desc)} new films "
+                  f"({len(identifiers) - len(need_desc)} already cached)...")
+
+        # Fetch concurrently with asyncio
+        html_map = asyncio.run(self._fetch_all_descriptions(list(need_desc), workers))
+
+        # Upsert again with enriched descriptions
+        enriched = [
+            dict(d, description=html_map[d["identifier"]], description_is_html=True)
+            if d.get("identifier") in html_map else d
+            for d in all_docs
+        ]
+        films_repo.upsert_many_from_ia(enriched)
+        return len(all_docs)
+
+    async def _fetch_all_descriptions(self, identifiers: list[str], workers: int) -> dict[str, str]:
+        """Fetch HTML descriptions for all identifiers concurrently using aiohttp."""
+        try:
+            import aiohttp
+        except ImportError:
+            logger.warning("aiohttp not installed — falling back to threaded fetches. "
+                           "Run: pip install aiohttp")
+            return self._fetch_all_descriptions_threaded(identifiers, workers)
+
+        sem = asyncio.Semaphore(workers)
+        results: dict[str, str] = {}
+        done = 0
+        total = len(identifiers)
+
+        async def fetch_one(session: aiohttp.ClientSession, ident: str) -> None:
+            nonlocal done
+            url = f"https://archive.org/metadata/{ident}/metadata/description"
+            async with sem:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        resp.raise_for_status()
+                        data = await resp.json(content_type=None)
+                        result = data.get("result")
+                        if isinstance(result, str) and result.strip():
+                            results[ident] = result
+                except Exception as e:
+                    logger.warning("fetch_description_html failed for %s: %s", ident, e)
+                finally:
+                    done += 1
+                    if done % 10 == 0 or done == total:
+                        print(f"  Descriptions: {done}/{total}", flush=True)
+
+        connector = aiohttp.TCPConnector(limit=workers)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            await asyncio.gather(*(fetch_one(session, ident) for ident in identifiers))
+
+        return results
+
+    def _fetch_all_descriptions_threaded(self, identifiers: list[str], workers: int) -> dict[str, str]:
+        """Fallback threaded fetch if aiohttp is unavailable."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        html_map: dict[str, str] = {}
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_id = {
                 executor.submit(self.fetch_description_html, ident): ident
                 for ident in identifiers
             }
             for future in as_completed(future_to_id):
                 ident = future_to_id[future]
+                done += 1
                 try:
                     result = future.result()
                     if result:
                         html_map[ident] = result
+                    if done % 10 == 0 or done == len(identifiers):
+                        print(f"  Descriptions: {done}/{len(identifiers)}", flush=True)
                 except Exception as e:
-                    logger.warning("fetch_description_html failed for %s: %s", ident, e)
-
-        # Enrich docs with HTML descriptions and upsert
-        enriched = []
-        for d in all_docs:
-            ident = d.get("identifier")
-            if ident and ident in html_map:
-                d = dict(d)
-                d["description"] = html_map[ident]
-                d["description_is_html"] = True
-            enriched.append(d)
-
-        return films_repo.upsert_many_from_ia(enriched)
+                    logger.warning("fetch failed for %s: %s", ident, e)
+        return html_map
 
     def fetch_description_html(self, identifier: str) -> Optional[str]:
-        """Fetch the HTML description from the metadata API. Returns None on failure."""
+        """Fetch the HTML description from the metadata API (sync). Returns None on failure."""
         url = f"https://archive.org/metadata/{identifier}/metadata/description"
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, timeout=15)
             r.raise_for_status()
             data = r.json()
             result = data.get("result")
@@ -925,32 +1140,27 @@ class RatingService:
         row = self.films.get_next_unrated_for_user(user_id)
         if not row:
             return None
-        return {
-            "identifier": row["ia_identifier"],
-            "title": row["title"],
-            "description": (row["description"] if ("description" in row.keys()) else None)
-        }
+        return {"identifier": row["ia_identifier"], "title": row["title"], "description": (row["description"] if ("description" in row.keys()) else None)}
 
     def get_film_by_identifier(self, identifier: str) -> dict | None:
         row = self.films.get_by_identifier(identifier)
         if not row:
             return None
-        return {
-            "identifier": row["ia_identifier"],
-            "title": row["title"],
-            "description": (row["description"] if ("description" in row.keys()) else None)
-        }
+        return {"identifier": row["ia_identifier"], "title": row["title"], "description": (row["description"] if ("description" in row.keys()) else None)}
 
     def submit_rating(self, user_id: int, identifier: str, scores: Dict[str, int]) -> None:
         if not isinstance(scores, dict):
             raise ValueError("scores object required")
+
         film_row = self.films.get_by_identifier(identifier)
         if not film_row:
             raise LookupError("Film not found (sync first)")
+
         crit = self.criteria.list_active()
         for c in crit:
             if c["key"] not in scores:
                 raise ValueError(f"Missing score for: {c['key']}")
+
         validated: list[tuple[int, int]] = []
         for c in crit:
             try:
@@ -960,22 +1170,22 @@ class RatingService:
             if n < c["min_score"] or n > c["max_score"]:
                 raise ValueError(f"Score for {c['key']} must be {c['min_score']}-{c['max_score']}")
             validated.append((int(c["id"]), n))
+
+        # IMPORTANT: submit the rating and its scores in a single transaction.
+        # This prevents partially-written ratings if the process crashes between steps.
         self.ratings.upsert_rating_with_scores(user_id, int(film_row["id"]), validated)
 
 ============================
 FILE: server/services/summary_service.py
 ============================
 import csv
-import re
-import sqlite3
 from io import StringIO
 from ..repositories.criteria_repo import CriteriaRepository
 from ..repositories.film_repo import FilmRepository
 from ..repositories.rating_repo import RatingRepository
 
 class SummaryService:
-    def __init__(self, criteria: CriteriaRepository, films: FilmRepository,
-                 ratings: RatingRepository, collection: str):
+    def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection: str):
         self.criteria = criteria
         self.films = films
         self.ratings = ratings
@@ -984,8 +1194,8 @@ class SummaryService:
     def admin_list_criteria(self) -> list[dict]:
         return [dict(r) for r in self.criteria.list_all()]
 
-    def admin_add_criterion(self, key: str, label: str, min_score: int,
-                            max_score: int, sort_order: int, active: int) -> None:
+    def admin_add_criterion(self, key: str, label: str, min_score: int, max_score: int, sort_order: int, active: int) -> None:
+        import sqlite3, re
         if not key or not label:
             raise ValueError("key and label required")
         if not re.match(r"^[a-z0-9_]+$", key):
@@ -997,23 +1207,26 @@ class SummaryService:
         except sqlite3.IntegrityError as e:
             raise KeyError("criterion key already exists") from e
 
-    def admin_patch_criterion(self, cid: int, label, min_score, max_score,
-                              sort_order, active) -> None:
+    def admin_patch_criterion(self, cid: int, label, min_score, max_score, sort_order, active) -> None:
         row = self.criteria.get_by_id(cid)
         if not row:
             raise LookupError("not found")
+
         new_label = label if label is not None else row["label"]
         new_min = int(min_score) if min_score is not None else int(row["min_score"])
         new_max = int(max_score) if max_score is not None else int(row["max_score"])
         new_so = int(sort_order) if sort_order is not None else int(row["sort_order"])
         new_active = int(active) if active is not None else int(row["active"])
+
         if new_min >= new_max:
             raise ValueError("invalid min/max")
+
         self.criteria.update(cid, new_label, new_min, new_max, new_so, new_active)
 
     def admin_summary(self) -> dict:
         crit = self.criteria.list_active()
         films = self.films.list_all_in_collection()
+
         out_films = []
         for f in films:
             film_id = int(f["id"])
@@ -1028,6 +1241,7 @@ class SummaryService:
                 "ratingsCount": rated_n,
                 "averages": averages,
             })
+
         return {
             "criteria": [{"key": c["key"], "label": c["label"], "sortOrder": c["sort_order"]} for c in crit],
             "films": out_films,
@@ -1036,38 +1250,54 @@ class SummaryService:
     def admin_ratings_csv(self) -> str:
         crit = self.ratings.list_active_criteria_for_export()
         ratings = self.ratings.list_ratings_for_export(self.collection)
+
         output = StringIO()
         writer = csv.writer(output)
         writer.writerow(["created_at", "user_email", "identifier", "title", *[c["key"] for c in crit]])
+
         for r in ratings:
             scores = []
             for c in crit:
                 s = self.ratings.get_score(int(r["rating_id"]), int(c["id"]))
                 scores.append("" if s is None else s)
             writer.writerow([r["created_at"], r["user_email"], r["identifier"], r["title"], *scores])
+
         return output.getvalue()
 
 ============================
 FILE: server/logging_config.py
 ============================
+"""Logging configuration for the Flask server.
+
+- Logs to stdout (good for local dev + containers)
+- Timestamps, level, logger name
+- Controlled via LOG_LEVEL (default INFO)
+"""
+
 from __future__ import annotations
+
 import logging
 import os
 import sys
 
+
 def configure_logging() -> None:
+    """Configure Python logging for the server process."""
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
+
     root = logging.getLogger()
     if root.handlers:
         root.setLevel(level)
         return
+
     handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter(
         fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z",
     )
     handler.setFormatter(formatter)
+
     root.setLevel(level)
     root.addHandler(handler)
     logging.getLogger("werkzeug").setLevel(level)
@@ -1076,15 +1306,31 @@ def configure_logging() -> None:
 FILE: server/routes/auth.py
 ============================
 from flask import Blueprint, request, jsonify, session, current_app
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 auth_bp = Blueprint("auth", __name__)
 
+# M3: Rate limiter — init_app() is called in create_app() so it binds to the app.
+limiter = Limiter(key_func=get_remote_address)
+
+
+def _auth_scheme() -> str:
+    return current_app.settings.auth_scheme
+
+
 @auth_bp.post("/api/auth/register")
+@limiter.limit("10 per minute; 50 per hour")
 def register():
+    if _auth_scheme() == "ia":
+        return jsonify({"error": "Registration is not supported in IA auth mode. Log in with your archive.org account."}), 400
     svc = current_app.services["auth"]
     data = request.get_json(silent=True) or {}
     try:
         uid = svc.register(data.get("email") or "", data.get("password") or "")
+        # L4: Rotate session after successful auth to prevent session fixation.
+        session.clear()
+        session.permanent = True
         session["user_id"] = uid
         return jsonify({"ok": True})
     except ValueError as e:
@@ -1092,12 +1338,20 @@ def register():
     except KeyError as e:
         return jsonify({"error": str(e)}), 409
 
+
 @auth_bp.post("/api/auth/login")
+@limiter.limit("10 per minute; 50 per hour")
 def login():
     svc = current_app.services["auth"]
     data = request.get_json(silent=True) or {}
     try:
-        uid = svc.login(data.get("email") or "", data.get("password") or "")
+        if _auth_scheme() == "ia":
+            uid = svc.login_via_ia(data.get("username") or "", data.get("password") or "")
+        else:
+            uid = svc.login(data.get("email") or "", data.get("password") or "")
+        # L4: Rotate session after successful auth to prevent session fixation.
+        session.clear()
+        session.permanent = True
         session["user_id"] = uid
         return jsonify({"ok": True})
     except ValueError as e:
@@ -1105,16 +1359,16 @@ def login():
     except PermissionError as e:
         return jsonify({"error": str(e)}), 401
 
+
 @auth_bp.post("/api/auth/logout")
 def logout():
     session.clear()
     return jsonify({"ok": True})
+# test
 
 ============================
 FILE: server/routes/user.py
 ============================
-IMPORTANT: /api/criteria is defined here (not in films.py)
-
 from flask import Blueprint, jsonify, session, current_app
 
 user_bp = Blueprint("user", __name__)
@@ -1125,6 +1379,11 @@ def _require_auth():
         return None, (jsonify({"error": "Not logged in"}), 401)
     return int(uid), None
 
+@user_bp.get("/api/config")
+def config():
+    return jsonify({"auth_scheme": current_app.settings.auth_scheme})
+
+
 @user_bp.get("/api/me")
 def me():
     uid, err = _require_auth()
@@ -1132,13 +1391,8 @@ def me():
         return err
     svc = current_app.services["auth"]
     try:
-        me_obj = svc.get_me(uid)
-        return jsonify({
-            "id": me_obj.id,
-            "email": me_obj.email,
-            "created_at": me_obj.created_at,
-            "is_admin": me_obj.is_admin
-        })
+        me = svc.get_me(uid)
+        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin})
     except LookupError:
         return jsonify({"error": "Not logged in"}), 401
 
@@ -1152,8 +1406,8 @@ def criteria():
     return jsonify([{
         "key": r["key"],
         "label": r["label"],
-        "min": r["min_score"],        # "min" not "min_score"
-        "max": r["max_score"],        # "max" not "max_score"
+        "min": r["min_score"],
+        "max": r["max_score"],
         "sortOrder": r["sort_order"],
         "active": r["active"],
     } for r in rows])
@@ -1193,14 +1447,14 @@ def film(identifier: str):
     if err:
         return err
     rs = current_app.services["rating"]
-    film_obj = rs.get_film_by_identifier(identifier)
-    if not film_obj:
+    film = rs.get_film_by_identifier(identifier)
+    if not film:
         return jsonify({"error": "Film not found"}), 404
     return jsonify({
-        "identifier": film_obj["identifier"],
-        "title": film_obj["title"],
-        "description": film_obj.get("description"),
-        "embedUrl": f"https://archive.org/embed/{film_obj['identifier']}",
+        "identifier": film["identifier"],
+        "title": film["title"],
+        "description": film.get("description"),
+        "embedUrl": f"https://archive.org/embed/{film['identifier']}",
     })
 
 @films_bp.post("/api/films/<identifier>/ratings")
@@ -1222,9 +1476,17 @@ def rate(identifier: str):
 ============================
 FILE: server/routes/admin.py
 ============================
-from flask import Blueprint, jsonify, current_app, Response, session
+import json
+import re
+import sqlite3
+from datetime import datetime, timezone
+from flask import Blueprint, jsonify, current_app, Response, session, request
 
 admin_bp = Blueprint("admin", __name__)
+
+# ---------------------------------------------------------------------------
+# Auth helper
+# ---------------------------------------------------------------------------
 
 def _require_admin_user():
     uid = session.get("user_id")
@@ -1237,6 +1499,362 @@ def _require_admin_user():
     if not ("is_admin" in row.keys() and bool(row["is_admin"])):
         return False, (jsonify({"error": "Forbidden"}), 403)
     return True, None
+
+# ---------------------------------------------------------------------------
+# DB inspection routes  (mirrors tools/print_db.py)
+# ---------------------------------------------------------------------------
+
+def _db_conn():
+    """Return a raw sqlite3 connection to the app database."""
+    import sqlite3
+    conn = sqlite3.connect(current_app.config["DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
+    return conn
+
+def _list_tables(conn):
+    return [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()]
+
+@admin_bp.get("/api/admin/db/tables")
+def db_tables():
+    """List all tables with row counts."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    conn = _db_conn()
+    try:
+        tables = _list_tables(conn)
+        result = {}
+        for t in tables:
+            row = conn.execute(f"SELECT COUNT(1) AS n FROM {t}").fetchone()
+            result[t] = int(row["n"]) if row else 0
+        return jsonify(result)
+    finally:
+        conn.close()
+
+@admin_bp.get("/api/admin/db/schema")
+def db_schema():
+    """Return CREATE TABLE statements for all user tables."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    conn = _db_conn()
+    try:
+        tables = _list_tables(conn)
+        schema = {}
+        for t in tables:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (t,)
+            ).fetchone()
+            schema[t] = row["sql"] if row else None
+        return jsonify(schema)
+    finally:
+        conn.close()
+
+_ORDER_BY_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\s+(ASC|DESC))?$", re.IGNORECASE)
+
+
+@admin_bp.get("/api/admin/db/<table>")
+def db_table(table: str):
+    """
+    Dump rows from any table.  Query params:
+      order_by  — column name with optional ASC/DESC (e.g. "id DESC")
+      limit     — integer row limit
+      offset    — integer row offset
+
+    Note: freeform WHERE is intentionally not supported to prevent SQL injection.
+    Use the purpose-built endpoints (e.g. /api/admin/users) for filtered views.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    conn = _db_conn()
+    try:
+        allowed = set(_list_tables(conn))
+        if table not in allowed:
+            return jsonify({"error": f"Unknown table: {table}"}), 404
+
+        order_by = request.args.get("order_by", "").strip()
+        limit    = request.args.get("limit", type=int)
+        offset   = request.args.get("offset", type=int)
+
+        # H1: Validate order_by to only allow a column name + optional ASC/DESC.
+        if order_by and not _ORDER_BY_RE.match(order_by):
+            return jsonify({"error": "order_by must be a column name with optional ASC/DESC"}), 400
+
+        # For the films table, include a per-film rating count.
+        # L5: For the users table, exclude the password_hash column.
+        if table == "films":
+            base = (
+                "SELECT *, "
+                "(SELECT COUNT(*) FROM ratings WHERE film_id = films.id) AS rating_count "
+                "FROM films"
+            )
+        elif table == "users":
+            base = "SELECT id, email, ia_username, is_admin, created_at FROM users"
+        else:
+            base = f"SELECT * FROM {table}"
+
+        sql = base
+        params: list = []
+        if order_by:
+            sql += f" ORDER BY {order_by}"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        if offset is not None:
+            sql += " OFFSET ?"
+            params.append(offset)
+
+        rows = conn.execute(sql, params).fetchall()
+        return jsonify([{k: r[k] for k in r.keys()} for r in rows])
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------------------------
+# User admin actions  (mirrors --make-admin / --revoke-admin in print_db.py)
+# ---------------------------------------------------------------------------
+
+@admin_bp.post("/api/admin/users/<int:user_id>/make-admin")
+def make_admin(user_id: int):
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    users = current_app.repos["users"]
+    row = users.get_by_id(user_id)
+    if not row:
+        return jsonify({"error": f"User not found: {user_id}"}), 404
+    users.set_admin(user_id, True)
+    return jsonify({"ok": True, "user_id": user_id, "is_admin": True})
+
+@admin_bp.post("/api/admin/users/<int:user_id>/revoke-admin")
+def revoke_admin(user_id: int):
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    users = current_app.repos["users"]
+    row = users.get_by_id(user_id)
+    if not row:
+        return jsonify({"error": f"User not found: {user_id}"}), 404
+    users.set_admin(user_id, False)
+    return jsonify({"ok": True, "user_id": user_id, "is_admin": False})
+
+# ---------------------------------------------------------------------------
+# Backup / restore
+# ---------------------------------------------------------------------------
+
+# Tables in dependency order for restore (parents before children).
+_RESTORE_ORDER = [
+    "schema_migrations",
+    "users",
+    "criteria",
+    "films",
+    "ratings",
+    "rating_scores",
+]
+
+BACKUP_FORMAT_VERSION = 1
+
+
+@admin_bp.get("/api/admin/db/backup")
+def db_backup():
+    """Export the entire database as a versioned JSON file."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    conn = _db_conn()
+    try:
+        # Resolve schema version from migrations table.
+        try:
+            row = conn.execute("SELECT MAX(version) AS v FROM schema_migrations").fetchone()
+            schema_version = int(row["v"]) if row and row["v"] is not None else 0
+        except Exception:
+            schema_version = 0
+
+        exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        tables = _list_tables(conn)
+        tables_data = {}
+        for t in tables:
+            rows = conn.execute(f"SELECT * FROM {t}").fetchall()
+            tables_data[t] = [{k: r[k] for k in r.keys()} for r in rows]
+
+        backup = {
+            "app": "ia_ratings",
+            "format_version": BACKUP_FORMAT_VERSION,
+            "schema_version": schema_version,
+            "exported_at": exported_at,
+            "tables": tables_data,
+        }
+
+        filename = f"ia_ratings_backup_{exported_at.replace(':', '-')}.json"
+        return Response(
+            json.dumps(backup, indent=2, ensure_ascii=False),
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    finally:
+        conn.close()
+
+
+@admin_bp.post("/api/admin/db/restore")
+def db_restore():
+    """
+    Restore the database from a backup JSON produced by /api/admin/db/backup.
+    DESTRUCTIVE: all existing rows in every restored table are replaced.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+
+    backup = request.get_json(silent=True)
+    if not backup:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    if backup.get("app") != "ia_ratings":
+        return jsonify({"error": "Invalid backup: unexpected app identifier"}), 400
+    if backup.get("format_version") != BACKUP_FORMAT_VERSION:
+        return jsonify({"error": f"Unsupported format_version: {backup.get('format_version')}"}), 400
+
+    tables_data = backup.get("tables")
+    if not isinstance(tables_data, dict):
+        return jsonify({"error": "Invalid backup: 'tables' must be an object"}), 400
+
+    conn = _db_conn()
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        restored = {}
+        try:
+            with conn:  # single atomic transaction — rolls back on any exception
+                for table in _RESTORE_ORDER:
+                    rows = tables_data.get(table)
+                    if rows is None:
+                        continue  # table not in backup — leave as-is
+                    conn.execute(f"DELETE FROM {table}")
+                    if not rows:
+                        restored[table] = 0
+                        continue
+                    # M2: Validate column names against the real schema before use.
+                    actual_cols = {
+                        r["name"]
+                        for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                    }
+                    given_cols = set(rows[0].keys())
+                    unknown = given_cols - actual_cols
+                    if unknown:
+                        raise ValueError(
+                            f"Backup contains unknown columns for table '{table}': {sorted(unknown)}"
+                        )
+                    cols = [c for c in rows[0].keys() if c in actual_cols]
+                    placeholders = ", ".join("?" * len(cols))
+                    col_names = ", ".join(f'"{c}"' for c in cols)
+                    for r in rows:
+                        conn.execute(
+                            f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})",
+                            [r.get(c) for c in cols],
+                        )
+                    # Keep SQLite AUTOINCREMENT sequences consistent.
+                    ids = [r["id"] for r in rows if r.get("id") is not None]
+                    if ids:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO sqlite_sequence (name, seq) VALUES (?, ?)",
+                            (table, max(ids)),
+                        )
+                    restored[table] = len(rows)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+
+        return jsonify({
+            "ok": True,
+            "exported_at": backup.get("exported_at"),
+            "schema_version": backup.get("schema_version"),
+            "restored": restored,
+        })
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Criteria management
+# ---------------------------------------------------------------------------
+
+@admin_bp.get("/api/admin/criteria")
+def list_criteria():
+    """List all criteria (including inactive)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    criteria = current_app.repos["criteria"]
+    rows = criteria.list_all()
+    return jsonify([dict(r) for r in rows])
+
+
+@admin_bp.post("/api/admin/criteria")
+def create_criterion():
+    """Create a new criterion."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    key       = (data.get("key") or "").strip()
+    label     = (data.get("label") or "").strip()
+    min_score = data.get("min_score", 1)
+    max_score = data.get("max_score", 5)
+    sort_order = data.get("sort_order", 0)
+    active    = int(bool(data.get("active", True)))
+
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    if not isinstance(min_score, int) or not isinstance(max_score, int):
+        return jsonify({"error": "min_score and max_score must be integers"}), 400
+    if min_score >= max_score:
+        return jsonify({"error": "min_score must be less than max_score"}), 400
+
+    try:
+        current_app.repos["criteria"].insert(key, label, min_score, max_score, sort_order, active)
+    except sqlite3.IntegrityError:
+        return jsonify({"error": f"A criterion with key '{key}' already exists"}), 409
+    except Exception:
+        current_app.logger.exception("Failed to create criterion")
+        return jsonify({"error": "Failed to create criterion"}), 500
+    return jsonify({"ok": True}), 201
+
+
+@admin_bp.put("/api/admin/criteria/<int:cid>")
+def update_criterion(cid: int):
+    """Update an existing criterion."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    criteria = current_app.repos["criteria"]
+    row = criteria.get_by_id(cid)
+    if not row:
+        return jsonify({"error": f"Criterion not found: {cid}"}), 404
+
+    data = request.get_json(silent=True) or {}
+    label      = (data.get("label") or row["label"]).strip()
+    min_score  = data.get("min_score",  row["min_score"])
+    max_score  = data.get("max_score",  row["max_score"])
+    sort_order = data.get("sort_order", row["sort_order"])
+    active     = int(bool(data.get("active", bool(row["active"]))))
+
+    if not label:
+        return jsonify({"error": "label is required"}), 400
+    if min_score >= max_score:
+        return jsonify({"error": "min_score must be less than max_score"}), 400
+
+    criteria.update(cid, label, min_score, max_score, sort_order, active)
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Film / ratings management
+# ---------------------------------------------------------------------------
 
 @admin_bp.post("/api/admin/sync")
 def sync():
@@ -1272,6 +1890,13 @@ Key behaviors (implement fully):
 - If client_dist.exists(): Flask(static_folder=str(client_dist), static_url_path="/")
   else: Flask(__name__)
 - Sets app.secret_key = settings.session_secret
+  If session_secret == _DEV_SECRET ("dev-secret-change-me"): warnings.warn(...)
+  (does NOT refuse to start)
+- Session cookie config: PERMANENT_SESSION_LIFETIME = 8h, HTTPONLY = True,
+  SAMESITE = "Lax", SECURE = (session_secret != _DEV_SECRET)
+- create_app(settings=None): accepts an optional Settings override
+- Rate limiter: app.config.setdefault("RATELIMIT_STORAGE_URI", "memory://");
+  auth_limiter.init_app(app)  (limiter object lives in routes/auth.py)
 - Creates Database, repos, services:
     app.settings = settings
     app.db = db
@@ -1292,9 +1917,11 @@ Key behaviors (implement fully):
 - after_request: log rid/status/dur_ms/method/path, set X-Request-Id header
 - errorhandler(Exception): pass through HTTPException, else log + 500 JSON
   response: { "ok": False, "error": "Internal Server Error", "request_id": rid }
-- main(): parses --host/--port/--debug/--no-debug/--with-client
+- main(): parses --host/--port/--debug/--no-debug/--with-client/--auth-scheme {ia,local}
   reads FLASK_RUN_HOST (default 0.0.0.0), FLASK_RUN_PORT (default 5000),
-  FLASK_DEBUG (default "1") from env
+  FLASK_DEBUG (default "0") from env
+  --auth-scheme overrides AUTH_SCHEME via dataclasses.replace(settings, auth_scheme=...);
+  prints "Auth scheme: <scheme>" and calls create_app(settings=settings)
   _pick_available_port: tries requested port, increments up to 100 times if busy
 - --with-client flag: runs _build_client(repo_root) before create_app()
   _build_client(repo_root): runs ["npm", "install"] then ["npm", "run", "build"]
@@ -1303,26 +1930,37 @@ Key behaviors (implement fully):
 ============================
 FILE: server/requirements.txt
 ============================
-flask>=3.0
-requests>=2.28
-werkzeug>=3.0
+Flask==3.0.3
+Flask-Limiter==3.8.0
+requests==2.32.3
+aiohttp>=3.9
 
 ============================
 FILE: server/requirements-dev.txt
 ============================
-pytest>=8.0
-pytest-flask
+pytest==8.3.2
 
 ============================
 CLIENT: package.json
 ============================
 {
-  "name": "ia-ratings-client",
-  "version": "0.0.1",
+  "name": "ia-film-rater-client",
   "private": true,
-  "scripts": { "dev": "vite", "build": "vite build", "preview": "vite preview" },
-  "dependencies": { "react": "^18.0.0", "react-dom": "^18.0.0" },
-  "devDependencies": { "@vitejs/plugin-react": "^4.0.0", "vite": "^5.0.0" }
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^7.3.1"
+  }
 }
 
 ============================
@@ -1330,9 +1968,14 @@ CLIENT: vite.config.js
 ============================
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { '/api': 'http://localhost:5000' } },
+  server: {
+    proxy: {
+	'/api': 'http://127.0.0.1:5001'
+    }
+  }
 })
 
 ============================
@@ -1342,10 +1985,12 @@ Imports: { useEffect, useMemo, useState } from 'react'
 
 Helper functions at module level:
   archiveDetailsUrl(identifier) -> "https://archive.org/details/<id>" or null
+  linkifyText(text) -> splits on https?:// URLs and renders only http/https URLs
+    (validated with new URL()) as <a target="_blank" rel="noreferrer">; all else plain text
   isIntString(s) -> /^-?\d+$/.test(String(s).trim())  (returns false for null/undefined)
 
 State:
-  me, email, password
+  me, authScheme (default 'ia'), email, password
   film, criteria (sorted by sortOrder ascending), scores (key->string)
   syncing (bool), syncResult (string)
   loading, error, submitError
@@ -1362,6 +2007,7 @@ loadNextFilm(): GET /api/films/next
   Note: 404 = all films rated, not a crash
 
 login(isRegister): POST register or login
+  body = authScheme === 'ia' ? { username: email, password } : { email, password }
   ok -> loadMe()
   fail -> setError(data?.error || 'Authentication failed')
 
@@ -1380,7 +2026,7 @@ adminSync():
   ok -> setSyncResult(`Sync complete — ${data.synced ?? '?'} films updated.`), loadNextFilm()
   fail -> setError(data?.error || 'Admin sync failed')
 
-useEffect on mount: loadMe()
+useEffect on mount: GET /api/config -> setAuthScheme(data.auth_scheme ?? 'ia'); loadMe()
 useEffect on [me]: if me -> setLoading(true), Promise.all([loadCriteria(), loadNextFilm()]).finally(setLoading(false))
 
 validation useMemo([criteria, scores, film]):
@@ -1396,24 +2042,46 @@ validation useMemo([criteria, scores, film]):
 
 Render (me===null): login form
   - h2 "IA Film Rater"
+  - intro text: ia -> "Log in with your archive.org account to start rating films."
+                local -> "Login or create an account to start rating films."
   - error div (color #a00)
-  - email input, password input (type="password")
-  - Login button, Register button side by side
+  - first input placeholder: ia -> "archive.org username", local -> "email"
+  - password input (type="password")
+  - Login button; Register button only when authScheme !== 'ia'
 
 Render (me set):
   - Inline <style> block with CSS (see below)
   - topbar div: h2 "IA Film Rater", email span + Logout button
-  - Admin panel (me.is_admin only):
-      "Sync Collection" button (disabled while syncing, label changes to "Syncing…")
-      While syncing: inline message "Fetching descriptions from Internet Archive — this may take a few minutes…" (color #666)
-      On success: inline message "Sync complete — N films updated." (color #060)
-      Note: NO CSV download link in current client (CSV only via direct URL)
+  - <AdminPanel syncing syncResult onSync={adminSync} apiJson /> (me.is_admin only)
+      Tabbed box, tabs: Actions | Criteria | Users | DB Browser | Backup
+      (data for Criteria/Users/DB loads lazily the first time a tab is opened)
+      Actions:
+        "Sync Collection" button (disabled while syncing, label "Syncing…")
+        While syncing: "Fetching from Internet Archive — may take a few minutes…" (#666)
+        On success: syncResult "Sync complete — N films updated." (#060)
+        Link: "⬇ Download ratings.csv" -> /api/admin/ratings.csv
+      Criteria:
+        Refresh + "Add criterion" buttons; table id|key|label|range|sort|active|Edit
+        Edit form: Key (new only), Label, Min score, Max score, Sort order, Active
+        Save -> POST /api/admin/criteria or PUT /api/admin/criteria/<id>
+      Users:
+        GET /api/admin/db/users?order_by=id; table id|email|ia_username|is_admin|created_at|actions
+        "Make admin" / "Revoke admin" -> POST /api/admin/users/<id>/make-admin|revoke-admin
+      DB Browser:
+        Table buttons with row counts (GET /api/admin/db/tables) + Refresh
+        ORDER BY + LIMIT (default 100) inputs, Load -> GET /api/admin/db/<table>
+      Backup:
+        "Download backup": fetch /api/admin/db/backup, save via blob + filename from
+          Content-Disposition
+        Restore: file input -> parse JSON, reject if app !== 'ia_ratings' ->
+          confirm box (exported_at, schema_version, per-table row counts, red warning)
+          -> POST /api/admin/db/restore; on success clear cached DB/users data
   - loading paragraph
   - error div
   - Film panel (if film):
       h3: film.title || film.identifier
       film-meta div: identifier display + "View on archive.org" link
-      film-desc div: film.description (only if truthy, white-space:pre-wrap)
+      film-desc div: linkifyText(film.description) (only if truthy, white-space:pre-wrap)
       iframe.player: src=film.embedUrl, allowFullScreen
       grid-table table (Criterion | Range | Score | Quick columns)
         Quick buttons shown when (c.max - c.min) >= 1 AND <= 6
@@ -1452,7 +2120,11 @@ ADMIN USER SETUP
 A user is an admin if users.is_admin = 1.
   python tools/print_db.py --make-admin you@example.com
   python tools/print_db.py --revoke-admin you@example.com
+  IA-auth users are stored as <ia_username>@users.archive.org.
 Default DB: server/app.db. Override: --db PATH or DB_PATH env var.
+Once one admin exists, further admins can be managed in the admin panel (Users tab)
+or via POST /api/admin/users/<id>/make-admin — required for production, where the
+DB lives on a Railway volume that local tools cannot reach.
 
 ============================
 BUILD / RUN INSTRUCTIONS
@@ -1460,11 +2132,11 @@ BUILD / RUN INSTRUCTIONS
 Server:
   python -m venv .venv && source .venv/bin/activate
   pip install -r server/requirements.txt
-  python -m server.app
+  PYTHONPATH=. python -m server.app [--auth-scheme local]   (or: make dev)
 
 Client (dev):
   cd client && npm install && npm run dev
-  # /api proxies to http://localhost:5000
+  # /api proxies to http://127.0.0.1:5001 (Flask falls back from 5000 when busy)
 
 Client (prod):
   cd client && npm run build
@@ -1478,18 +2150,23 @@ tools/print_db.py:
   --limit N, --offset N, --json, --schema
   --make-admin EMAIL, --revoke-admin EMAIL
 
-tools/build_zip.py:
-  Produces release_v<version>.zip + source zip
-  Excludes: .venv node_modules __pycache__ .pytest_cache .git .DS_Store
-  Options: --out-dir DIR (default: /mnt/data)
+tools/sync.py:
+  Command-line collection sync into a local DB.
+  --db PATH (default DB_PATH or server/app.db), --workers N (default 10),
+  --collection SLUG, --force (re-fetch all descriptions)
 
-tools/release_check.py:
-  Runs pytest then build_zip.py. Options: --out-dir DIR
+Deployment (not part of a from-scratch rebuild, documented for reference):
+  Dockerfile: stage 1 node:20-slim runs npm install + npm run build in client/;
+    stage 2 python:3.12-slim installs server/requirements.txt, copies server/ and
+    client/dist, CMD python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
+  railway.toml: builder=dockerfile, healthcheckPath=/api/health, restart on_failure
+  .github/workflows/ci.yml: test (pytest on 3.12) + build-client (Node 20) on push/PR;
+    deploy (railway up --detach, RAILWAY_TOKEN secret) on push to main
 
 ============================
 CHANGELOG
 ============================
-- 1.1.2-1.1.19: See RECREATE_WITH_CHATGPT.txt for full history
+- 1.1.2-1.1.19: see CHANGELOG.md
 - 1.1.44: Created RECREATE_WITH_CLAUDE.txt — verified against actual implementation
 - 1.1.44+: session changes —
     server/app.py: added --with-client flag (_build_client runs npm install + build)
@@ -1505,3 +2182,15 @@ CHANGELOG
       fixed missing loading state declaration (was accidentally deleted)
     RECREATE_GUARDRAILS.md: rewritten to add code editing rules (read before edit,
       verify after edit, one change per edit)
+- 1.2.0 (2026-11-03): documentation refresh —
+    Regenerated every exact FILE: section from the current source (config, db,
+    repositories, services, routes, requirements, client package.json/vite config).
+    Added IA auth (AUTH_SCHEME, /api/config, ia_username + migration v4),
+    Flask-Limiter, session cookie hardening, admin panel tabs and admin API
+    (criteria, users, DB browser, backup/restore), tools/sync.py, Railway/Docker/CI.
+    Fixes: config.py Settings fields use default_factory (env read per load_settings()
+    call, so each test gets its own DB; test_isolation.py added); build_zip.py
+    imports os and excludes the DB and other local files from both ZIPs.
+    Removed the ChatGPT-era release-ZIP workflow (RECREATE_WITH_CHATGPT.txt,
+    RECREATE_GUARDRAILS.md, tools/build_zip.py, tools/release_check.py) plus
+    justfile and the empty root package-lock.json. Releases ship via git + CI + Railway.
