@@ -132,7 +132,7 @@ Multi-stage build to avoid Python version conflicts:
 1. `node:20-slim` stage — builds the React client (`npm run build`)
 2. `python:3.12-slim` stage — installs Python deps, copies server code and built client `dist/`
 
-`tools/` is **not** copied into the image.
+`tools/` is copied into the image so `print_db.py` and `sync.py` can be run in production via `railway ssh` (they pick up `DB_PATH=/data/app.db` from the service variables).
 
 Production runs under **gunicorn** (pinned in `server/requirements.txt`), not Flask's dev server:
 
@@ -148,14 +148,15 @@ gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "serve
 
 Push to `main` → Railway rebuilds. To redeploy without a code change, use **Redeploy** on the latest deployment in the Railway dashboard.
 
-For one-off production DB fixes (e.g. creating the first admin), use the Railway CLI's SSH:
+For one-off production DB work (e.g. creating the first admin), use the Railway CLI's SSH and the bundled tools:
 
 ```bash
-npm install -g @railway/cli
-railway login && railway link      # pick the ia-ratings project/service
+brew install railway               # or: npm install -g @railway/cli
+railway login && railway link      # pick the ia-ratings project and the web service
 railway ssh
-# inside the container:
-python3 -c "import sqlite3; c=sqlite3.connect('/data/app.db'); n=c.execute(\"UPDATE users SET is_admin=1 WHERE email=?\", ('NAME@users.archive.org',)).rowcount; c.commit(); print(n, 'row updated')"
+# inside the container (cwd /app, DB_PATH already set):
+python tools/print_db.py --table users
+python tools/print_db.py --make-admin NAME@users.archive.org
 ```
 
 ## Database
@@ -224,7 +225,7 @@ python tools/sync.py --workers 20 --force --db server/app.db
 ```
 
 
-> Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin UI/API, or `railway ssh` (see Deployment) for the production database.
+> Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin UI/API, or `railway ssh` + `tools/print_db.py` (see Deployment) for the production database.
 
 ## Documentation files
 

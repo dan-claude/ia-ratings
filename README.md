@@ -119,8 +119,9 @@ Tests run against a temporary SQLite file with `AUTH_SCHEME=local`.
 | `tools/print_db.py` | Inspect the local DB (`--tables`, `--table`, `--where`, `--order-by`, `--limit`, `--json`, `--schema`) and `--make-admin` / `--revoke-admin EMAIL` |
 | `tools/sync.py` | Sync the IA collection into a DB from the command line (`--db`, `--workers`, `--collection`, `--force`) |
 
-These tools work on a local database file. For the production database use the
-admin panel or the admin API (see `API_CLIENT_SERVER.md`).
+Both tools are also in the production image: run them on Railway with `railway ssh`
+(they use the service's `DB_PATH`). Otherwise use the admin panel or the admin API
+(see `API_CLIENT_SERVER.md`).
 
 ## Deployment
 
@@ -130,7 +131,8 @@ build on pushes and pull requests.
 The multi-stage `Dockerfile` builds the client with Node 20 and runs the server on
 Python 3.12 under gunicorn (one worker, eight threads); `railway.toml` sets the `/api/health` health check. The production DB
 lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`). To make
-the first production admin, use `railway ssh` (steps in `CLAUDE.md`).
+the first production admin, `railway ssh` into the service and run
+`python tools/print_db.py --make-admin <email>` (details in `CLAUDE.md`).
 See `CLAUDE.md` for the full deployment notes.
 
 ## Documentation map

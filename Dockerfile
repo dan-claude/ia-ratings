@@ -14,6 +14,8 @@ COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
 COPY server/ server/
+# Admin CLIs (print_db.py, sync.py) for use via `railway ssh`; stdlib + server code only.
+COPY tools/ tools/
 COPY --from=client-builder /client/dist client/dist
 
 ENV PYTHONPATH=/app
