@@ -10,6 +10,7 @@
 - Removed the ChatGPT-era release-ZIP workflow: `RECREATE_WITH_CHATGPT.txt`, `RECREATE_GUARDRAILS.md`, `tools/build_zip.py`, `tools/release_check.py`. Releases ship through git, GitHub Actions and Railway.
 - Removed `justfile` (duplicate of `Makefile`), the empty root `package-lock.json` and `.gitignore~`.
 - `.gitignore`: ignore only the root `package-lock.json` so `client/package-lock.json` can be committed (CI's npm cache needs it); also ignore `.pytest_cache/` and `.claude/settings.local.json`.
+- Deployment: Railway now deploys through its GitHub integration (new project on the `dan-claude` account, repo `dan-claude/ia-ratings`). Removed the `deploy` job and `RAILWAY_TOKEN` from CI; docs updated, including `railway ssh` for creating the first production admin.
 - (Superseded by the removal above) Fix: release and source ZIPs no longer include `server/app.db` (user emails and password hashes), `client/dist/`, `.claude/settings.local.json`, `.DS_Store` or `*~` backup files.
 
 ## Unreleased (between 1.1.44 and 1.2.0, from git history)

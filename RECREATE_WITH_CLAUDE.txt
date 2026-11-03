@@ -45,7 +45,7 @@ TECH STACK
 CANONICAL PROJECT STRUCTURE
 ============================
 ia_ratings/
-  .github/workflows/ci.yml       <- test + client build + Railway deploy
+  .github/workflows/ci.yml       <- test + client build (Railway deploys via GitHub integration)
   .gitignore
   CLAUDE.md                      <- working notes for Claude
   Dockerfile                     <- multi-stage: node:20-slim -> python:3.12-slim
@@ -2160,8 +2160,9 @@ Deployment (not part of a from-scratch rebuild, documented for reference):
     stage 2 python:3.12-slim installs server/requirements.txt, copies server/ and
     client/dist, CMD python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
   railway.toml: builder=dockerfile, healthcheckPath=/api/health, restart on_failure
-  .github/workflows/ci.yml: test (pytest on 3.12) + build-client (Node 20) on push/PR;
-    deploy (railway up --detach, RAILWAY_TOKEN secret) on push to main
+  .github/workflows/ci.yml: test (pytest on 3.12) + build-client (Node 20) on push/PR
+  Railway deploys via its GitHub integration (service connected to the repo,
+  builds on push to main); volume at /data; vars SESSION_SECRET, DB_PATH, AUTH_SCHEME
 
 ============================
 CHANGELOG

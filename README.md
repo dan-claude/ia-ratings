@@ -9,7 +9,7 @@ the next film. Admins sync the collection from archive.org, manage criteria and
 users, browse the database, export ratings as CSV, and back up / restore the
 whole database — all from an admin panel inside the app.
 
-Production runs on Railway: <https://web-production-4edf1.up.railway.app>
+Production runs on Railway (new deployment being set up; URL to follow).
 
 ## Features
 
@@ -39,7 +39,7 @@ Production runs on Railway: <https://web-production-4edf1.up.railway.app>
 | Server | Flask 3 app factory; routes → services → repositories |
 | Database | SQLite (WAL mode), schema + migrations applied at startup in `server/db.py` |
 | Auth | Flask cookie sessions; archive.org `xauthn` or local accounts |
-| Hosting | Railway (Dockerfile build), GitHub Actions CI + auto-deploy |
+| Hosting | Railway (Dockerfile build, deploys from GitHub on push to `main`); GitHub Actions CI |
 
 ## Running locally
 
@@ -124,11 +124,13 @@ admin panel or the admin API (see `API_CLIENT_SERVER.md`).
 
 ## Deployment
 
-Pushing to `main` runs GitHub Actions (`.github/workflows/ci.yml`): Python tests
-and a client build, then `railway up` using the `RAILWAY_TOKEN` repo secret.
+Railway is connected to the GitHub repo and deploys every push to `main`.
+GitHub Actions (`.github/workflows/ci.yml`) runs the Python tests and a client
+build on pushes and pull requests.
 The multi-stage `Dockerfile` builds the client with Node 20 and runs the server on
 Python 3.12; `railway.toml` sets the `/api/health` health check. The production DB
-lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`).
+lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`). To make
+the first production admin, use `railway ssh` (steps in `CLAUDE.md`).
 See `CLAUDE.md` for the full deployment notes.
 
 ## Documentation map

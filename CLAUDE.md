@@ -102,28 +102,28 @@ Each test gets its own temp DB (`tmp_path/test.db`); `server/tests/test_isolatio
 
 ### Hosting: Railway
 
-- **Project:** `ia-ratings` on [railway.app](https://railway.app)
-- **Production URL:** `https://web-production-4edf1.up.railway.app`
+Deploys come from Railway's **GitHub integration**: the Railway service is connected to `dan-claude/ia-ratings` and builds every push to `main`. GitHub Actions does not deploy (there is no `RAILWAY_TOKEN`).
+
+- **Project:** `ia-ratings` on [railway.com](https://railway.com) (Railway account signed in with GitHub as `dan-claude`; set up fresh 2026-11)
+- **Production URL:** *(set when the new Railway domain is generated — update here and in README.md)*
 - **Builder:** Dockerfile (multi-stage — Node builds client, Python runs server)
-- **Volume:** `/data` mounted at Railway; `DB_PATH=/data/app.db` env var points the app at it
-- **Config file:** `railway.toml` — specifies Dockerfile builder, healthcheck at `/api/health`
+- **Volume:** mounted at `/data`; `DB_PATH=/data/app.db` points the app at it. Without the volume the DB is wiped on every deploy.
+- **Config file:** `railway.toml` — Dockerfile builder, healthcheck at `/api/health`, restart on failure
 
-Key Railway env vars to set in the Railway dashboard:
-- `SESSION_SECRET` — random secret, keep private
-- `DB_PATH` — `/data/app.db` (matches the mounted volume)
-- `AUTH_SCHEME` — `ia` (production default)
+Railway service variables:
+- `SESSION_SECRET` — random secret (`python3 -c "import secrets; print(secrets.token_hex(32))"`), keep private
+- `DB_PATH` — `/data/app.db`
+- `AUTH_SCHEME` — `ia`
+- `PORT` is provided by Railway; don't set it
 
-### CI/CD: GitHub Actions (`.github/workflows/ci.yml`)
+If Railway's service settings offer a "wait for CI" option, enable it so a failing test run blocks the deploy.
+
+### CI: GitHub Actions (`.github/workflows/ci.yml`)
 
 On every push to `main` and on pull requests:
 
 1. **test** — installs Python deps, runs `make test`
 2. **build-client** — installs Node deps, runs `npm run build` in `client/`
-3. **deploy** *(main branch pushes only)* — runs `railway up --detach` using the `RAILWAY_TOKEN` repository secret
-
-To enable auto-deploy, add `RAILWAY_TOKEN` as a GitHub Actions secret:
-- Railway dashboard → Project settings → Tokens → Create token
-- GitHub repo → Settings → Secrets → Actions → `RAILWAY_TOKEN`
 
 ### Dockerfile
 
@@ -132,12 +132,20 @@ Multi-stage build to avoid Python version conflicts:
 1. `node:20-slim` stage — builds the React client (`npm run build`)
 2. `python:3.12-slim` stage — installs Python deps, copies server code and built client `dist/`
 
-### Manual redeploy
+`tools/` is **not** copied into the image.
 
-Push to `main` triggers CI → auto-deploy via Railway. To force a redeploy without a code change:
+### Redeploy and production shell
+
+Push to `main` → Railway rebuilds. To redeploy without a code change, use **Redeploy** on the latest deployment in the Railway dashboard.
+
+For one-off production DB fixes (e.g. creating the first admin), use the Railway CLI's SSH:
 
 ```bash
-railway up --detach   # from repo root, with RAILWAY_TOKEN or railway login
+npm install -g @railway/cli
+railway login && railway link      # pick the ia-ratings project/service
+railway ssh
+# inside the container:
+python3 -c "import sqlite3; c=sqlite3.connect('/data/app.db'); n=c.execute(\"UPDATE users SET is_admin=1 WHERE email=?\", ('NAME@users.archive.org',)).rowcount; c.commit(); print(n, 'row updated')"
 ```
 
 ## Database
@@ -206,7 +214,7 @@ python tools/sync.py --workers 20 --force --db server/app.db
 ```
 
 
-> Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin API endpoints or the admin UI to inspect/modify the production database.
+> Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin UI/API, or `railway ssh` (see Deployment) for the production database.
 
 ## Documentation files
 
