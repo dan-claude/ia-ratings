@@ -56,7 +56,7 @@ Login body is `{username, password}` in `ia` mode and `{email, password}` in `lo
 | `AUTH_SCHEME` | `ia` | Auth scheme: `ia` or `local` |
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
-| `PORT` | `5000` | HTTP port (used by Railway via Dockerfile CMD) |
+| `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app` |
 | `VITE_LOG_LEVEL` | `info` | Client console log level (`client/src/logger.ts`) |
@@ -133,6 +133,16 @@ Multi-stage build to avoid Python version conflicts:
 2. `python:3.12-slim` stage — installs Python deps, copies server code and built client `dist/`
 
 `tools/` is **not** copied into the image.
+
+Production runs under **gunicorn** (pinned in `server/requirements.txt`), not Flask's dev server:
+
+```
+gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "server.app:create_app()"
+```
+
+- **Keep `--workers 1`.** SQLite writes and the Flask-Limiter `memory://` store assume a single process; more workers would give each its own rate-limit counters and more lock contention. Scale with `--threads`.
+- **`--timeout 0`** stops gunicorn killing a worker during long requests; `POST /api/admin/sync` can take minutes.
+- `python -m server.app` (with its `--auth-scheme`, port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
 
 ### Redeploy and production shell
 

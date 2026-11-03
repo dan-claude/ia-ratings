@@ -98,7 +98,7 @@ If your Flask server is on a different port, change the proxy target in
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` |
 | `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
-| `PORT` | `5000` | Port used by the Docker image's start command (Railway sets it) |
+| `PORT` | `5000` | Port gunicorn listens on in the Docker image (Railway sets it) |
 | `VITE_LOG_LEVEL` | `info` | Client console logging: `debug`, `info`, `warn`, `error`, `silent` |
 
 The film collection slug is fixed in `server/config.py`.
@@ -128,7 +128,7 @@ Railway is connected to the GitHub repo and deploys every push to `main`.
 GitHub Actions (`.github/workflows/ci.yml`) runs the Python tests and a client
 build on pushes and pull requests.
 The multi-stage `Dockerfile` builds the client with Node 20 and runs the server on
-Python 3.12; `railway.toml` sets the `/api/health` health check. The production DB
+Python 3.12 under gunicorn (one worker, eight threads); `railway.toml` sets the `/api/health` health check. The production DB
 lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`). To make
 the first production admin, use `railway ssh` (steps in `CLAUDE.md`).
 See `CLAUDE.md` for the full deployment notes.

@@ -1934,6 +1934,7 @@ Flask==3.0.3
 Flask-Limiter==3.8.0
 requests==2.32.3
 aiohttp>=3.9
+gunicorn==26.2.0
 
 ============================
 FILE: server/requirements-dev.txt
@@ -2158,7 +2159,9 @@ tools/sync.py:
 Deployment (not part of a from-scratch rebuild, documented for reference):
   Dockerfile: stage 1 node:20-slim runs npm install + npm run build in client/;
     stage 2 python:3.12-slim installs server/requirements.txt, copies server/ and
-    client/dist, CMD python3 -m server.app --no-debug --host 0.0.0.0 --port ${PORT:-5000}
+    client/dist, CMD exec gunicorn --workers 1 --threads 8 --timeout 0
+    --bind 0.0.0.0:${PORT:-5000} "server.app:create_app()"  (keep 1 worker: SQLite +
+    in-memory rate limiter; timeout 0 so the multi-minute admin sync is not killed)
   railway.toml: builder=dockerfile, healthcheckPath=/api/health, restart on_failure
   .github/workflows/ci.yml: test (pytest on 3.12) + build-client (Node 20) on push/PR
   Railway deploys via its GitHub integration (service connected to the repo,
@@ -2195,3 +2198,5 @@ CHANGELOG
     Removed the ChatGPT-era release-ZIP workflow (RECREATE_WITH_CHATGPT.txt,
     RECREATE_GUARDRAILS.md, tools/build_zip.py, tools/release_check.py) plus
     justfile and the empty root package-lock.json. Releases ship via git + CI + Railway.
+    Production server: gunicorn (gthread, 1 worker x 8 threads, --timeout 0)
+    replaces Flask's development server in the Dockerfile CMD.
