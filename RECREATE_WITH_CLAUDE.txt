@@ -22,7 +22,9 @@ Build a web application that:
 2) Allows authenticated users to rate films across multiple criteria
 3) Supports an admin/judge mode with CSV export
 4) Lets users log in with their archive.org account (AUTH_SCHEME=ia, default)
-   or with local email/password accounts (AUTH_SCHEME=local)
+   or with local email/password accounts (AUTH_SCHEME=local); optionally also
+   "Continue with GitHub" (OAuth web flow) when GITHUB_CLIENT_ID and
+   GITHUB_CLIENT_SECRET are set (see docs/GITHUB_LOGIN.md)
 5) Gives admins an in-app panel: sync, criteria management, user admin
    promotion, DB browser, JSON backup/restore
 6) Deploys to Railway via a multi-stage Dockerfile and GitHub Actions
@@ -34,7 +36,8 @@ TECH STACK
 - Server: Flask with Blueprints
 - Database: SQLite (WAL mode, 5s busy_timeout)
 - Auth: Flask session-based (cookie). AUTH_SCHEME=ia proxies login to
-  archive.org xauthn; AUTH_SCHEME=local uses werkzeug password hashing
+  archive.org xauthn; AUTH_SCHEME=local uses werkzeug password hashing.
+  Optional GitHub OAuth (no scopes; keyed on the numeric GitHub id) works with either.
 - Rate limiting: Flask-Limiter on /api/auth/login and /api/auth/register
 - IA sync: requests for search, aiohttp for concurrent description fetches
 - Python: 3.12
@@ -94,6 +97,7 @@ ia_ratings/
     services/
       __init__.py
       auth_service.py
+      github_auth_service.py
       ia_service.py
       rating_service.py
       summary_service.py
@@ -104,6 +108,7 @@ ia_ratings/
       test_auth.py
       test_criteria.py
       test_films_and_ratings.py
+      test_github_auth.py
       test_isolation.py
   tools/
     print_db.py
@@ -124,6 +129,8 @@ Table: users
   is_admin      INTEGER NOT NULL DEFAULT 0
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   ia_username   TEXT           <- added by migration v4; NULL for local users
+  github_id     TEXT           <- added by migration v5; NULL unless created via GitHub
+  github_username TEXT         <- added by migration v5; display only, refreshed on login
 
 Table: films
   id            INTEGER PRIMARY KEY AUTOINCREMENT
@@ -166,6 +173,7 @@ Indexes:
   idx_ratings_user     ON ratings(user_id)
   idx_films_collection ON films(collection)
   idx_users_ia_username ON users(ia_username) WHERE ia_username IS NOT NULL  (UNIQUE, v4)
+  idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL  (UNIQUE, v5)
 
 MIGRATIONS (run at startup in db.py):
   v1: ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0
@@ -173,6 +181,8 @@ MIGRATIONS (run at startup in db.py):
   v3: ALTER TABLE films ADD COLUMN description TEXT
   v4: ALTER TABLE users ADD COLUMN ia_username TEXT
       + CREATE UNIQUE INDEX idx_users_ia_username ... WHERE ia_username IS NOT NULL
+  v5: ALTER TABLE users ADD COLUMN github_id TEXT; ADD COLUMN github_username TEXT
+      + CREATE UNIQUE INDEX idx_users_github_id ... WHERE github_id IS NOT NULL
 
 SEED DATA (INSERT OR IGNORE at startup):
   criteria: ('originality', 'Originality', 1)
@@ -185,13 +195,16 @@ CANONICAL API ENDPOINTS
 (Full request/response detail: API_CLIENT_SERVER.md)
 
 Config: (public)
-  GET    /api/config         -> { auth_scheme: "ia" | "local" }
+  GET    /api/config         -> { auth_scheme: "ia" | "local", oauth_providers: [] | ["github"] }
 
 Auth:  (login/register rate-limited: 10 per minute; 50 per hour, per IP)
   POST   /api/auth/register  { email, password } -> { ok: true } (auto-logs in, sets session)
                              400 in ia mode (registration not supported)
   POST   /api/auth/login     ia mode:    { username, password } -> { ok: true }
                              local mode: { email, password }    -> { ok: true }
+  GET    /api/auth/github/login     -> 302 to GitHub (state stored in session); 404 if not configured
+  GET    /api/auth/github/callback  -> 302 "/" on success (new session), else 302 "/?auth_error=<code>"
+                             code: github_state | github_denied | github_failed
   POST   /api/auth/logout    -> { ok: true }
 
 User:
@@ -279,6 +292,22 @@ class Settings:
     # "ia"    — delegate login to archive.org (default)
     # "local" — local email/password accounts
     auth_scheme: str = _env("AUTH_SCHEME", "ia")
+    # Optional "Continue with GitHub" login, offered alongside the scheme above.
+    # Enabled only when both the client id and secret are set.
+    github_client_id: str = _env("GITHUB_CLIENT_ID", "")
+    github_client_secret: str = _env("GITHUB_CLIENT_SECRET", "")
+    # Normally leave empty: GitHub then uses the callback URL registered on the
+    # OAuth app. Set it only if you registered more than one callback URL.
+    github_redirect_uri: str = _env("GITHUB_REDIRECT_URI", "")
+
+    @property
+    def github_enabled(self) -> bool:
+        return bool(self.github_client_id and self.github_client_secret)
+
+    @property
+    def oauth_providers(self) -> list[str]:
+        """Names of the OAuth providers the login screen should offer."""
+        return ["github"] if self.github_enabled else []
 
 
 def load_settings() -> Settings:
@@ -405,6 +434,16 @@ class Database:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ia_username ON users(ia_username) WHERE ia_username IS NOT NULL;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);")
 
+            # v5: Add users.github_id / users.github_username for GitHub OAuth login.
+            # github_id (GitHub's numeric account id) is the stable key; the
+            # username can change on GitHub, so it is stored only for display.
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "github_id" not in ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN github_id TEXT;")
+                conn.execute("ALTER TABLE users ADD COLUMN github_username TEXT;")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL;")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES
@@ -485,6 +524,7 @@ class Rating:
 ============================
 FILE: server/repositories/user_repo.py
 ============================
+
 import sqlite3
 from typing import Optional
 
@@ -534,6 +574,39 @@ class UserRepository:
             )
             conn.commit()
             return int(cur.lastrowid)
+        finally:
+            conn.close()
+
+    def get_by_github_id(self, github_id: str) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(
+            "SELECT id, email, is_admin, created_at, github_username FROM users WHERE github_id = ?",
+            (github_id,),
+        )
+
+    def create_github_user(self, github_id: str, github_username: str) -> int:
+        # The email column is NOT NULL UNIQUE, so synthesise one from the stable
+        # numeric id (GitHub's own noreply format) — it never collides, even if
+        # the username later changes hands.
+        conn = self.db.connect()
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (email, password_hash, github_id, github_username) "
+                "VALUES (?, 'GITHUB_AUTH', ?, ?)",
+                (f"{github_id}+{github_username}@users.noreply.github.com", github_id, github_username),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+        finally:
+            conn.close()
+
+    def set_github_username(self, user_id: int, github_username: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE users SET github_username = ? WHERE id = ?",
+                (github_username, int(user_id)),
+            )
+            conn.commit()
         finally:
             conn.close()
 
@@ -950,6 +1023,108 @@ class AuthService:
         return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])))
 
 ============================
+FILE: server/services/github_auth_service.py
+============================
+"""GitHub OAuth (web application flow) login.
+
+Flow: the browser is sent to GitHub's authorize page with a random `state`;
+GitHub redirects back with `?code&state`; we exchange the code for an access
+token, read the account's public profile, and find-or-create the local user
+keyed on GitHub's numeric account id.
+
+No OAuth scopes are requested: the public profile (id + login) is all we need,
+so the app never sees the user's email address or any private data.
+"""
+import sqlite3
+from urllib.parse import urlencode
+
+import requests as _requests
+
+from ..repositories.user_repo import UserRepository
+
+AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
+TOKEN_URL = "https://github.com/login/oauth/access_token"
+USER_URL = "https://api.github.com/user"
+_TIMEOUT = 10
+
+
+class GitHubAuthError(Exception):
+    """The GitHub exchange failed; the message is safe to log, not to show."""
+
+
+class GitHubAuthService:
+    def __init__(self, users: UserRepository, client_id: str, client_secret: str, redirect_uri: str = ""):
+        self.users = users
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uri = redirect_uri
+
+    def authorize_url(self, state: str) -> str:
+        params = {"client_id": self.client_id, "state": state}
+        if self.redirect_uri:
+            params["redirect_uri"] = self.redirect_uri
+        return f"{AUTHORIZE_URL}?{urlencode(params)}"
+
+    def login_with_code(self, code: str) -> int:
+        """Complete the flow for an authorization `code`; return the local user id."""
+        if not code:
+            raise GitHubAuthError("missing code")
+        token = self._exchange_code(code)
+        github_id, login = self._fetch_profile(token)
+
+        row = self.users.get_by_github_id(github_id)
+        if row:
+            if row["github_username"] != login:
+                self.users.set_github_username(int(row["id"]), login)
+            return int(row["id"])
+        try:
+            return self.users.create_github_user(github_id, login)
+        except sqlite3.IntegrityError:
+            # A concurrent callback for the same account created it first.
+            row = self.users.get_by_github_id(github_id)
+            if row:
+                return int(row["id"])
+            raise
+
+    def _exchange_code(self, code: str) -> str:
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "code": code,
+        }
+        if self.redirect_uri:
+            payload["redirect_uri"] = self.redirect_uri
+        try:
+            resp = _requests.post(
+                TOKEN_URL, data=payload, headers={"Accept": "application/json"}, timeout=_TIMEOUT
+            )
+            data = resp.json()
+        except (_requests.exceptions.RequestException, ValueError) as exc:
+            raise GitHubAuthError("token exchange request failed") from exc
+        token = data.get("access_token") if isinstance(data, dict) else None
+        if not token:
+            err = data.get("error") if isinstance(data, dict) else None
+            raise GitHubAuthError(f"token exchange rejected: {err or 'no access_token'}")
+        return token
+
+    def _fetch_profile(self, token: str) -> tuple[str, str]:
+        try:
+            resp = _requests.get(
+                USER_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                timeout=_TIMEOUT,
+            )
+            data = resp.json()
+        except (_requests.exceptions.RequestException, ValueError) as exc:
+            raise GitHubAuthError("profile request failed") from exc
+        if resp.status_code != 200 or not isinstance(data, dict) or not data.get("id") or not data.get("login"):
+            raise GitHubAuthError(f"profile lookup failed: HTTP {resp.status_code}")
+        return str(data["id"]), str(data["login"])
+
+============================
 FILE: server/services/ia_service.py
 ============================
 import asyncio
@@ -1305,9 +1480,17 @@ def configure_logging() -> None:
 ============================
 FILE: server/routes/auth.py
 ============================
-from flask import Blueprint, request, jsonify, session, current_app
+import hmac
+import logging
+import secrets
+
+from flask import Blueprint, request, jsonify, session, current_app, redirect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+
+from ..services.github_auth_service import GitHubAuthError
+
+logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -1364,7 +1547,60 @@ def login():
 def logout():
     session.clear()
     return jsonify({"ok": True})
-# test
+
+
+# ---------------------------------------------------------------------------
+# GitHub OAuth (browser redirects, not JSON). Only active when
+# GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are set.
+# ---------------------------------------------------------------------------
+
+def _github_service():
+    return current_app.services.get("github_auth")
+
+
+def _login_error(code: str):
+    """Send the browser back to the SPA with a short error code (never free text)."""
+    return redirect(f"/?auth_error={code}")
+
+
+@auth_bp.get("/api/auth/github/login")
+@limiter.limit("10 per minute; 50 per hour")
+def github_login():
+    svc = _github_service()
+    if svc is None:
+        return jsonify({"error": "GitHub login is not configured"}), 404
+    state = secrets.token_urlsafe(32)
+    session["oauth_state"] = state
+    return redirect(svc.authorize_url(state))
+
+
+@auth_bp.get("/api/auth/github/callback")
+@limiter.limit("10 per minute; 50 per hour")
+def github_callback():
+    svc = _github_service()
+    if svc is None:
+        return jsonify({"error": "GitHub login is not configured"}), 404
+
+    # The state is single-use: pop it so a captured callback URL can't be replayed.
+    expected = session.pop("oauth_state", None)
+    given = request.args.get("state", "")
+    if not expected or not hmac.compare_digest(str(expected), given):
+        return _login_error("github_state")
+
+    if request.args.get("error"):  # e.g. the user clicked "Cancel" on GitHub
+        return _login_error("github_denied")
+
+    try:
+        uid = svc.login_with_code(request.args.get("code", ""))
+    except GitHubAuthError:
+        logger.warning("github.login.failed", exc_info=True)
+        return _login_error("github_failed")
+
+    # L4: Rotate session after successful auth to prevent session fixation.
+    session.clear()
+    session.permanent = True
+    session["user_id"] = uid
+    return redirect("/")
 
 ============================
 FILE: server/routes/user.py
@@ -1381,7 +1617,10 @@ def _require_auth():
 
 @user_bp.get("/api/config")
 def config():
-    return jsonify({"auth_scheme": current_app.settings.auth_scheme})
+    return jsonify({
+        "auth_scheme": current_app.settings.auth_scheme,
+        "oauth_providers": current_app.settings.oauth_providers,
+    })
 
 
 @user_bp.get("/api/me")
@@ -1593,7 +1832,7 @@ def db_table(table: str):
                 "FROM films"
             )
         elif table == "users":
-            base = "SELECT id, email, ia_username, is_admin, created_at FROM users"
+            base = "SELECT id, email, ia_username, github_username, is_admin, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 
@@ -1903,6 +2142,7 @@ Key behaviors (implement fully):
     app.repos  = { "users": UserRepository, "films": FilmRepository,
                    "criteria": CriteriaRepository, "ratings": RatingRepository }
     app.services = { "ia": InternetArchiveService, "auth": AuthService,
+                     "github_auth": GitHubAuthService or None (None unless settings.github_enabled),
                      "rating": RatingService, "summary": SummaryService }
 - Startup schema check: fetchall PRAGMA table_info(users), log column names,
   warn if is_admin missing

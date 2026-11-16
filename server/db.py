@@ -116,6 +116,16 @@ class Database:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ia_username ON users(ia_username) WHERE ia_username IS NOT NULL;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (4);")
 
+            # v5: Add users.github_id / users.github_username for GitHub OAuth login.
+            # github_id (GitHub's numeric account id) is the stable key; the
+            # username can change on GitHub, so it is stored only for display.
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "github_id" not in ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN github_id TEXT;")
+                conn.execute("ALTER TABLE users ADD COLUMN github_username TEXT;")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL;")
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES

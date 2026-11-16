@@ -1,3 +1,8 @@
+## Unreleased
+- GitHub OAuth login, offered alongside the existing archive.org / local login when `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. New routes `GET /api/auth/github/login` and `/api/auth/github/callback`; `GET /api/config` gains `oauth_providers`; the login screen shows "Continue with GitHub".
+- DB migration v5: `users.github_id`, `users.github_username` (+ unique index on `github_id`). The admin Users tab shows `github_username`.
+- New setup guide: `docs/GITHUB_LOGIN.md`.
+
 ## 1.2.0
 - Documentation refresh to match the code as of 2026-11-03 (no code changes):
   - README.md rewritten: IA vs local auth, admin panel, config table, first-time admin setup, CLI tools, deployment, doc map; fixed the requirements path and the dev proxy port (5001).

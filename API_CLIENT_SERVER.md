@@ -39,9 +39,12 @@ Used by the Railway health check.
 ### GET /api/config — public
 Tells the client which login form to show.
 ```json
-{ "auth_scheme": "ia" }
+{ "auth_scheme": "ia", "oauth_providers": ["github"] }
 ```
 `auth_scheme` is `"ia"` (archive.org login) or `"local"` (email/password).
+`oauth_providers` lists the extra sign-in buttons to show; it is `[]` unless
+GitHub login is configured (`GITHUB_CLIENT_ID` + `GITHUB_CLIENT_SECRET`), in
+which case it is `["github"]`. Clients must tolerate unknown provider names.
 
 ---
 
@@ -93,6 +96,25 @@ Response 200:
 Errors:
 - 400 — validation error, or registration attempted in `ia` mode
 - 409 — `"Email already registered"`
+
+### GET /api/auth/github/login — public, GitHub login only
+Browser navigation, not an XHR call. Stores a random single-use `state` in the
+session and responds `302` to `https://github.com/login/oauth/authorize`.
+Rate-limited like `login`. Returns 404 `{"error": "GitHub login is not
+configured"}` when GitHub login is off.
+
+### GET /api/auth/github/callback — public, GitHub login only
+The URL registered as the OAuth app's *Authorization callback URL*; GitHub sends
+the browser here with `?code=…&state=…`. The state must match the session's
+(and is consumed either way). On success the server finds or creates the user
+for that GitHub account id, starts a new session, and responds `302 /`.
+On failure it responds `302 /?auth_error=<code>` with a code of:
+- `github_state` — missing/mismatched state (expired session, replay)
+- `github_denied` — the user declined on GitHub
+- `github_failed` — code exchange or profile lookup failed
+
+New users get email `<github-id>+<login>@users.noreply.github.com`. Same 404
+and rate limit as `/api/auth/github/login`.
 
 ### POST /api/auth/logout — public
 Clears the session.
@@ -259,7 +281,7 @@ Query parameters:
 - `limit`, `offset` — integers
 
 Special cases: `films` rows include a computed `rating_count`; `users` rows
-omit `password_hash` (columns: `id, email, ia_username, is_admin, created_at`).
+omit `password_hash` (columns: `id, email, ia_username, github_username, is_admin, created_at`).
 
 Errors: 400 (bad `order_by`), 404 `{ "error": "Unknown table: <name>" }`.
 
@@ -299,7 +321,7 @@ nothing is changed.
 ## Client usage (informative)
 
 The client (`client/src/App.jsx`) calls:
-- `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/logout`
+- `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/github/login` and `/api/auth/github/callback` (when configured), `/api/auth/logout`
 - `/api/criteria`, `/api/films/next`, `/api/films/<identifier>/ratings`
 - Admin panel: `/api/admin/sync`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,

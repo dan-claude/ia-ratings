@@ -22,6 +22,9 @@ Production runs on Railway (new deployment being set up; URL to follow).
     login. No registration step.
   - `local` — email + password accounts stored locally (werkzeug password
     hashing), with self-registration.
+- **Continue with GitHub** *(optional, in addition to either mode)* — set
+  `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` and the login screen gains a
+  GitHub button. Setup steps: [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md).
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
   - *Actions* — sync the IA collection; download `ratings.csv`
   - *Criteria* — add, edit, reorder and deactivate rating criteria
@@ -38,7 +41,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
 | Client | React 18 + Vite, single file `client/src/App.jsx`, no UI library |
 | Server | Flask 3 app factory; routes → services → repositories |
 | Database | SQLite (WAL mode), schema + migrations applied at startup in `server/db.py` |
-| Auth | Flask cookie sessions; archive.org `xauthn` or local accounts |
+| Auth | Flask cookie sessions; archive.org `xauthn` or local accounts, plus optional GitHub OAuth |
 | Hosting | Railway (Dockerfile build, deploys from GitHub on push to `main`); GitHub Actions CI |
 
 ## Running locally
@@ -95,6 +98,8 @@ If your Flask server is on a different port, change the proxy target in
 | `DB_PATH` | `server/app.db` | SQLite file location |
 | `SESSION_SECRET` | insecure dev value | Session signing key. **Set this in production.** While unset, the server warns at startup and session cookies are not marked `Secure`. |
 | `AUTH_SCHEME` | `ia` | `ia` or `local` (the `--auth-scheme` flag overrides it) |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | Enable GitHub login when **both** are set — see [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md) |
+| `GITHUB_REDIRECT_URI` | *(unset)* | Rarely needed; overrides which registered callback URL GitHub uses |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` |
 | `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
@@ -141,6 +146,7 @@ See `CLAUDE.md` for the full deployment notes.
 |------|----------|
 | `README.md` | This overview |
 | `API_CLIENT_SERVER.md` | Every API endpoint with request/response shapes |
+| `docs/GITHUB_LOGIN.md` | Creating and configuring the GitHub OAuth app |
 | `CLAUDE.md` | Working notes for Claude: architecture, env vars, deployment, admin API |
 | `CHANGELOG.md` | Version history |
 | `RECREATE_WITH_CLAUDE.txt` | Full from-scratch rebuild spec (embeds the server source) |

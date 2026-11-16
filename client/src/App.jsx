@@ -477,6 +477,7 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
                       <th>id</th>
                       <th>email</th>
                       <th>ia_username</th>
+                      <th>github_username</th>
                       <th>is_admin</th>
                       <th>created_at</th>
                       <th>actions</th>
@@ -488,6 +489,7 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
                         <td>{u.id}</td>
                         <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
                         <td>{u.ia_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
+                        <td>{u.github_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
                         <td>{u.is_admin ? '✓' : ''}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>{u.created_at}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
@@ -584,12 +586,25 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth sign-in helpers
+// ---------------------------------------------------------------------------
+
+// Server redirects to /?auth_error=<code>; map codes to messages here so the
+// URL can never inject arbitrary text into the page.
+const OAUTH_ERRORS = {
+  github_denied: 'GitHub sign-in was cancelled.',
+  github_state: 'GitHub sign-in expired or was invalid. Please try again.',
+  github_failed: 'Could not sign in with GitHub. Please try again.',
+}
+
+// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
 export default function App() {
   const [me, setMe] = useState(null)
   const [authScheme, setAuthScheme] = useState('ia') // default matches server default
+  const [oauthProviders, setOauthProviders] = useState([]) // e.g. ['github']
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
@@ -718,7 +733,15 @@ export default function App() {
   useEffect(() => {
     apiJson('/api/config').then(({ ok, data }) => {
       setAuthScheme(ok ? (data?.auth_scheme ?? 'ia') : 'ia')
+      setOauthProviders(ok && Array.isArray(data?.oauth_providers) ? data.oauth_providers : [])
     })
+    // The OAuth callback redirects back here as /?auth_error=<code> on failure.
+    const params = new URLSearchParams(window.location.search)
+    const authError = params.get('auth_error')
+    if (authError) {
+      setError(OAUTH_ERRORS[authError] || 'Sign-in failed')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
     loadMe()
   }, [])
 
@@ -784,6 +807,18 @@ export default function App() {
             <button onClick={() => login(false)}>Login</button>
             {!isIA && <button onClick={() => login(true)}>Register</button>}
           </div>
+          {oauthProviders.includes('github') && (
+            <>
+              <div style={{ textAlign: 'center', color: '#888', fontSize: 13 }}>or</div>
+              {/* Full-page navigation: the server redirects to GitHub and back. */}
+              <button
+                type="button"
+                onClick={() => { window.location.href = '/api/auth/github/login' }}
+              >
+                Continue with GitHub
+              </button>
+            </>
+          )}
         </div>
       </div>
     )

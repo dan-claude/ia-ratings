@@ -40,6 +40,7 @@ from server.repositories.rating_repo import RatingRepository
 from server.repositories.user_repo import UserRepository
 
 from server.services.auth_service import AuthService
+from server.services.github_auth_service import GitHubAuthService
 from server.services.ia_service import InternetArchiveService
 from server.services.rating_service import RatingService
 from server.services.summary_service import SummaryService
@@ -113,6 +114,16 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     # --- Services ---
     ia = InternetArchiveService(settings.collection)
     auth = AuthService(users)
+    github_auth = (
+        GitHubAuthService(
+            users,
+            settings.github_client_id,
+            settings.github_client_secret,
+            settings.github_redirect_uri,
+        )
+        if settings.github_enabled
+        else None
+    )
     rating = RatingService(films, criteria, ratings)
     summary = SummaryService(criteria, films, ratings, settings.collection)
 
@@ -128,6 +139,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     app.services = {
         "ia": ia,
         "auth": auth,
+        "github_auth": github_auth,  # None unless GITHUB_CLIENT_ID/SECRET are set
         "rating": rating,
         "summary": summary,
     }

@@ -115,7 +115,7 @@ def db_table(table: str):
                 "FROM films"
             )
         elif table == "users":
-            base = "SELECT id, email, ia_username, is_admin, created_at FROM users"
+            base = "SELECT id, email, ia_username, github_username, is_admin, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 

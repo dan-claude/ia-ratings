@@ -45,6 +45,8 @@ Controlled by the `AUTH_SCHEME` env var (or `--auth-scheme` CLI flag). Default: 
 | `ia` | Username + password proxied to `archive.org/services/xauthn/`; account auto-created on first login with synthesised email `{username}@users.archive.org`, `ia_username` set, and `password_hash='IA_AUTH'` | Not supported (400) |
 | `local` | Email + password stored locally (werkzeug `generate_password_hash`) | Supported via `/api/auth/register` |
 
+**GitHub OAuth** is an optional extra on top of either scheme: it is enabled when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set, and `GET /api/config` then lists `"github"` in `oauth_providers` so the client shows "Continue with GitHub". Flow (`server/routes/auth.py` + `server/services/github_auth_service.py`): `GET /api/auth/github/login` stores a random single-use `state` in the session and redirects to GitHub → `GET /api/auth/github/callback` checks the state, exchanges the code, reads the public profile (no scopes requested), find-or-creates the user keyed on `users.github_id` (synthetic email `{id}+{login}@users.noreply.github.com`, `password_hash='GITHUB_AUTH'`), rotates the session and redirects to `/` (failures redirect to `/?auth_error=<code>`). Accounts from different login methods are never merged. Setup instructions: `docs/GITHUB_LOGIN.md`.
+
 Login body is `{username, password}` in `ia` mode and `{email, password}` in `local` mode. `/api/auth/login` and `/api/auth/register` are rate-limited (10/min, 50/hour per IP). Sessions: 8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` unless the dev default secret is in use.
 
 ## Environment variables
@@ -57,6 +59,8 @@ Login body is `{username, password}` in `ia` mode and `{email, password}` in `lo
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | GitHub OAuth app credentials; GitHub login is enabled only when both are set (see `docs/GITHUB_LOGIN.md`). Secret — set only in Railway variables / local shell |
+| `GITHUB_REDIRECT_URI` | *(unset)* | Optional; sent to GitHub only if set (normally the callback URL registered on the OAuth app is used) |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app` |
 | `VITE_LOG_LEVEL` | `info` | Client console log level (`client/src/logger.ts`) |
@@ -111,6 +115,7 @@ Deploys come from Railway's **GitHub integration**: the Railway service is conne
 - **Config file:** `railway.toml` — Dockerfile builder, healthcheck at `/api/health`, restart on failure
 
 Railway service variables:
+- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — optional, enable GitHub login (`docs/GITHUB_LOGIN.md`)
 - `SESSION_SECRET` — random secret (`python3 -c "import secrets; print(secrets.token_hex(32))"`), keep private
 - `DB_PATH` — `/data/app.db`
 - `AUTH_SCHEME` — `ia`
@@ -169,6 +174,7 @@ Schema and migrations live in `server/db.py` and are applied on every startup (`
 | 2 | `ratings.updated_at` |
 | 3 | `films.description` |
 | 4 | `users.ia_username` + partial unique index `idx_users_ia_username` |
+| 5 | `users.github_id` + `users.github_username` + partial unique index `idx_users_github_id` |
 
 Seed criteria (`INSERT OR IGNORE`): `originality`, `use_of_archive_materials`. When adding a migration, add a row here and, if it creates a new table, add that table to `_RESTORE_ORDER` in `routes/admin.py` so backups restore it.
 
@@ -180,9 +186,11 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check (used by Railway) |
-| GET | `/api/config` | Returns `{"auth_scheme": "ia"\|"local"}` |
+| GET | `/api/config` | Returns `{"auth_scheme": "ia"\|"local", "oauth_providers": ["github"]?}` |
 | POST | `/api/auth/login` | Login |
 | POST | `/api/auth/register` | Register (local auth only) |
+| GET | `/api/auth/github/login` | Start GitHub OAuth (302 to GitHub; 404 if not configured) |
+| GET | `/api/auth/github/callback` | GitHub OAuth return (302 to `/`, or `/?auth_error=<code>`) |
 | POST | `/api/auth/logout` | Logout |
 | GET | `/api/me` | Current user info |
 | GET | `/api/criteria` | Rating criteria list |
@@ -234,4 +242,5 @@ python tools/sync.py --workers 20 --force --db server/app.db
 | `README.md` | Human-facing overview, local setup, config |
 | `API_CLIENT_SERVER.md` | Binding API contract — update with any route change |
 | `CHANGELOG.md` | Version history |
+| `docs/GITHUB_LOGIN.md` | Step-by-step GitHub OAuth app setup (dev + production) |
 | `RECREATE_WITH_CLAUDE.txt` | Rebuild spec that embeds server source verbatim — regenerate the `FILE:` sections when server files change |

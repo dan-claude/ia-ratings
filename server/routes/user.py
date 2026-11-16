@@ -10,7 +10,10 @@ def _require_auth():
 
 @user_bp.get("/api/config")
 def config():
-    return jsonify({"auth_scheme": current_app.settings.auth_scheme})
+    return jsonify({
+        "auth_scheme": current_app.settings.auth_scheme,
+        "oauth_providers": current_app.settings.oauth_providers,
+    })
 
 
 @user_bp.get("/api/me")
