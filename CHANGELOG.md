@@ -1,4 +1,9 @@
 ## Unreleased
+- Admin sync now runs in the background: `POST /api/admin/sync` returns 202 immediately (409 if already running) and the new `GET /api/admin/sync/status` reports `state`, `phase`, `done`/`total` and the live `film_count`. The admin panel shows a progress bar and survives page reloads. Nothing syncs at server startup (the film DB starts empty). **Breaking:** the old blocking response `{ok, added, synced}` is gone.
+- New admin command `POST /api/admin/db/empty` (body `{"confirm": "EMPTY"}`) deletes all films and ratings, keeping users and criteria; refused with 409 during a sync. Admin panel: Actions → Danger zone.
+- `GET /api/films/next` 404s now carry `code`: `no_films` ("film database hasn't been set up yet") vs `all_rated`; the client shows these as notices instead of errors.
+- Fix: sync silently dropped films (a 268-film collection often yielded ~214–232) because archive.org's unsorted paging returns overlapping pages; the search is now sorted by identifier and results are de-duplicated.
+- Fix: a first sync on an empty database never fetched full descriptions (films not yet in the DB were skipped), so the "descriptions" step only ran on re-syncs.
 - GitHub OAuth login, offered alongside the existing archive.org / local login when `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. New routes `GET /api/auth/github/login` and `/api/auth/github/callback`; `GET /api/config` gains `oauth_providers`; the login screen shows "Continue with GitHub".
 - DB migration v5: `users.github_id`, `users.github_username` (+ unique index on `github_id`). The admin Users tab shows `github_username`.
 - New setup guide: `docs/GITHUB_LOGIN.md`.

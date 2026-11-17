@@ -18,6 +18,9 @@ class RatingService:
             return None
         return {"identifier": row["ia_identifier"], "title": row["title"], "description": (row["description"] if ("description" in row.keys()) else None)}
 
+    def count_films(self) -> int:
+        return self.films.count()
+
     def get_film_by_identifier(self, identifier: str) -> dict | None:
         row = self.films.get_by_identifier(identifier)
         if not row:

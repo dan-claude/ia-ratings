@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import requests
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,20 +25,41 @@ class InternetArchiveService:
                 return
             page += 1
 
-    def sync_collection(self, films_repo, rows: int = 100, max_pages: Optional[int] = None, workers: int = 20, force: bool = False) -> int:
+    def sync_collection(
+        self,
+        films_repo,
+        rows: int = 100,
+        max_pages: Optional[int] = None,
+        workers: int = 20,
+        force: bool = False,
+        progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    ) -> int:
         """Fetch movie docs from Internet Archive and upsert them into the films table.
 
         Uses asyncio + aiohttp for non-blocking concurrent description fetches.
         workers: max concurrent requests (semaphore limit).
         force: if True, re-fetch descriptions even for films already in DB.
+        progress: optional callback(phase, done, total) for status reporting.
+            phase "listing"      — reading the film list; total is None
+            phase "descriptions" — fetching per-film descriptions; done/total films
         Returns number of films inserted/updated.
         """
         # Collect all docs first
+        def report(phase: str, done: int, total: Optional[int]) -> None:
+            if progress:
+                progress(phase, done, total)
+
         all_docs: list[dict] = []
+        report("listing", 0, None)
         for d in self.iter_collection_movies(rows=rows):
             all_docs.append(d)
+            if len(all_docs) % rows == 0:
+                report("listing", len(all_docs), None)
             if max_pages is not None and len(all_docs) >= max_pages * rows:
                 break
+
+        # Belt and braces: never count/upsert the same film twice.
+        all_docs = list({d["identifier"]: d for d in all_docs if d.get("identifier")}.values())
 
         if not all_docs:
             return 0
@@ -56,6 +77,7 @@ class InternetArchiveService:
         # Upsert with search-API data first so all films exist in DB
         films_repo.upsert_many_from_ia(all_docs)
 
+        report("listing", len(all_docs), len(all_docs))
         if not need_desc:
             print(f"  All {len(identifiers)} films already have descriptions — skipping metadata fetch.")
             return len(all_docs)
@@ -65,7 +87,7 @@ class InternetArchiveService:
                   f"({len(identifiers) - len(need_desc)} already cached)...")
 
         # Fetch concurrently with asyncio
-        html_map = asyncio.run(self._fetch_all_descriptions(list(need_desc), workers))
+        html_map = asyncio.run(self._fetch_all_descriptions(list(need_desc), workers, report))
 
         # Upsert again with enriched descriptions
         enriched = [
@@ -76,14 +98,14 @@ class InternetArchiveService:
         films_repo.upsert_many_from_ia(enriched)
         return len(all_docs)
 
-    async def _fetch_all_descriptions(self, identifiers: list[str], workers: int) -> dict[str, str]:
+    async def _fetch_all_descriptions(self, identifiers: list[str], workers: int, report=None) -> dict[str, str]:
         """Fetch HTML descriptions for all identifiers concurrently using aiohttp."""
         try:
             import aiohttp
         except ImportError:
             logger.warning("aiohttp not installed — falling back to threaded fetches. "
                            "Run: pip install aiohttp")
-            return self._fetch_all_descriptions_threaded(identifiers, workers)
+            return self._fetch_all_descriptions_threaded(identifiers, workers, report)
 
         sem = asyncio.Semaphore(workers)
         results: dict[str, str] = {}
@@ -105,6 +127,8 @@ class InternetArchiveService:
                     logger.warning("fetch_description_html failed for %s: %s", ident, e)
                 finally:
                     done += 1
+                    if report:
+                        report("descriptions", done, total)
                     if done % 10 == 0 or done == total:
                         print(f"  Descriptions: {done}/{total}", flush=True)
 
@@ -114,7 +138,7 @@ class InternetArchiveService:
 
         return results
 
-    def _fetch_all_descriptions_threaded(self, identifiers: list[str], workers: int) -> dict[str, str]:
+    def _fetch_all_descriptions_threaded(self, identifiers: list[str], workers: int, report=None) -> dict[str, str]:
         """Fallback threaded fetch if aiohttp is unavailable."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         html_map: dict[str, str] = {}
@@ -127,6 +151,8 @@ class InternetArchiveService:
             for future in as_completed(future_to_id):
                 ident = future_to_id[future]
                 done += 1
+                if report:
+                    report("descriptions", done, len(identifiers))
                 try:
                     result = future.result()
                     if result:
@@ -160,6 +186,9 @@ class InternetArchiveService:
             "fl[]": ["identifier", "title", "description"],
             "rows": rows,
             "page": page,
+            # Without a stable sort, archive.org's paging returns overlapping
+            # pages (duplicates), so a sync silently misses films.
+            "sort[]": "identifier asc",
             "output": "json",
         }
         r = requests.get(url, params=params, timeout=30)

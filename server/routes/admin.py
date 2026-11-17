@@ -378,15 +378,49 @@ def update_criterion(cid: int):
 # Film / ratings management
 # ---------------------------------------------------------------------------
 
+def _sync_status_payload() -> dict:
+    payload = current_app.services["sync"].status()
+    payload["film_count"] = current_app.repos["films"].count()
+    return payload
+
+
 @admin_bp.post("/api/admin/sync")
 def sync():
+    """Start an Internet Archive sync in the background; poll /api/admin/sync/status."""
     ok, err = _require_admin_user()
     if err:
         return err
-    ia = current_app.services["ia"]
-    films = current_app.repos["films"]
-    added = ia.sync_collection(films)
-    return jsonify({"ok": True, "added": added, "synced": added})
+    if not current_app.services["sync"].start():
+        return jsonify({"error": "A sync is already running", "status": _sync_status_payload()}), 409
+    return jsonify({"ok": True, "status": _sync_status_payload()}), 202
+
+
+@admin_bp.get("/api/admin/sync/status")
+def sync_status():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(_sync_status_payload())
+
+
+@admin_bp.post("/api/admin/db/empty")
+def empty_db():
+    """Delete all films and all ratings (users and criteria are kept).
+
+    DESTRUCTIVE. The body must be {"confirm": "EMPTY"} so a stray request can't
+    wipe the data. Refused while a sync is running.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") != "EMPTY":
+        return jsonify({"error": 'Send {"confirm": "EMPTY"} to empty the database'}), 400
+    if current_app.services["sync"].is_running():
+        return jsonify({"error": "Wait for the running sync to finish first"}), 409
+    deleted = current_app.repos["films"].delete_all_with_ratings()
+    current_app.logger.warning("admin.db.emptied user_id=%s deleted=%s", session.get("user_id"), deleted)
+    return jsonify({"ok": True, "deleted": deleted})
 
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():

@@ -165,8 +165,11 @@ Film object:
 Returns a **random** film from the collection that the current user has not
 rated yet.
 
-Errors:
-- 404 `{ "error": "No unrated films left (did you sync?)" }`
+Errors (both 404, with a machine-readable `code`):
+- `{ "error": "The film database hasn't been set up yet. An admin needs to sync it from the Internet Archive.", "code": "no_films" }`
+  — there are no films at all (never synced, or the database was emptied)
+- `{ "error": "You've rated every film — there's nothing left to rate.", "code": "all_rated" }`
+  — films exist but this user has rated them all
 
 ### GET /api/films/<identifier> — user
 Returns one film by its Internet Archive identifier.
@@ -203,16 +206,57 @@ Errors:
 
 ## Admin
 
+Nothing syncs automatically (not at server startup either): film data only
+appears when an admin starts a sync. The film database starts empty.
+
 ### POST /api/admin/sync — admin
-Fetches every `mediatype:movies` item in the collection from archive.org and
-upserts it into `films`, then fetches full HTML descriptions (converted to plain
-text) for films that don't have one yet. The request blocks until the sync
-finishes, which can take minutes on a first sync.
+Starts a sync **in the background** and returns immediately. The sync fetches
+every `mediatype:movies` item in the collection from archive.org and upserts it
+into `films`, then fetches full HTML descriptions (converted to plain text) for
+films that don't have one yet. It can take minutes; poll
+`GET /api/admin/sync/status` for progress.
+
+202 — started:
 ```json
-{ "ok": true, "added": 123, "synced": 123 }
+{ "ok": true, "status": { "state": "running", "...": "see status below" } }
 ```
-`added` and `synced` are the same number: films returned by the collection
-search (new and existing).
+409 — a sync is already running: `{ "error": "A sync is already running", "status": { ... } }`
+
+### GET /api/admin/sync/status — admin
+```json
+{
+  "state": "running",
+  "phase": "descriptions",
+  "done": 120,
+  "total": 268,
+  "synced": null,
+  "error": null,
+  "started_at": 1763401300.5,
+  "finished_at": null,
+  "film_count": 268
+}
+```
+- `state`: `idle` (no sync since the server started), `running`, `done`, or `error`.
+- `phase` (only while running): `listing` (reading the film list; `total` is
+  `null`, `done` counts films found so far) or `descriptions` (`done`/`total`
+  films whose description has been fetched).
+- `synced`: number of films fetched by the last finished sync (`done`);
+  `error`: failure message (`error`). `started_at` / `finished_at` are Unix seconds.
+- `film_count`: films currently in the database (live count).
+
+The status is held in server memory, so it resets to `idle` on restart.
+
+### POST /api/admin/db/empty — admin
+**Destructive.** Deletes every film and all ratings and scores (user accounts,
+criteria and migrations are kept). The body must contain the confirmation word:
+```json
+{ "confirm": "EMPTY" }
+```
+200: `{ "ok": true, "deleted": { "rating_scores": 12, "ratings": 6, "films": 268 } }`
+
+Errors: 400 if `confirm` is missing or not exactly `"EMPTY"`; 409 while a sync is
+running. After this, `GET /api/films/next` returns the `no_films` error until
+the next sync. Download a backup first if the data may be needed.
 
 ### GET /api/admin/ratings.csv — admin
 CSV download (`Content-Disposition: attachment; filename="ratings.csv"`), newest
@@ -323,7 +367,7 @@ nothing is changed.
 The client (`client/src/App.jsx`) calls:
 - `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/github/login` and `/api/auth/github/callback` (when configured), `/api/auth/logout`
 - `/api/criteria`, `/api/films/next`, `/api/films/<identifier>/ratings`
-- Admin panel: `/api/admin/sync`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
+- Admin panel: `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,
   `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
   for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`

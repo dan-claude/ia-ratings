@@ -16,7 +16,16 @@ def next_film():
     rs = current_app.services["rating"]
     film = rs.get_next_unrated_film(uid)
     if not film:
-        return jsonify({"error": "No unrated films left (did you sync?)"}), 404
+        # Distinguish "nothing has been loaded" from "this user rated everything".
+        if rs.count_films() == 0:
+            return jsonify({
+                "error": "The film database hasn't been set up yet. An admin needs to sync it from the Internet Archive.",
+                "code": "no_films",
+            }), 404
+        return jsonify({
+            "error": "You've rated every film — there's nothing left to rate.",
+            "code": "all_rated",
+        }), 404
     return jsonify({
         "identifier": film["identifier"],
         "title": film["title"],

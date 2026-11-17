@@ -26,7 +26,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` and the login screen gains a
   GitHub button. Setup steps: [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md).
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
-  - *Actions* — sync the IA collection; download `ratings.csv`
+  - *Actions* — sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv`
   - *Criteria* — add, edit, reorder and deactivate rating criteria
   - *Users* — promote / revoke admins
   - *DB Browser* — table row counts and paged table dumps
@@ -89,6 +89,7 @@ If your Flask server is on a different port, change the proxy target in
    python tools/print_db.py --make-admin yourname@users.archive.org
    ```
 4. Log out and back in, open the admin panel → *Actions* → **Sync Collection**.
+   Until you do, raters see "the film database hasn't been set up yet".
    (Or sync from the command line: `python tools/sync.py`.)
 
 ## Configuration

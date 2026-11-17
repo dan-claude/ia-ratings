@@ -117,6 +117,28 @@ class FilmRepository:
             (self.collection, user_id),
         )
 
+    def count(self) -> int:
+        row = self.db.fetchone("SELECT COUNT(1) AS n FROM films WHERE collection = ?", (self.collection,))
+        return int(row["n"]) if row else 0
+
+    def delete_all_with_ratings(self) -> dict:
+        """Delete every film plus all ratings and scores (which reference films).
+
+        One transaction, so a failure leaves the data untouched. Users and
+        criteria are kept. Returns the number of rows deleted per table.
+        """
+        conn = self.db.connect()
+        try:
+            deleted = {}
+            with conn:
+                for table in ("rating_scores", "ratings", "films"):  # children first
+                    deleted[table] = conn.execute(f"DELETE FROM {table}").rowcount
+                # Restart the AUTOINCREMENT counters so a fresh sync starts at id 1.
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'films')")
+            return deleted
+        finally:
+            conn.close()
+
     def list_all_in_collection(self) -> list[sqlite3.Row]:
         return self.db.fetchall(
             "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
@@ -124,7 +146,12 @@ class FilmRepository:
         )
 
     def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
-        """Return the subset of identifiers that have no description stored yet."""
+        """Return the subset of identifiers that have no description stored yet.
+
+        Films that aren't in the database at all count as "without": on a first
+        sync (e.g. after emptying the database) every film needs its full
+        description fetched.
+        """
         if not identifiers:
             return set()
         conn = self.db.connect()
@@ -132,9 +159,9 @@ class FilmRepository:
             placeholders = ",".join("?" * len(identifiers))
             rows = conn.execute(
                 f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({placeholders})"
-                f" AND (description IS NULL OR description = '')",
+                f" AND description IS NOT NULL AND description != ''",
                 identifiers,
             ).fetchall()
-            return {r["ia_identifier"] for r in rows}
+            return set(identifiers) - {r["ia_identifier"] for r in rows}
         finally:
             conn.close()

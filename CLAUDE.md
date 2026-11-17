@@ -146,7 +146,7 @@ gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "serve
 ```
 
 - **Keep `--workers 1`.** SQLite writes and the Flask-Limiter `memory://` store assume a single process; more workers would give each its own rate-limit counters and more lock contention. Scale with `--threads`.
-- **`--timeout 0`** stops gunicorn killing a worker during long requests; `POST /api/admin/sync` can take minutes.
+- **`--timeout 0`** stops gunicorn killing a worker during long requests; a sync can take minutes (it now runs in a background thread, so the request itself returns at once).
 - `python -m server.app` (with its `--auth-scheme`, port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
 
 ### Redeploy and production shell
@@ -176,6 +176,8 @@ Schema and migrations live in `server/db.py` and are applied on every startup (`
 | 4 | `users.ia_username` + partial unique index `idx_users_ia_username` |
 | 5 | `users.github_id` + `users.github_username` + partial unique index `idx_users_github_id` |
 
+Film data is **never synced automatically** (not at startup): a fresh database has zero films until an admin runs a sync (admin panel → Actions, or `tools/sync.py`). With zero films, `GET /api/films/next` answers 404 `code: "no_films"` and the client shows "the film database hasn't been set up yet". The background sync lives in `server/services/sync_service.py`; its status is in-process memory, which is why production keeps `--workers 1`.
+
 Seed criteria (`INSERT OR IGNORE`): `originality`, `use_of_archive_materials`. When adding a migration, add a row here and, if it creates a new table, add that table to `_RESTORE_ORDER` in `routes/admin.py` so backups restore it.
 
 ## Key API endpoints
@@ -201,7 +203,9 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 ### Admin only (`is_admin=1` required)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/admin/sync` | Sync films from Internet Archive |
+| POST | `/api/admin/sync` | Start an Internet Archive sync in the background (202; 409 if one is running) |
+| GET | `/api/admin/sync/status` | Sync progress: `state` idle/running/done/error, `phase`, `done`/`total`, `film_count` |
+| POST | `/api/admin/db/empty` | **Destructive.** Delete all films + ratings (keeps users/criteria); body `{"confirm": "EMPTY"}`; 409 while syncing |
 | GET | `/api/admin/ratings.csv` | Export all ratings |
 | GET | `/api/admin/criteria` | List all criteria (incl. inactive) |
 | POST | `/api/admin/criteria` | Create criterion |

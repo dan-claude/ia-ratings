@@ -24,16 +24,23 @@ def test_admin_sync_inserts_films(monkeypatch, app, client):
 
     monkeypatch.setattr(app.services["ia"].__class__, "iter_collection_movies", fake_iter)
 
+    async def no_descriptions(self, identifiers, workers, report=None):
+        return {}  # don't hit archive.org from tests
+
+    monkeypatch.setattr(app.services["ia"].__class__, "_fetch_all_descriptions", no_descriptions)
+
     # create + login user
     register(client, "admin@example.com", "pw")
     u = app.repos["users"].get_by_email("admin@example.com")
     app.repos["users"].set_admin(int(u["id"]), True)
 
     r = client.post("/api/admin/sync")
-    assert r.status_code == 200
-    body = r.get_json()
-    assert body["ok"] is True
-    assert body.get("added", body.get("synced")) >= 2
+    assert r.status_code == 202  # started in the background
+    assert r.get_json()["ok"] is True
+    app.services["sync"].wait(10)
+    status = client.get("/api/admin/sync/status").get_json()
+    assert status["state"] == "done"
+    assert status["synced"] == 2
 
     # Ensure description stored
     row = app.repos["films"].get_by_identifier("ia_film_1")

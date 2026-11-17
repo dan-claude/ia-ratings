@@ -100,6 +100,7 @@ ia_ratings/
       github_auth_service.py
       ia_service.py
       rating_service.py
+      sync_service.py
       summary_service.py
     tests/
       conftest.py
@@ -110,6 +111,7 @@ ia_ratings/
       test_films_and_ratings.py
       test_github_auth.py
       test_isolation.py
+      test_sync_and_empty.py
   tools/
     print_db.py
     sync.py
@@ -216,7 +218,8 @@ Criteria: (requires auth, defined in routes/user.py NOT films.py)
 
 Films: (requires auth)
   GET    /api/films/next     -> { identifier, title, description, embedUrl }
-                                or 404 { error: "No unrated films left (did you sync?)" }
+                                or 404 { error, code: "no_films" }  (no films at all: DB never synced / emptied)
+                                or 404 { error, code: "all_rated" } (films exist; user rated them all)
   GET    /api/films/<id>     -> { identifier, title, description, embedUrl }
                                 or 404 { error: "Film not found" }
 
@@ -227,7 +230,11 @@ Ratings: (requires auth)
          Response: { ok: true }
 
 Admin: (requires is_admin=1 session)
-  POST   /api/admin/sync     -> { ok: true, added: N, synced: N }
+  POST   /api/admin/sync     -> 202 { ok: true, status }  (starts a BACKGROUND sync; 409 if already running)
+  GET    /api/admin/sync/status -> { state: idle|running|done|error, phase: listing|descriptions|null,
+                                     done, total, synced, error, started_at, finished_at, film_count }
+  POST   /api/admin/db/empty { confirm: "EMPTY" } -> { ok, deleted: { rating_scores, ratings, films } }
+                             deletes all films + ratings (keeps users/criteria); 400 w/o confirm; 409 during a sync
   GET    /api/admin/ratings.csv -> CSV download
   GET    /api/admin/criteria -> all criteria incl. inactive (raw column names)
   POST   /api/admin/criteria { key, label, min_score, max_score, sort_order, active } -> 201
@@ -743,6 +750,28 @@ class FilmRepository:
             (self.collection, user_id),
         )
 
+    def count(self) -> int:
+        row = self.db.fetchone("SELECT COUNT(1) AS n FROM films WHERE collection = ?", (self.collection,))
+        return int(row["n"]) if row else 0
+
+    def delete_all_with_ratings(self) -> dict:
+        """Delete every film plus all ratings and scores (which reference films).
+
+        One transaction, so a failure leaves the data untouched. Users and
+        criteria are kept. Returns the number of rows deleted per table.
+        """
+        conn = self.db.connect()
+        try:
+            deleted = {}
+            with conn:
+                for table in ("rating_scores", "ratings", "films"):  # children first
+                    deleted[table] = conn.execute(f"DELETE FROM {table}").rowcount
+                # Restart the AUTOINCREMENT counters so a fresh sync starts at id 1.
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'films')")
+            return deleted
+        finally:
+            conn.close()
+
     def list_all_in_collection(self) -> list[sqlite3.Row]:
         return self.db.fetchall(
             "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
@@ -750,7 +779,12 @@ class FilmRepository:
         )
 
     def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
-        """Return the subset of identifiers that have no description stored yet."""
+        """Return the subset of identifiers that have no description stored yet.
+
+        Films that aren't in the database at all count as "without": on a first
+        sync (e.g. after emptying the database) every film needs its full
+        description fetched.
+        """
         if not identifiers:
             return set()
         conn = self.db.connect()
@@ -758,10 +792,10 @@ class FilmRepository:
             placeholders = ",".join("?" * len(identifiers))
             rows = conn.execute(
                 f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({placeholders})"
-                f" AND (description IS NULL OR description = '')",
+                f" AND description IS NOT NULL AND description != ''",
                 identifiers,
             ).fetchall()
-            return {r["ia_identifier"] for r in rows}
+            return set(identifiers) - {r["ia_identifier"] for r in rows}
         finally:
             conn.close()
 
@@ -1125,12 +1159,100 @@ class GitHubAuthService:
         return str(data["id"]), str(data["login"])
 
 ============================
+FILE: server/services/sync_service.py
+============================
+"""Runs the Internet Archive collection sync in a background thread.
+
+A sync can take minutes, so the admin API starts it and returns immediately;
+the client polls `status()` to show progress. State lives in this process
+only, which is fine because production runs a single gunicorn worker (see
+CLAUDE.md) — it resets on restart.
+"""
+import logging
+import threading
+import time
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _now() -> float:
+    return time.time()
+
+
+class SyncService:
+    def __init__(self, ia, films):
+        self.ia = ia
+        self.films = films
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._status = self._blank_status()
+
+    @staticmethod
+    def _blank_status() -> dict:
+        return {
+            "state": "idle",        # idle | running | done | error
+            "phase": None,          # listing | descriptions (while running)
+            "done": 0,
+            "total": None,
+            "synced": None,         # films fetched by the last finished sync
+            "error": None,
+            "started_at": None,     # unix seconds
+            "finished_at": None,
+        }
+
+    def status(self) -> dict:
+        with self._lock:
+            return dict(self._status)
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._status["state"] == "running"
+
+    def start(self) -> bool:
+        """Start a sync in the background. Returns False if one is already running."""
+        with self._lock:
+            if self._status["state"] == "running":
+                return False
+            self._status = self._blank_status()
+            self._status.update(state="running", phase="listing", started_at=_now())
+            self._thread = threading.Thread(target=self._run, name="ia-sync", daemon=True)
+            self._thread.start()
+            return True
+
+    def wait(self, timeout: Optional[float] = None) -> None:
+        """Block until the current sync finishes (used by tests)."""
+        t = self._thread
+        if t is not None:
+            t.join(timeout)
+
+    # -- internals ---------------------------------------------------------
+
+    def _progress(self, phase: str, done: int, total: Optional[int]) -> None:
+        with self._lock:
+            self._status.update(phase=phase, done=done, total=total)
+
+    def _run(self) -> None:
+        try:
+            synced = self.ia.sync_collection(self.films, progress=self._progress)
+        except Exception as exc:  # noqa: BLE001 — surface any failure to the admin UI
+            logger.exception("sync.failed")
+            with self._lock:
+                self._status.update(
+                    state="error", phase=None, error=str(exc) or exc.__class__.__name__, finished_at=_now()
+                )
+            return
+        with self._lock:
+            self._status.update(state="done", phase=None, synced=synced, finished_at=_now())
+
+============================
 FILE: server/services/ia_service.py
 ============================
+
 import asyncio
 import logging
 import requests
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1153,20 +1275,41 @@ class InternetArchiveService:
                 return
             page += 1
 
-    def sync_collection(self, films_repo, rows: int = 100, max_pages: Optional[int] = None, workers: int = 20, force: bool = False) -> int:
+    def sync_collection(
+        self,
+        films_repo,
+        rows: int = 100,
+        max_pages: Optional[int] = None,
+        workers: int = 20,
+        force: bool = False,
+        progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    ) -> int:
         """Fetch movie docs from Internet Archive and upsert them into the films table.
 
         Uses asyncio + aiohttp for non-blocking concurrent description fetches.
         workers: max concurrent requests (semaphore limit).
         force: if True, re-fetch descriptions even for films already in DB.
+        progress: optional callback(phase, done, total) for status reporting.
+            phase "listing"      — reading the film list; total is None
+            phase "descriptions" — fetching per-film descriptions; done/total films
         Returns number of films inserted/updated.
         """
         # Collect all docs first
+        def report(phase: str, done: int, total: Optional[int]) -> None:
+            if progress:
+                progress(phase, done, total)
+
         all_docs: list[dict] = []
+        report("listing", 0, None)
         for d in self.iter_collection_movies(rows=rows):
             all_docs.append(d)
+            if len(all_docs) % rows == 0:
+                report("listing", len(all_docs), None)
             if max_pages is not None and len(all_docs) >= max_pages * rows:
                 break
+
+        # Belt and braces: never count/upsert the same film twice.
+        all_docs = list({d["identifier"]: d for d in all_docs if d.get("identifier")}.values())
 
         if not all_docs:
             return 0
@@ -1184,6 +1327,7 @@ class InternetArchiveService:
         # Upsert with search-API data first so all films exist in DB
         films_repo.upsert_many_from_ia(all_docs)
 
+        report("listing", len(all_docs), len(all_docs))
         if not need_desc:
             print(f"  All {len(identifiers)} films already have descriptions — skipping metadata fetch.")
             return len(all_docs)
@@ -1193,7 +1337,7 @@ class InternetArchiveService:
                   f"({len(identifiers) - len(need_desc)} already cached)...")
 
         # Fetch concurrently with asyncio
-        html_map = asyncio.run(self._fetch_all_descriptions(list(need_desc), workers))
+        html_map = asyncio.run(self._fetch_all_descriptions(list(need_desc), workers, report))
 
         # Upsert again with enriched descriptions
         enriched = [
@@ -1204,14 +1348,14 @@ class InternetArchiveService:
         films_repo.upsert_many_from_ia(enriched)
         return len(all_docs)
 
-    async def _fetch_all_descriptions(self, identifiers: list[str], workers: int) -> dict[str, str]:
+    async def _fetch_all_descriptions(self, identifiers: list[str], workers: int, report=None) -> dict[str, str]:
         """Fetch HTML descriptions for all identifiers concurrently using aiohttp."""
         try:
             import aiohttp
         except ImportError:
             logger.warning("aiohttp not installed — falling back to threaded fetches. "
                            "Run: pip install aiohttp")
-            return self._fetch_all_descriptions_threaded(identifiers, workers)
+            return self._fetch_all_descriptions_threaded(identifiers, workers, report)
 
         sem = asyncio.Semaphore(workers)
         results: dict[str, str] = {}
@@ -1233,6 +1377,8 @@ class InternetArchiveService:
                     logger.warning("fetch_description_html failed for %s: %s", ident, e)
                 finally:
                     done += 1
+                    if report:
+                        report("descriptions", done, total)
                     if done % 10 == 0 or done == total:
                         print(f"  Descriptions: {done}/{total}", flush=True)
 
@@ -1242,7 +1388,7 @@ class InternetArchiveService:
 
         return results
 
-    def _fetch_all_descriptions_threaded(self, identifiers: list[str], workers: int) -> dict[str, str]:
+    def _fetch_all_descriptions_threaded(self, identifiers: list[str], workers: int, report=None) -> dict[str, str]:
         """Fallback threaded fetch if aiohttp is unavailable."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         html_map: dict[str, str] = {}
@@ -1255,6 +1401,8 @@ class InternetArchiveService:
             for future in as_completed(future_to_id):
                 ident = future_to_id[future]
                 done += 1
+                if report:
+                    report("descriptions", done, len(identifiers))
                 try:
                     result = future.result()
                     if result:
@@ -1288,6 +1436,9 @@ class InternetArchiveService:
             "fl[]": ["identifier", "title", "description"],
             "rows": rows,
             "page": page,
+            # Without a stable sort, archive.org's paging returns overlapping
+            # pages (duplicates), so a sync silently misses films.
+            "sort[]": "identifier asc",
             "output": "json",
         }
         r = requests.get(url, params=params, timeout=30)
@@ -1316,6 +1467,9 @@ class RatingService:
         if not row:
             return None
         return {"identifier": row["ia_identifier"], "title": row["title"], "description": (row["description"] if ("description" in row.keys()) else None)}
+
+    def count_films(self) -> int:
+        return self.films.count()
 
     def get_film_by_identifier(self, identifier: str) -> dict | None:
         row = self.films.get_by_identifier(identifier)
@@ -1672,7 +1826,16 @@ def next_film():
     rs = current_app.services["rating"]
     film = rs.get_next_unrated_film(uid)
     if not film:
-        return jsonify({"error": "No unrated films left (did you sync?)"}), 404
+        # Distinguish "nothing has been loaded" from "this user rated everything".
+        if rs.count_films() == 0:
+            return jsonify({
+                "error": "The film database hasn't been set up yet. An admin needs to sync it from the Internet Archive.",
+                "code": "no_films",
+            }), 404
+        return jsonify({
+            "error": "You've rated every film — there's nothing left to rate.",
+            "code": "all_rated",
+        }), 404
     return jsonify({
         "identifier": film["identifier"],
         "title": film["title"],
@@ -2095,15 +2258,49 @@ def update_criterion(cid: int):
 # Film / ratings management
 # ---------------------------------------------------------------------------
 
+def _sync_status_payload() -> dict:
+    payload = current_app.services["sync"].status()
+    payload["film_count"] = current_app.repos["films"].count()
+    return payload
+
+
 @admin_bp.post("/api/admin/sync")
 def sync():
+    """Start an Internet Archive sync in the background; poll /api/admin/sync/status."""
     ok, err = _require_admin_user()
     if err:
         return err
-    ia = current_app.services["ia"]
-    films = current_app.repos["films"]
-    added = ia.sync_collection(films)
-    return jsonify({"ok": True, "added": added, "synced": added})
+    if not current_app.services["sync"].start():
+        return jsonify({"error": "A sync is already running", "status": _sync_status_payload()}), 409
+    return jsonify({"ok": True, "status": _sync_status_payload()}), 202
+
+
+@admin_bp.get("/api/admin/sync/status")
+def sync_status():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(_sync_status_payload())
+
+
+@admin_bp.post("/api/admin/db/empty")
+def empty_db():
+    """Delete all films and all ratings (users and criteria are kept).
+
+    DESTRUCTIVE. The body must be {"confirm": "EMPTY"} so a stray request can't
+    wipe the data. Refused while a sync is running.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") != "EMPTY":
+        return jsonify({"error": 'Send {"confirm": "EMPTY"} to empty the database'}), 400
+    if current_app.services["sync"].is_running():
+        return jsonify({"error": "Wait for the running sync to finish first"}), 409
+    deleted = current_app.repos["films"].delete_all_with_ratings()
+    current_app.logger.warning("admin.db.emptied user_id=%s deleted=%s", session.get("user_id"), deleted)
+    return jsonify({"ok": True, "deleted": deleted})
 
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():
@@ -2143,7 +2340,9 @@ Key behaviors (implement fully):
                    "criteria": CriteriaRepository, "ratings": RatingRepository }
     app.services = { "ia": InternetArchiveService, "auth": AuthService,
                      "github_auth": GitHubAuthService or None (None unless settings.github_enabled),
-                     "rating": RatingService, "summary": SummaryService }
+                     "rating": RatingService, "sync": SyncService(ia, films),
+                     "summary": SummaryService }
+  Film data is NEVER synced at startup — only via the admin sync endpoint.
 - Startup schema check: fetchall PRAGMA table_info(users), log column names,
   warn if is_admin missing
 - Registers blueprints: auth_bp, user_bp, films_bp, admin_bp
@@ -2233,7 +2432,7 @@ Helper functions at module level:
 State:
   me, authScheme (default 'ia'), email, password
   film, criteria (sorted by sortOrder ascending), scores (key->string)
-  syncing (bool), syncResult (string)
+  notice ({ code, text } | null — "no_films"/"all_rated" shown as a neutral notice, not an error)
   loading, error, submitError
 
 apiJson(path, opts):
@@ -2244,8 +2443,10 @@ loadMe(): GET /api/me -> setMe(data) or setMe(null)
 loadCriteria(): GET /api/criteria -> sort by sortOrder, setCriteria
 loadNextFilm(): GET /api/films/next
   ok -> setFilm(data), setScores({})
-  fail -> setFilm(null), setError(data?.error || 'No unrated films left...')
-  Note: 404 = all films rated, not a crash
+  fail -> setFilm(null); if data.code is "no_films" or "all_rated" -> setNotice({code, text: data.error})
+          (admins also see "use Admin -> Actions -> Sync Collection" under the no_films notice)
+          else setError(data?.error || 'Could not load the next film')
+  Note: 404 = nothing to rate, not a crash
 
 login(isRegister): POST register or login
   body = authScheme === 'ia' ? { username: email, password } : { email, password }
@@ -2260,12 +2461,15 @@ submit():
   ok -> loadNextFilm()
   fail -> setSubmitError(data?.error || 'Submit failed')
 
-adminSync():
-  setSyncing(true), setSyncResult(''), setError('')
-  POST /api/admin/sync
-  setSyncing(false)
-  ok -> setSyncResult(`Sync complete — ${data.synced ?? '?'} films updated.`), loadNextFilm()
-  fail -> setError(data?.error || 'Admin sync failed')
+AdminPanel Actions tab (props: apiJson, onDataChanged = loadNextFilm):
+  shows "Films in database: N" from GET /api/admin/sync/status (film_count)
+  "Sync Collection" button -> POST /api/admin/sync (409 = already running, just show its progress);
+    status is loaded on mount and polled every 1.5s while state === 'running' (survives reloads);
+    shows a <progress> bar and text ("Fetching film list… N found" / "Fetching film descriptions… X of Y" /
+    "Last sync finished … — N films." / "Last sync failed: …"); when a watched sync stops running, onDataChanged()
+  "Danger zone": "Empty film database…" opens a panel explaining that films + ratings are deleted (users/criteria
+    kept); the Empty button stays disabled until the user types EMPTY; POST /api/admin/db/empty {confirm:"EMPTY"};
+    disabled while a sync runs; on success shows counts, clears cached DB-browser data, onDataChanged()
 
 useEffect on mount: GET /api/config -> setAuthScheme(data.auth_scheme ?? 'ia'); loadMe()
 useEffect on [me]: if me -> setLoading(true), Promise.all([loadCriteria(), loadNextFilm()]).finally(setLoading(false))

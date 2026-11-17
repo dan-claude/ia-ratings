@@ -43,6 +43,7 @@ from server.services.auth_service import AuthService
 from server.services.github_auth_service import GitHubAuthService
 from server.services.ia_service import InternetArchiveService
 from server.services.rating_service import RatingService
+from server.services.sync_service import SyncService
 from server.services.summary_service import SummaryService
 
 # Blueprints
@@ -125,6 +126,8 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         else None
     )
     rating = RatingService(films, criteria, ratings)
+    # Film data is only ever synced on demand (admin button); never at startup.
+    sync = SyncService(ia, films)
     summary = SummaryService(criteria, films, ratings, settings.collection)
 
     # Expose for tests / routes
@@ -141,6 +144,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         "auth": auth,
         "github_auth": github_auth,  # None unless GITHUB_CLIENT_ID/SECRET are set
         "rating": rating,
+        "sync": sync,
         "summary": summary,
     }
 

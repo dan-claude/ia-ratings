@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 function archiveDetailsUrl(identifier) {
   return identifier ? `https://archive.org/details/${identifier}` : null
@@ -30,8 +30,32 @@ function isIntString(s) {
 // AdminPanel
 // ---------------------------------------------------------------------------
 
-function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
+function describeSync(st) {
+  if (!st) return ''
+  if (st.state === 'running') {
+    if (st.phase === 'descriptions' && st.total) return `Fetching film descriptions… ${st.done} of ${st.total}`
+    return st.done ? `Fetching film list from the Internet Archive… ${st.done} found` : 'Fetching film list from the Internet Archive…'
+  }
+  if (st.state === 'done') return `Last sync finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.synced} films.`
+  if (st.state === 'error') return `Last sync failed: ${st.error}`
+  return ''
+}
+
+// onDataChanged: called after a sync finishes or the DB is emptied, so the
+// rating view can reload.
+function AdminPanel({ apiJson, onDataChanged }) {
   const [tab, setTab] = useState('actions')
+
+  // Sync state (status comes from the server, so it survives a page reload)
+  const [syncStatus, setSyncStatus] = useState(null)   // { state, phase, done, total, synced, error, film_count, ... }
+  const [syncMsg, setSyncMsg] = useState('')
+  const prevSyncState = useRef(null)
+
+  // Empty-database state
+  const [emptyOpen, setEmptyOpen] = useState(false)
+  const [emptyConfirmText, setEmptyConfirmText] = useState('')
+  const [emptying, setEmptying] = useState(false)
+  const [emptyMsg, setEmptyMsg] = useState('')
 
   // Criteria state
   const [criteria, setCriteria] = useState(null)
@@ -217,6 +241,58 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
     }
   }
 
+  async function loadSyncStatus() {
+    const { ok, data } = await apiJson('/api/admin/sync/status')
+    if (ok) setSyncStatus(data)
+  }
+
+  async function startSync() {
+    setSyncMsg('')
+    setEmptyMsg('')
+    const { ok, status, data } = await apiJson('/api/admin/sync', { method: 'POST' })
+    if (ok || status === 409) {
+      setSyncStatus(data.status)   // 409 = already running; just show its progress
+    } else {
+      setSyncMsg(`Error: ${data?.error || 'Could not start sync'}`)
+    }
+  }
+
+  async function emptyDatabase() {
+    setEmptying(true)
+    setEmptyMsg('')
+    const { ok, data } = await apiJson('/api/admin/db/empty', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'EMPTY' }),
+    })
+    setEmptying(false)
+    if (ok) {
+      const d = data.deleted || {}
+      setEmptyMsg(`Emptied: ${d.films ?? 0} films and ${d.ratings ?? 0} ratings deleted.`)
+      setEmptyOpen(false)
+      setEmptyConfirmText('')
+      setTables(null); setRows(null)   // invalidate cached DB browser data
+      await loadSyncStatus()
+      onDataChanged()
+    } else {
+      setEmptyMsg(`Error: ${data?.error || 'Could not empty the database'}`)
+    }
+  }
+
+  // Load sync status once, then poll while a sync is running.
+  useEffect(() => { loadSyncStatus() }, [])
+  useEffect(() => {
+    if (syncStatus?.state !== 'running') return
+    const id = setInterval(loadSyncStatus, 1500)
+    return () => clearInterval(id)
+  }, [syncStatus?.state])
+  // When a sync we were watching completes, refresh the rating view.
+  useEffect(() => {
+    const cur = syncStatus?.state
+    if (prevSyncState.current === 'running' && cur && cur !== 'running') onDataChanged()
+    prevSyncState.current = cur
+  }, [syncStatus?.state])
+
   useEffect(() => {
     if (tab === 'db'       && tables   === null) loadTables()
     if (tab === 'users'    && users    === null) loadUsers()
@@ -251,20 +327,85 @@ function AdminPanel({ syncing, syncResult, onSync, apiJson }) {
       <div style={{ padding: 14 }}>
 
         {/* ── Actions ── */}
-        {tab === 'actions' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <button onClick={onSync} disabled={syncing}>
-                {syncing ? 'Syncing…' : 'Sync Collection'}
-              </button>
-              {syncing && <span style={{ fontSize: 13, color: '#666' }}>Fetching from Internet Archive — may take a few minutes…</span>}
-              {syncResult && <span style={{ fontSize: 13, color: '#060' }}>{syncResult}</span>}
+        {tab === 'actions' && (() => {
+          const running = syncStatus?.state === 'running'
+          const pct = running && syncStatus.phase === 'descriptions' && syncStatus.total
+            ? Math.round((100 * syncStatus.done) / syncStatus.total) : null
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ fontSize: 14 }}>
+                Films in database: <strong>{syncStatus ? syncStatus.film_count : '…'}</strong>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div>
+                  <button onClick={startSync} disabled={running}>
+                    {running ? 'Syncing…' : 'Sync Collection'}
+                  </button>
+                </div>
+                {running && (
+                  <progress
+                    style={{ width: 320 }}
+                    {...(pct !== null ? { value: pct, max: 100 } : {})}
+                    aria-label="Sync progress"
+                  />
+                )}
+                {syncStatus && syncStatus.state !== 'idle' && (
+                  <div
+                    role="status"
+                    style={{ fontSize: 13, color: syncStatus.state === 'error' ? '#a00' : running ? '#666' : '#060' }}
+                  >
+                    {describeSync(syncStatus)}
+                  </div>
+                )}
+                {syncMsg && <div style={{ fontSize: 13, color: '#a00' }}>{syncMsg}</div>}
+              </div>
+
+              <div>
+                <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
+              </div>
+
+              <div style={{ borderTop: '1px solid #eee', paddingTop: 12 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Danger zone</div>
+                {!emptyOpen ? (
+                  <button onClick={() => { setEmptyOpen(true); setEmptyMsg('') }} disabled={running} style={{ color: '#a00' }}>
+                    Empty film database…
+                  </button>
+                ) : (
+                  <div style={{ border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 8, padding: 12, maxWidth: 520 }}>
+                    <p style={{ margin: '0 0 8px', fontSize: 13 }}>
+                      This permanently deletes <strong>all films and all ratings</strong>. User accounts and
+                      criteria are kept. Download a backup first (Backup tab) if you might want the data back.
+                      Raters will see "film database hasn't been set up" until you sync again.
+                    </p>
+                    <label style={{ fontSize: 13 }}>
+                      Type <code>EMPTY</code> to confirm:{' '}
+                      <input
+                        value={emptyConfirmText}
+                        onChange={e => setEmptyConfirmText(e.target.value)}
+                        style={{ width: 90 }}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                      <button
+                        onClick={emptyDatabase}
+                        disabled={emptyConfirmText !== 'EMPTY' || emptying || running}
+                        style={{ color: '#a00' }}
+                      >
+                        {emptying ? 'Emptying…' : 'Empty database'}
+                      </button>
+                      <button onClick={() => { setEmptyOpen(false); setEmptyConfirmText('') }} disabled={emptying}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+                {emptyMsg && (
+                  <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? '#a00' : '#060' }}>{emptyMsg}</div>
+                )}
+              </div>
             </div>
-            <div>
-              <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
-            </div>
-          </div>
-        )}
+          )
+        })()}
 
         {/* ── Criteria ── */}
         {tab === 'criteria' && (
@@ -612,8 +753,8 @@ export default function App() {
   const [criteria, setCriteria] = useState([])
   const [scores, setScores] = useState({}) // key -> string (user input)
 
-  const [syncing, setSyncing] = useState(false)
-  const [syncResult, setSyncResult] = useState('')
+  // Shown instead of a film when there is nothing to rate (e.g. DB not synced yet).
+  const [notice, setNotice] = useState(null) // { code, text }
 
   const [loading, setLoading] = useState(false)
 
@@ -679,6 +820,7 @@ export default function App() {
 
   async function loadNextFilm() {
     setError('')
+    setNotice(null)
     setSubmitError('')
     const { ok, data } = await apiJson('/api/films/next')
     if (ok) {
@@ -686,9 +828,12 @@ export default function App() {
       setScores({})
     } else {
       setFilm(null)
-      const msg = data?.error || 'No unrated films left (did you sync?)'
-      // 404 is expected when exhausted; keep it non-fatal
-      if (msg) setError(msg)
+      if (data?.code === 'no_films' || data?.code === 'all_rated') {
+        // Not errors: either nobody has synced the film list yet, or this user is done.
+        setNotice({ code: data.code, text: data.error })
+      } else {
+        setError(data?.error || 'Could not load the next film')
+      }
     }
   }
 
@@ -713,20 +858,6 @@ export default function App() {
     }
 
     // advance
-    await loadNextFilm()
-  }
-
-  async function adminSync() {
-    setError('')
-    setSyncResult('')
-    setSyncing(true)
-    const { ok, data } = await apiJson('/api/admin/sync', { method: 'POST' })
-    setSyncing(false)
-    if (!ok) {
-      setError(data?.error || 'Admin sync failed')
-      return
-    }
-    setSyncResult(`Sync complete — ${data.synced ?? '?'} films updated.`)
     await loadNextFilm()
   }
 
@@ -873,16 +1004,17 @@ export default function App() {
       </div>
 
       {me?.is_admin ? (
-        <AdminPanel
-          syncing={syncing}
-          syncResult={syncResult}
-          onSync={adminSync}
-          apiJson={apiJson}
-        />
+        <AdminPanel apiJson={apiJson} onDataChanged={loadNextFilm} />
       ) : null}
 
       {loading ? <p>Loading…</p> : null}
       {error ? <div style={{ marginTop: 12, color: '#a00' }}>{error}</div> : null}
+      {notice ? (
+        <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, maxWidth: 620 }}>
+          {notice.text}
+          {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>As an admin, use Admin → Actions → Sync Collection.</div> : null}
+        </div>
+      ) : null}
 
       {film ? (
         <div className="film-panel">
@@ -975,7 +1107,7 @@ export default function App() {
 
           {submitError ? <div style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
         </div>
-      ) : (
+      ) : notice || error || loading ? null : (
         <p style={{ marginTop: 14 }}>No films left.</p>
       )}
     </div>
