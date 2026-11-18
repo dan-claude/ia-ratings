@@ -5,6 +5,10 @@ node_modules/
 .DS_Store
 .*~
 app.db
+# SQLite write-ahead log / shared-memory files (hold live data while the server runs)
+app.db-wal
+app.db-shm
+app.db.bak
 client/dist/
 # Only the stray root lockfile; client/package-lock.json IS committed (CI caches on it)
 /package-lock.json
