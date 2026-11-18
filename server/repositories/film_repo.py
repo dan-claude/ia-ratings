@@ -76,6 +76,7 @@ class FilmRepository:
         return c() if callable(c) else c
 
     def upsert_many_from_ia(self, docs: list[dict]) -> int:
+        collection = self.collection  # read once: all rows of one sync go to the same collection
         conn = self.db.connect()
         try:
             total = 0
@@ -87,14 +88,14 @@ class FilmRepository:
                     """
                     INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
                     VALUES (?, ?, ?, ?, ?, NULL, datetime('now'))
-                    ON CONFLICT(ia_identifier) DO UPDATE SET
+                    ON CONFLICT(ia_identifier, collection) DO UPDATE SET
                       title=excluded.title,
                       description=excluded.description,
                       collection=excluded.collection,
                       mediatype=excluded.mediatype,
                       updated_at=datetime('now')
                     """,
-                    (ident, d.get("title"), self._normalize_description(d.get("description")), self.collection, "movies"),
+                    (ident, d.get("title"), self._normalize_description(d.get("description")), collection, "movies"),
                 )
                 total += 1
             conn.commit()
@@ -103,9 +104,11 @@ class FilmRepository:
             conn.close()
 
     def get_by_identifier(self, identifier: str) -> Optional[sqlite3.Row]:
+        """The film with this archive.org identifier in the ACTIVE collection (the same item
+        can be in several collections, each with its own row and ratings)."""
         return self.db.fetchone(
-            "SELECT id, ia_identifier, title, description FROM films WHERE ia_identifier = ?",
-            (identifier,),
+            "SELECT id, ia_identifier, title, description FROM films WHERE ia_identifier = ? AND collection = ?",
+            (identifier, self.collection),
         )
 
     def get_next_unrated_for_user(self, user_id: int) -> Optional[sqlite3.Row]:
@@ -153,8 +156,12 @@ class FilmRepository:
             (self.collection,),
         )
 
-    def existing_identifiers(self, identifiers: list[str]) -> set[str]:
-        """Subset of identifiers that already have a row in films (any collection)."""
+    def existing_identifiers(self, identifiers: list[str], collection: str | None = None) -> set[str]:
+        """Subset of identifiers that already have a film in `collection` (default: the active one).
+
+        A film that exists only in a different collection does NOT count.
+        """
+        collection = collection or self.collection
         found: set[str] = set()
         ids = list(identifiers)
         conn = self.db.connect()
@@ -163,27 +170,31 @@ class FilmRepository:
                 chunk = ids[i:i + 500]
                 q = ",".join("?" * len(chunk))
                 rows = conn.execute(
-                    f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({q})", chunk
+                    f"SELECT ia_identifier FROM films WHERE collection = ? AND ia_identifier IN ({q})",
+                    [collection, *chunk],
                 ).fetchall()
                 found.update(r["ia_identifier"] for r in rows)
         finally:
             conn.close()
         return found
 
-    def import_rows(self, rows: list[dict], on_existing: str) -> dict:
+    def import_rows(self, rows: list[dict], on_existing: str, collection: str | None = None) -> dict:
         """Insert (or update) films from a spreadsheet import in one transaction.
 
         Each row: {identifier, title|None, description|None, metadata|None}.
         on_existing: "skip" leaves films that already exist untouched; "update"
         overwrites the fields the row provides (a missing title/description/metadata
         never blanks out what is stored). New films get title = identifier when the
-        row has no title, and always join this app's collection.
+        row has no title. Films are put in `collection` (default: the active one);
+        "existing" means already in THAT collection (the same item in another
+        collection is a separate film).
         Returns {"added", "updated", "skipped_existing"}.
         """
         if on_existing not in ("skip", "update"):
             raise ValueError('on_existing must be "skip" or "update"')
+        collection = collection or self.collection
         counts = {"added": 0, "updated": 0, "skipped_existing": 0}
-        existing = self.existing_identifiers([r["identifier"] for r in rows])
+        existing = self.existing_identifiers([r["identifier"] for r in rows], collection)
         conn = self.db.connect()
         try:
             with conn:
@@ -200,11 +211,10 @@ class FilmRepository:
                               title = COALESCE(?, title),
                               description = COALESCE(?, description),
                               metadata_json = COALESCE(?, metadata_json),
-                              collection = ?,
                               updated_at = datetime('now')
-                            WHERE ia_identifier = ?
+                            WHERE ia_identifier = ? AND collection = ?
                             """,
-                            (r.get("title"), r.get("description"), meta, self.collection, ident),
+                            (r.get("title"), r.get("description"), meta, ident, collection),
                         )
                         counts["updated"] += 1
                     else:
@@ -213,15 +223,17 @@ class FilmRepository:
                             INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
                             VALUES (?, ?, ?, ?, 'movies', ?, datetime('now'))
                             """,
-                            (ident, r.get("title") or ident, r.get("description"), self.collection, meta),
+                            (ident, r.get("title") or ident, r.get("description"), collection, meta),
                         )
                         counts["added"] += 1
         finally:
             conn.close()
         return counts
 
-    def update_titles(self, titles: dict[str, str]) -> int:
-        """Set looked-up titles, but only where the stored title is blank or just the identifier."""
+    def update_titles(self, titles: dict[str, str], collection: str | None = None) -> int:
+        """Set looked-up titles (for films in `collection`, default the active one), but only
+        where the stored title is blank or just the identifier."""
+        collection = collection or self.collection
         n = 0
         conn = self.db.connect()
         try:
@@ -229,8 +241,9 @@ class FilmRepository:
                 for ident, title in titles.items():
                     n += conn.execute(
                         "UPDATE films SET title = ?, updated_at = datetime('now') "
-                        "WHERE ia_identifier = ? AND (title IS NULL OR title = '' OR title = ia_identifier)",
-                        (title, ident),
+                        "WHERE ia_identifier = ? AND collection = ? "
+                        "AND (title IS NULL OR title = '' OR title = ia_identifier)",
+                        (title, ident, collection),
                     ).rowcount
         finally:
             conn.close()
@@ -239,7 +252,7 @@ class FilmRepository:
     def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
         """Return the subset of identifiers that have no description stored yet.
 
-        Films that aren't in the database at all count as "without": on a first
+        Only films in the active collection count; films that aren't in it at all count as "without": on a first
         sync (e.g. after emptying the database) every film needs its full
         description fetched.
         """
@@ -249,9 +262,9 @@ class FilmRepository:
         try:
             placeholders = ",".join("?" * len(identifiers))
             rows = conn.execute(
-                f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({placeholders})"
+                f"SELECT ia_identifier FROM films WHERE collection = ? AND ia_identifier IN ({placeholders})"
                 f" AND description IS NOT NULL AND description != ''",
-                identifiers,
+                [self.collection, *identifiers],
             ).fetchall()
             return set(identifiers) - {r["ia_identifier"] for r in rows}
         finally:

@@ -36,12 +36,18 @@ class AppSettingsRepository:
         """The collection raters see and sync/import use; the built-in default until set."""
         return self.get("collection") or self.default_collection
 
-    def set_collection(self, collection: str) -> str:
-        collection = (collection or "").strip()
+    @staticmethod
+    def validate_collection(collection) -> str:
+        """Return the trimmed collection name, or raise ValueError with a message for the admin."""
+        collection = (collection or "").strip() if isinstance(collection, str) or collection is None else ""
         if not COLLECTION_RE.match(collection):
             raise ValueError(
-                "Collection must be an archive.org collection identifier: letters, digits, '.', '_' or '-' (max 100 characters)"
+                "Collection must be the name of an archive.org collection: letters, digits, '.', '_' or '-' (max 100 characters)"
             )
+        return collection
+
+    def set_collection(self, collection: str) -> str:
+        collection = self.validate_collection(collection)
         self.set("collection", collection)
         return collection
 

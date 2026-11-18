@@ -122,16 +122,23 @@ admin panel → **Import**.
 
 1. Choose the file. The page guesses which column holds the archive.org link, the title and the
    description (from the cell contents and header names); change any guess with the dropdowns.
+   Also enter the **collection name** the films belong to. It should match the name of an
+   archive.org collection exactly (the last part of the collection's address, e.g.
+   `archive.org/details/2026-public-domain-day-film-contest`). It starts as the active collection;
+   if you type a different one, raters won't see the films until that collection is active, so
+   you can tick "make it the active collection" to switch at the same time.
 2. Optionally tick extra columns to keep. They are stored on the film for admins only and are
    never shown to raters (don't tick personal data such as emails unless you need it).
 3. Check the summary. Only rows whose link is an `archive.org/details/<id>` item are imported;
    rows with YouTube links, free text or no link are skipped and listed with the reason.
-4. If some films are already in the database you must choose: **skip** them or **update** them
-   from the spreadsheet (blank cells never erase stored data).
+4. "Already there" means already in **the collection you entered**: the same archive.org item in a
+   different collection counts as new and gets its own entry (and its own ratings). If some films are
+   already in that collection you must choose: **skip** them or **update** them from the spreadsheet
+   (blank cells never erase stored data).
 5. Leave "Look up missing titles" ticked if the sheet has no title column: titles are fetched from
    archive.org in the background (progress is shown); otherwise the identifier is the title.
 
-Imported films join the active collection (set under *Actions → Film collection*). A later archive.org *sync* will overwrite the
+Imported films are filed under the collection you enter on the Import tab (default: the active one). A later archive.org *sync* will overwrite the
 title and description of films it finds with the same identifier.
 
 ## Testing

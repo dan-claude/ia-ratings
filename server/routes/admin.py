@@ -511,28 +511,37 @@ def import_films():
     data = request.get_json(silent=True) or {}
     dry_run = bool(data.get("dry_run"))
     on_existing = data.get("on_existing")
+    app_settings = current_app.repos["settings"]
+    active = app_settings.get_collection()
     if not dry_run:
         if on_existing not in ("skip", "update"):
             return jsonify({"error": 'on_existing must be "skip" or "update"'}), 400
         if current_app.services["sync"].is_running():
             return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
     try:
+        # The collection the films are put in; defaults to the active one.
+        collection = app_settings.validate_collection(data["collection"]) if data.get("collection") else active
         headers, rows, mapping = _parse_import_request(data)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     importer = current_app.services["import"]
-    items = importer.build_plan(headers, rows, mapping)
+    items = importer.build_plan(headers, rows, mapping, collection)
     summary = importer.summarize(items)
     skipped = importer.skipped_rows(items)
     if dry_run:
         return jsonify({
             "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
-            "samples": importer.samples(items), "collection": current_app.repos["settings"].get_collection(),
+            "samples": importer.samples(items), "collection": collection, "active_collection": active,
         })
     if summary["new"] + summary["existing"] == 0:
         return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
-    result = importer.run(items, on_existing, bool(data.get("lookup_titles")))
+    result = importer.run(items, on_existing, bool(data.get("lookup_titles")), collection)
+    # Optionally make the imported collection the one raters see.
+    activated = bool(data.get("activate_collection")) and collection != active
+    if activated:
+        app_settings.set_collection(collection)
+    result = {**result, "collection": collection, "activated": activated}
     current_app.logger.info("admin.import user_id=%s result=%s", session.get("user_id"), result)
     return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
 

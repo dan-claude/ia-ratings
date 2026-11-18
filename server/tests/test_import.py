@@ -147,7 +147,10 @@ def test_import_adds_films_to_the_configured_collection(app, client):
     make_admin(app, client)
     r = post(client, csv_text=CSV_TEXT, mapping=MAPPING, on_existing="skip")
     assert r.status_code == 200
-    assert r.get_json()["result"] == {"added": 3, "updated": 0, "skipped_existing": 0, "skipped_invalid": 3, "title_lookup_started": False}
+    assert r.get_json()["result"] == {
+        "added": 3, "updated": 0, "skipped_existing": 0, "skipped_invalid": 3, "title_lookup_started": False,
+        "collection": app.settings.collection, "activated": False,
+    }
 
     row = app.db.fetchone("SELECT * FROM films WHERE ia_identifier='rascayu-videoclip'")
     assert row["collection"] == app.settings.collection and row["mediatype"] == "movies"

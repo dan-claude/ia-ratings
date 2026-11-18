@@ -30,6 +30,9 @@ function isIntString(s) {
 // AdminPanel
 // ---------------------------------------------------------------------------
 
+// Same rule as the server: an archive.org collection identifier.
+const COLLECTION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
+
 function describeSync(st) {
   if (!st) return ''
   if (st.state === 'running') {
@@ -65,6 +68,8 @@ function AdminPanel({ apiJson, onDataChanged }) {
   const [impPreview, setImpPreview] = useState(null)  // { headers, row_count, sample_rows, collection }
   const [impMap, setImpMap] = useState({ link: null, title: null, description: null, extra: [] })
   const [impPlan, setImpPlan] = useState(null)        // dry-run result
+  const [impCollection, setImpCollection] = useState('')  // collection the films are put in (starts as the active one)
+  const [impActivate, setImpActivate] = useState(false)    // also make it the active collection
   const [impOnExisting, setImpOnExisting] = useState('')  // '' | 'skip' | 'update' — admin must choose if any exist
   const [impLookup, setImpLookup] = useState(true)
   const [impBusy, setImpBusy] = useState(false)
@@ -285,6 +290,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
     setImpFile(''); setImpCsv(''); setImpPreview(null); setImpPlan(null)
     setImpMap({ link: null, title: null, description: null, extra: [] })
     setImpOnExisting('')
+    setImpCollection(''); setImpActivate(false)
   }
 
   function handleImportFile(e) {
@@ -305,13 +311,14 @@ function AdminPanel({ apiJson, onDataChanged }) {
       setImpCsv(text)
       setImpPreview(data)
       setImpMap({ ...data.suggested_mapping, extra: [] })
+      setImpCollection(data.collection)   // default: the active collection
     }
     reader.onerror = () => setImpMsg('Error: could not read that file')
     reader.readAsText(file)
   }
 
   function importBody(extra = {}) {
-    return JSON.stringify({ csv_text: impCsv, mapping: impMap, ...extra })
+    return JSON.stringify({ csv_text: impCsv, mapping: impMap, collection: impCollection.trim(), ...extra })
   }
 
   async function runImport() {
@@ -319,13 +326,18 @@ function AdminPanel({ apiJson, onDataChanged }) {
     const { ok, data } = await apiJson('/api/admin/import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: importBody({ on_existing: impOnExisting || 'skip', lookup_titles: impLookup }),
+      body: importBody({
+        on_existing: impOnExisting || 'skip',
+        lookup_titles: impLookup,
+        activate_collection: impActivate && impCollection.trim() !== colInfo?.collection,
+      }),
     })
     setImpBusy(false)
     if (!ok) { setImpMsg(`Error: ${data?.error || 'Import failed'}`); return }
     setImpResult({ result: data.result, skipped: data.skipped, file: impFile })
     resetImport()
     setTables(null); setRows(null)
+    await loadCollection()   // the active collection may have changed
     await loadSyncStatus()   // starts progress polling if a title lookup was started
     onDataChanged()
   }
@@ -370,7 +382,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
 
   // Re-check the import (dry run) whenever the file or the column mapping changes.
   useEffect(() => {
-    if (!impCsv || impMap.link === null) { setImpPlan(null); return }
+    if (!impCsv || impMap.link === null || !COLLECTION_RE.test(impCollection.trim())) { setImpPlan(null); return }
     let cancelled = false
     const t = setTimeout(async () => {
       const { ok, data } = await apiJson('/api/admin/import', {
@@ -382,7 +394,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
       if (ok) { setImpPlan(data); setImpMsg('') } else { setImpPlan(null); setImpMsg(`Error: ${data?.error || 'Could not check the import'}`) }
     }, 250)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [impCsv, impMap, colInfo?.collection])
+  }, [impCsv, impMap, impCollection, colInfo?.collection])
 
   // Load sync status once, then poll while a sync is running.
   useEffect(() => { loadSyncStatus(); loadCollection() }, [])
@@ -562,7 +574,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
           })
           const sum = impPlan?.summary
           const needChoice = sum && sum.existing > 0 && !impOnExisting
-          const canImport = !!sum && sum.new + sum.existing > 0 && !needChoice && !impBusy && !running
+          const canImport = !!sum && sum.new + sum.existing > 0 && !needChoice && !impBusy && !running && COLLECTION_RE.test(impCollection.trim())
           const select = (key, optional) => (
             <select value={impMap[key] ?? ''} onChange={setCol(key)}>
               <option value="">{optional ? '— none —' : '— choose a column —'}</option>
@@ -592,7 +604,41 @@ function AdminPanel({ apiJson, onDataChanged }) {
                       <label>Archive.org link <span style={{ color: '#a00' }}>*</span></label>{select('link', false)}
                       <label>Title</label>{select('title', true)}
                       <label>Description</label>{select('description', true)}
+                      <label>Collection <span style={{ color: '#a00' }}>*</span></label>
+                      <input
+                        value={impCollection}
+                        onChange={e => setImpCollection(e.target.value)}
+                        list="known-collections"
+                        style={{ fontFamily: 'monospace' }}
+                        aria-label="archive.org collection name"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <datalist id="known-collections">
+                        {(colInfo?.collections || []).map(c => <option key={c.name} value={c.name} />)}
+                      </datalist>
                     </div>
+                    <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
+                      <strong>Enter the name of an archive.org collection</strong> — it must match the collection's name on the
+                      Internet Archive exactly (the last part of its web address, e.g.{' '}
+                      <code>archive.org/details/<u>2026-public-domain-day-film-contest</u></code>). The films you import are filed
+                      under this name, and raters only see films in the <em>active</em> collection.
+                    </div>
+                    {!COLLECTION_RE.test(impCollection.trim()) && (
+                      <div style={{ marginTop: 4, fontSize: 12, color: '#a00' }}>
+                        Use letters, digits, “.”, “_” or “-” only (no spaces), starting with a letter or digit.
+                      </div>
+                    )}
+                    {COLLECTION_RE.test(impCollection.trim()) && impCollection.trim() !== colInfo?.collection && (
+                      <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, fontSize: 13 }}>
+                        This is not the active collection (<code>{colInfo?.collection}</code>), so raters won’t see these films
+                        until it is made active.
+                        <label style={{ display: 'block', marginTop: 4 }}>
+                          <input type="checkbox" checked={impActivate} onChange={e => setImpActivate(e.target.checked)} />
+                          {' '}Also make <code>{impCollection.trim()}</code> the active collection after importing
+                        </label>
+                      </div>
+                    )}
                     <div style={{ marginTop: 10, fontSize: 13 }}>
                       <div style={{ color: '#555', marginBottom: 4 }}>
                         Also keep these columns (admin-only, never shown to raters; leave empty to keep none):
@@ -627,11 +673,11 @@ function AdminPanel({ apiJson, onDataChanged }) {
                     <div style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: 12, fontSize: 14 }}>
                       <div>
                         Of <strong>{sum.rows}</strong> rows: <strong>{sum.new}</strong> new film{sum.new === 1 ? '' : 's'}
-                        {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in the database</>}
+                        {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in this collection</>}
                         , <strong>{sum.skipped}</strong> skipped.
                       </div>
                       <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>
-                        Films are added to the collection <code>{impPlan.collection}</code> (change it under Actions).
+                        Films will be filed under the collection <code>{impPlan.collection}</code>.
                       </div>
 
                       {impPlan.samples.length > 0 && (
@@ -639,7 +685,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
                           {impPlan.samples.map(f => (
                             <li key={f.row}>
                               <strong>{f.title || <em>(title will be looked up)</em>}</strong> — {f.identifier}
-                              {f.exists && <span style={{ color: '#a60' }}> (already exists)</span>}
+                              {f.exists && <span style={{ color: '#a60' }}> (already in this collection)</span>}
                             </li>
                           ))}
                         </ul>
@@ -657,7 +703,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
 
                       {sum.existing > 0 && (
                         <fieldset style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6 }}>
-                          <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the database — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
+                          <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the collection <code>{impPlan.collection}</code> — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
                           <label style={{ display: 'block', fontSize: 13 }}>
                             <input type="radio" name="on-existing" checked={impOnExisting === 'skip'} onChange={() => setImpOnExisting('skip')} />
                             {' '}Skip them (keep what is stored)
@@ -692,6 +738,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
                   {impResult.result.updated > 0 && `, ${impResult.result.updated} updated`}
                   {impResult.result.skipped_existing > 0 && `, ${impResult.result.skipped_existing} existing left as they were`}
                   {`, ${impResult.result.skipped_invalid} skipped (no archive.org link).`}
+                  {` Collection: ${impResult.result.collection}${impResult.result.activated ? ' (now the active collection)' : ''}.`}
                   {impResult.result.title_lookup_started && ' Looking up titles in the background — progress shows above and under Actions.'}
                 </div>
               )}

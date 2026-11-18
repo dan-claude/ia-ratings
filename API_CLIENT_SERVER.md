@@ -172,7 +172,8 @@ Errors (both 404, with a machine-readable `code`):
   — films exist but this user has rated them all
 
 ### GET /api/films/<identifier> — user
-Returns one film by its Internet Archive identifier.
+Returns one film by its Internet Archive identifier, **in the active collection** (the same item can
+exist in several collections, each as its own film).
 
 Errors:
 - 404 `{ "error": "Film not found" }`
@@ -293,11 +294,18 @@ Imports films from a CSV using a column mapping.
 {
   "csv_text": "…",
   "mapping": { "link": 3, "title": null, "description": 6, "extra": [7] },
+  "collection": "2026-public-domain-day-film-contest",
+  "activate_collection": false,
   "dry_run": false,
   "on_existing": "skip",
   "lookup_titles": true
 }
 ```
+- `collection` — optional; the archive.org collection the films are filed under (defaults to the active
+  collection). It should match the name of an Internet Archive collection exactly (the last part of its
+  web address). Validated like `PUT /api/admin/settings/collection`; 400 if invalid.
+- `activate_collection` — optional; when `true` and `collection` differs from the active one, the
+  collection also becomes the active one after a successful import (so raters see the films).
 - `mapping.link` (required) — 0-based column of the archive.org link. `title` / `description`
   optional (`null` = none); `extra` — columns kept in `films.metadata_json` (admin-only; never
   returned by `/api/films/*`).
@@ -307,16 +315,20 @@ Imports films from a CSV using a column mapping.
   is skipped as a duplicate of its first row.
 - `dry_run: true` — reports without writing: `{ "ok": true, "dry_run": true, "summary":
   { "rows", "new", "existing", "skipped" }, "skipped": [{ "row", "reason" }], "samples": [...],
-  "collection" }` (`row` is the spreadsheet row number, header = 1; `skipped` lists at most 100).
+  "collection", "active_collection" }` (`row` is the spreadsheet row number, header = 1; `skipped` lists
+  at most 100; `collection` is the collection the films would be filed under).
 - Real import requires `on_existing`: `"skip"` leaves films already in the database untouched,
   `"update"` overwrites the fields the sheet provides (blank cells never erase stored data).
-  New films get the identifier as title when no title is given, and join the configured collection.
+  New films get the identifier as title when no title is given.
+- "Existing" means already in the target `collection`. The same archive.org item in a *different*
+  collection is a separate film (its own row and its own ratings), so it counts as new. `"skip"` leaves
+  existing films untouched; `"update"` updates only the rows in the target collection.
 - `lookup_titles: true` — for rows without a title, starts a background job that fetches titles
   from archive.org (never overwriting a real title); follow it via `GET /api/admin/sync/status`
   (`kind: "titles"`).
 
 200: `{ "ok": true, "result": { "added", "updated", "skipped_existing", "skipped_invalid",
-"title_lookup_started" }, "summary": {...}, "skipped": [...] }`
+"title_lookup_started", "collection", "activated" }, "summary": {...}, "skipped": [...] }`
 
 Errors: 400 (bad mapping/file, missing or invalid `on_existing`, or no importable rows);
 409 while a sync or title lookup is running.

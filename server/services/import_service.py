@@ -136,8 +136,12 @@ class ImportService:
 
     # -- planning -----------------------------------------------------------
 
-    def build_plan(self, headers, rows, mapping) -> list[dict]:
-        """Classify every row: importable (new/existing) or skipped with a reason."""
+    def build_plan(self, headers, rows, mapping, collection: str | None = None) -> list[dict]:
+        """Classify every row: importable (new/existing) or skipped with a reason.
+
+        "existing" means the film is already in `collection` (the import target;
+        default: the active collection) — the same item in another collection is new.
+        """
         def cell(cells, idx):
             return cells[idx].strip() if idx is not None and idx < len(cells) else ""
 
@@ -165,7 +169,7 @@ class ImportService:
             item["metadata"] = {"source": "csv_import", "columns": extras} if mapping["extra"] else None
             items.append(item)
 
-        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]])
+        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]], collection)
         for i in items:
             i["exists"] = (not i["skip"]) and i["identifier"] in existing
         return items
@@ -204,18 +208,19 @@ class ImportService:
 
     # -- doing it -----------------------------------------------------------
 
-    def run(self, items: list[dict], on_existing: str, lookup_titles: bool) -> dict:
+    def run(self, items: list[dict], on_existing: str, lookup_titles: bool, collection: str | None = None) -> dict:
         ok = [i for i in items if not i["skip"]]
-        counts = self.films.import_rows(ok, on_existing)
+        counts = self.films.import_rows(ok, on_existing, collection)
         lookup_started = False
         if lookup_titles:
             # Rows that gave no title; update_titles never overwrites a real title.
             ids = [i["identifier"] for i in ok
                    if not i["title"] and not (i["exists"] and on_existing == "skip")]
             if ids:
-                lookup_started = self.sync.start_job("titles", lambda progress: self._lookup_titles(ids, progress))
+                lookup_started = self.sync.start_job(
+                    "titles", lambda progress: self._lookup_titles(ids, progress, collection))
         return {**counts, "skipped_invalid": len(items) - len(ok), "title_lookup_started": lookup_started}
 
-    def _lookup_titles(self, identifiers: list[str], progress) -> int:
+    def _lookup_titles(self, identifiers: list[str], progress, collection: str | None = None) -> int:
         titles = self.ia.fetch_titles(identifiers, progress=progress)
-        return self.films.update_titles(titles)
+        return self.films.update_titles(titles, collection)

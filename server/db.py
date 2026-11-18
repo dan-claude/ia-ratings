@@ -45,13 +45,14 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS films (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              ia_identifier TEXT NOT NULL UNIQUE,
+              ia_identifier TEXT NOT NULL,
               title TEXT,
               description TEXT,
               collection TEXT NOT NULL,
               mediatype TEXT,
               metadata_json TEXT,
-              updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+              UNIQUE (ia_identifier, collection)
             );
 
             CREATE TABLE IF NOT EXISTS criteria (
@@ -139,6 +140,14 @@ class Database:
                 """)
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);")
 
+            # v7: a film is unique per (ia_identifier, collection), not per identifier alone,
+            # so the same archive.org item can be in several collections (e.g. two contest
+            # years) with separate ratings. Older databases need the films table rebuilt
+            # (SQLite can't drop a column's UNIQUE constraint in place).
+            if self._films_unique_on_identifier_only(conn):
+                self._rebuild_films_table(conn)
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES
@@ -149,6 +158,60 @@ class Database:
         finally:
             conn.close()
 
+
+    @staticmethod
+    def _films_unique_on_identifier_only(conn: sqlite3.Connection) -> bool:
+        """True if films still has the old UNIQUE(ia_identifier) constraint."""
+        for idx in conn.execute("PRAGMA index_list(films)").fetchall():
+            if idx["unique"]:
+                cols = [c["name"] for c in conn.execute(f'PRAGMA index_info("{idx["name"]}")').fetchall()]
+                if cols == ["ia_identifier"]:
+                    return True
+        return False
+
+    @staticmethod
+    def _rebuild_films_table(conn: sqlite3.Connection) -> None:
+        """Rebuild films with UNIQUE(ia_identifier, collection), keeping every id.
+
+        Follows SQLite's documented procedure (create new, copy, drop old, rename):
+        foreign keys are switched off for the copy because ratings.film_id points at
+        films(id); ids are preserved, so every rating keeps pointing at the same film.
+        All-or-nothing: any failure rolls back and leaves the old table untouched.
+        """
+        conn.commit()  # PRAGMA foreign_keys is a no-op inside a transaction
+        conn.execute("PRAGMA foreign_keys = OFF;")
+        try:
+            conn.execute("BEGIN")
+            conn.execute("""
+              CREATE TABLE films_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ia_identifier TEXT NOT NULL,
+                title TEXT,
+                description TEXT,
+                collection TEXT NOT NULL,
+                mediatype TEXT,
+                metadata_json TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (ia_identifier, collection)
+              )
+            """)
+            conn.execute("""
+              INSERT INTO films_new (id, ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
+              SELECT id, ia_identifier, title, description, collection, mediatype, metadata_json, updated_at FROM films
+            """)
+            conn.execute("DROP TABLE films")
+            conn.execute("ALTER TABLE films_new RENAME TO films")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_films_collection ON films(collection)")
+            if conn.execute("PRAGMA foreign_key_check").fetchall():
+                raise sqlite3.IntegrityError("foreign key check failed after rebuilding films")
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (7)")
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON;")
 
     def fetchone(self, sql: str, params: Iterable[Any] = ()) -> Optional[sqlite3.Row]:
         conn = self.connect()
