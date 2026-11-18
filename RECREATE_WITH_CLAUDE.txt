@@ -87,6 +87,7 @@ ia_ratings/
       criteria_repo.py
       film_repo.py
       rating_repo.py
+      settings_repo.py
       user_repo.py
     routes/
       __init__.py
@@ -111,6 +112,7 @@ ia_ratings/
       test_criteria.py
       test_films_and_ratings.py
       test_github_auth.py
+      test_collection_setting.py
       test_import.py
       test_isolation.py
       test_sync_and_empty.py
@@ -135,6 +137,11 @@ Table: users
   ia_username   TEXT           <- added by migration v4; NULL for local users
   github_id     TEXT           <- added by migration v5; NULL unless created via GitHub
   github_username TEXT         <- added by migration v5; display only, refreshed on login
+
+Table: app_settings   <- added by migration v6
+  key        TEXT PRIMARY KEY      (e.g. 'collection' = the active archive.org collection)
+  value      TEXT NOT NULL
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 
 Table: films
   id            INTEGER PRIMARY KEY AUTOINCREMENT
@@ -185,6 +192,7 @@ MIGRATIONS (run at startup in db.py):
   v3: ALTER TABLE films ADD COLUMN description TEXT
   v4: ALTER TABLE users ADD COLUMN ia_username TEXT
       + CREATE UNIQUE INDEX idx_users_ia_username ... WHERE ia_username IS NOT NULL
+  v6: CREATE TABLE app_settings (key PRIMARY KEY, value NOT NULL, updated_at) if missing (also in backup/restore order)
   v5: ALTER TABLE users ADD COLUMN github_id TEXT; ADD COLUMN github_username TEXT
       + CREATE UNIQUE INDEX idx_users_github_id ... WHERE github_id IS NOT NULL
 
@@ -235,6 +243,10 @@ Admin: (requires is_admin=1 session)
   POST   /api/admin/sync     -> 202 { ok: true, status }  (starts a BACKGROUND sync; 409 if already running)
   GET    /api/admin/sync/status -> { state: idle|running|done|error, phase: listing|descriptions|null,
                                      done, total, synced, error, started_at, finished_at, film_count }
+  GET    /api/admin/settings -> { collection, default_collection, collections:[{name,films}] }
+  PUT    /api/admin/settings/collection { collection } -> { ok, collection, default_collection, collections, film_count }
+                             validated slug (letters/digits/./_/-, <=100 chars); 400 invalid; 409 while a job runs.
+                             The ACTIVE collection decides which films raters see and where sync/import put films.
   POST   /api/admin/import/preview { csv_text } -> { headers, row_count, sample_rows, suggested_mapping, collection }
   POST   /api/admin/import { csv_text, mapping:{link,title,description,extra[]} (0-based column indexes),
                              dry_run?, on_existing: "skip"|"update" (required unless dry_run), lookup_titles? }
@@ -303,9 +315,10 @@ def _env(name: str, default: str):
 
 @dataclass(frozen=True)
 class Settings:
-    # The Internet Archive collection this app rates. Films are only shown to raters
-    # (and synced / imported) for this collection; change it per contest year.
-    collection: str = _env("IA_COLLECTION", "2026-public-domain-day-film-contest")
+    # DEFAULT Internet Archive collection, used until an admin sets one in the admin
+    # panel (stored in the database: app_settings 'collection'). Films are only shown
+    # to raters (and synced / imported) for the active collection.
+    collection: str = "2026-public-domain-day-film-contest"
     db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
     session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
     # "ia"    — delegate login to archive.org (default)
@@ -462,6 +475,19 @@ class Database:
                 conn.execute("ALTER TABLE users ADD COLUMN github_username TEXT;")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);")
+
+            # v6: app_settings key/value table (e.g. the active film collection,
+            # which admins change from the admin panel).
+            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "app_settings" not in tables:
+                conn.execute("""
+                  CREATE TABLE app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                  )
+                """)
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);")
 
 # ---- SEED DATA ----
             conn.execute("""
@@ -641,6 +667,63 @@ class UserRepository:
             conn.close()
 
 ============================
+FILE: server/repositories/settings_repo.py
+============================
+import re
+from typing import Optional
+
+from ..db import Database
+
+# Internet Archive collection identifiers: letters, digits, '.', '_' and '-'.
+COLLECTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+class AppSettingsRepository:
+    """Key/value settings that admins change at runtime (table `app_settings`)."""
+
+    def __init__(self, db: Database, default_collection: str):
+        self.db = db
+        self.default_collection = default_collection
+
+    def get(self, key: str) -> Optional[str]:
+        row = self.db.fetchone("SELECT value FROM app_settings WHERE key = ?", (key,))
+        return row["value"] if row else None
+
+    def set(self, key: str, value: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')",
+                (key, value),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # -- the active film collection ------------------------------------------
+
+    def get_collection(self) -> str:
+        """The collection raters see and sync/import use; the built-in default until set."""
+        return self.get("collection") or self.default_collection
+
+    def set_collection(self, collection: str) -> str:
+        collection = (collection or "").strip()
+        if not COLLECTION_RE.match(collection):
+            raise ValueError(
+                "Collection must be an archive.org collection identifier: letters, digits, '.', '_' or '-' (max 100 characters)"
+            )
+        self.set("collection", collection)
+        return collection
+
+    def collections_in_use(self) -> list[dict]:
+        """Every collection that has films in the database, with film counts."""
+        rows = self.db.fetchall(
+            "SELECT collection AS name, COUNT(1) AS films FROM films GROUP BY collection ORDER BY collection"
+        )
+        return [{"name": r["name"], "films": int(r["films"])} for r in rows]
+
+============================
 FILE: server/repositories/film_repo.py
 ============================
 import json
@@ -709,9 +792,16 @@ class FilmRepository:
             return self._html_to_text(s)
         return self._clean_plain_text(s)
 
-    def __init__(self, db: Database, collection: str):
+    def __init__(self, db: Database, collection):
+        """collection: a slug, or a zero-arg callable returning the *current* slug
+        (the admin can change it at runtime)."""
         self.db = db
-        self.collection = collection
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def upsert_many_from_ia(self, docs: list[dict]) -> int:
         conn = self.db.connect()
@@ -1597,8 +1687,14 @@ logger = logging.getLogger(__name__)
 
 
 class InternetArchiveService:
-    def __init__(self, collection: str):
-        self.collection = collection
+    def __init__(self, collection):
+        """collection: a slug, or a zero-arg callable returning the current slug."""
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def iter_collection_movies(self, rows: int = 100) -> Iterator[dict]:
         page = 1
@@ -1891,11 +1987,17 @@ from ..repositories.film_repo import FilmRepository
 from ..repositories.rating_repo import RatingRepository
 
 class SummaryService:
-    def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection: str):
+    def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection):
+        """collection: a slug, or a zero-arg callable returning the current slug."""
         self.criteria = criteria
         self.films = films
         self.ratings = ratings
-        self.collection = collection
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def admin_list_criteria(self) -> list[dict]:
         return [dict(r) for r in self.criteria.list_all()]
@@ -2429,6 +2531,7 @@ def revoke_admin(user_id: int):
 # Tables in dependency order for restore (parents before children).
 _RESTORE_ORDER = [
     "schema_migrations",
+    "app_settings",
     "users",
     "criteria",
     "films",
@@ -2682,6 +2785,52 @@ def empty_db():
     return jsonify({"ok": True, "deleted": deleted})
 
 # ---------------------------------------------------------------------------
+# Settings: the active film collection
+# ---------------------------------------------------------------------------
+
+def _collection_payload() -> dict:
+    app_settings = current_app.repos["settings"]
+    return {
+        "collection": app_settings.get_collection(),
+        "default_collection": app_settings.default_collection,
+        "collections": app_settings.collections_in_use(),
+    }
+
+
+@admin_bp.get("/api/admin/settings")
+def get_settings():
+    """The active collection, the built-in default, and every collection that has films."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(_collection_payload())
+
+
+@admin_bp.put("/api/admin/settings/collection")
+def set_collection():
+    """Change the archive.org collection raters see and sync/import use.
+
+    Films already in the database under another collection are kept but hidden from
+    raters until that collection is selected again. Refused while a sync or title
+    lookup is running (they act on the collection).
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    if current_app.services["sync"].is_running():
+        return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
+    try:
+        current_app.repos["settings"].set_collection(data.get("collection") or "")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    current_app.logger.warning(
+        "admin.collection.changed user_id=%s collection=%s", session.get("user_id"), current_app.repos["settings"].get_collection()
+    )
+    return jsonify({"ok": True, **_collection_payload(), "film_count": current_app.repos["films"].count()})
+
+
+# ---------------------------------------------------------------------------
 # Populate films from a spreadsheet (CSV) instead of syncing from archive.org
 # ---------------------------------------------------------------------------
 
@@ -2708,7 +2857,7 @@ def import_preview():
         "row_count": len(rows),
         "sample_rows": [[c[:200] for c in cells] for _, cells in rows[:5]],
         "suggested_mapping": import_service.suggest_mapping(headers, rows),
-        "collection": current_app.settings.collection,
+        "collection": current_app.repos["settings"].get_collection(),
     })
 
 
@@ -2738,7 +2887,7 @@ def import_films():
     if dry_run:
         return jsonify({
             "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
-            "samples": importer.samples(items), "collection": current_app.settings.collection,
+            "samples": importer.samples(items), "collection": current_app.repos["settings"].get_collection(),
         })
     if summary["new"] + summary["existing"] == 0:
         return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
@@ -2782,7 +2931,10 @@ Key behaviors (implement fully):
     app.settings = settings
     app.db = db
     app.repos  = { "users": UserRepository, "films": FilmRepository,
-                   "criteria": CriteriaRepository, "ratings": RatingRepository }
+                   "criteria": CriteriaRepository, "ratings": RatingRepository,
+                   "settings": AppSettingsRepository(db, settings.collection) }
+    FilmRepository / InternetArchiveService / SummaryService receive settings.get_collection (a getter), so the
+    admin-chosen collection applies immediately
     app.services = { "ia": InternetArchiveService, "auth": AuthService,
                      "github_auth": GitHubAuthService or None (None unless settings.github_enabled),
                      "rating": RatingService, "sync": SyncService(ia, films),
@@ -2914,6 +3066,9 @@ AdminPanel Import tab: file input (.csv) -> FileReader text -> POST /api/admin/i
   a debounced dry run (POST /api/admin/import dry_run) shows "N new, M already in the database, K skipped" with the
   skipped rows' reasons; if any films already exist the admin MUST choose skip or update (Import stays disabled
   until chosen); "Look up missing titles" checkbox; Import -> result summary, then loadSyncStatus + onDataChanged
+AdminPanel Actions tab also shows a "Film collection" box: text input (datalist of collections in the DB) +
+  "Change collection" button -> PUT /api/admin/settings/collection; disabled while a job runs or value unchanged;
+  afterwards refreshes "Films in the active collection" and calls onDataChanged()
 AdminPanel Actions tab (props: apiJson, onDataChanged = loadNextFilm):
   shows "Films in database: N" from GET /api/admin/sync/status (film_count)
   "Sync Collection" button -> POST /api/admin/sync (409 = already running, just show its progress);

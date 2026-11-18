@@ -53,6 +53,12 @@ function AdminPanel({ apiJson, onDataChanged }) {
   const [syncMsg, setSyncMsg] = useState('')
   const prevSyncState = useRef(null)
 
+  // Active film collection (admin setting)
+  const [colInfo, setColInfo] = useState(null)   // { collection, default_collection, collections: [{name, films}] }
+  const [colInput, setColInput] = useState('')
+  const [colSaving, setColSaving] = useState(false)
+  const [colMsg, setColMsg] = useState('')
+
   // Spreadsheet (CSV) import state
   const [impFile, setImpFile] = useState('')          // file name, for display
   const [impCsv, setImpCsv] = useState('')            // CSV text
@@ -255,6 +261,26 @@ function AdminPanel({ apiJson, onDataChanged }) {
     }
   }
 
+  async function loadCollection() {
+    const { ok, data } = await apiJson('/api/admin/settings')
+    if (ok) { setColInfo(data); setColInput(data.collection) }
+  }
+
+  async function saveCollection() {
+    setColSaving(true); setColMsg('')
+    const { ok, data } = await apiJson('/api/admin/settings/collection', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection: colInput }),
+    })
+    setColSaving(false)
+    if (!ok) { setColMsg(`Error: ${data?.error || 'Could not change the collection'}`); return }
+    setColInfo(data); setColInput(data.collection)
+    setColMsg(`Collection set to ${data.collection} (${data.film_count} film${data.film_count === 1 ? '' : 's'} in it).`)
+    await loadSyncStatus()   // refreshes "Films in database"
+    onDataChanged()          // rating view reloads for the new collection
+  }
+
   function resetImport() {
     setImpFile(''); setImpCsv(''); setImpPreview(null); setImpPlan(null)
     setImpMap({ link: null, title: null, description: null, extra: [] })
@@ -356,10 +382,10 @@ function AdminPanel({ apiJson, onDataChanged }) {
       if (ok) { setImpPlan(data); setImpMsg('') } else { setImpPlan(null); setImpMsg(`Error: ${data?.error || 'Could not check the import'}`) }
     }, 250)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [impCsv, impMap])
+  }, [impCsv, impMap, colInfo?.collection])
 
   // Load sync status once, then poll while a sync is running.
-  useEffect(() => { loadSyncStatus() }, [])
+  useEffect(() => { loadSyncStatus(); loadCollection() }, [])
   useEffect(() => {
     if (syncStatus?.state !== 'running') return
     const id = setInterval(loadSyncStatus, 1500)
@@ -412,8 +438,46 @@ function AdminPanel({ apiJson, onDataChanged }) {
             ? Math.round((100 * syncStatus.done) / syncStatus.total) : null
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 620 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Film collection</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    list="known-collections"
+                    value={colInput}
+                    onChange={e => { setColInput(e.target.value); setColMsg('') }}
+                    style={{ width: 330, fontFamily: 'monospace' }}
+                    aria-label="archive.org collection identifier"
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={colSaving || running}
+                  />
+                  <datalist id="known-collections">
+                    {(colInfo?.collections || []).map(c => <option key={c.name} value={c.name} />)}
+                  </datalist>
+                  <button
+                    onClick={saveCollection}
+                    disabled={!colInfo || colSaving || running || colInput.trim() === colInfo.collection || !colInput.trim()}
+                  >
+                    {colSaving ? 'Saving…' : 'Change collection'}
+                  </button>
+                </div>
+                <div style={{ fontSize: 12, color: '#555', marginTop: 6 }}>
+                  The archive.org collection raters see; Sync and Import add films to it. Films already in the
+                  database under another collection are kept but hidden until you switch back.
+                  {running && ' (Unavailable while a sync or title lookup is running.)'}
+                </div>
+                {colInfo && colInfo.collections.length > 0 && (
+                  <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>
+                    In the database: {colInfo.collections.map(c => `${c.name} (${c.films})`).join(', ')}
+                  </div>
+                )}
+                {colMsg && (
+                  <div style={{ marginTop: 6, fontSize: 13, color: colMsg.startsWith('Error') ? '#a00' : '#060' }}>{colMsg}</div>
+                )}
+              </div>
+
               <div style={{ fontSize: 14 }}>
-                Films in database: <strong>{syncStatus ? syncStatus.film_count : '…'}</strong>
+                Films in the active collection: <strong>{syncStatus ? syncStatus.film_count : '…'}</strong>
               </div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -567,7 +631,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
                         , <strong>{sum.skipped}</strong> skipped.
                       </div>
                       <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>
-                        Films are added to the collection <code>{impPlan.collection}</code>.
+                        Films are added to the collection <code>{impPlan.collection}</code> (change it under Actions).
                       </div>
 
                       {impPlan.samples.length > 0 && (

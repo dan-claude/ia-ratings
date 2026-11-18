@@ -16,9 +16,10 @@ def _env(name: str, default: str):
 
 @dataclass(frozen=True)
 class Settings:
-    # The Internet Archive collection this app rates. Films are only shown to raters
-    # (and synced / imported) for this collection; change it per contest year.
-    collection: str = _env("IA_COLLECTION", "2026-public-domain-day-film-contest")
+    # DEFAULT Internet Archive collection, used until an admin sets one in the admin
+    # panel (stored in the database: app_settings 'collection'). Films are only shown
+    # to raters (and synced / imported) for the active collection.
+    collection: str = "2026-public-domain-day-film-contest"
     db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
     session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
     # "ia"    — delegate login to archive.org (default)

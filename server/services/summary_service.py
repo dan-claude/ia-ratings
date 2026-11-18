@@ -5,11 +5,17 @@ from ..repositories.film_repo import FilmRepository
 from ..repositories.rating_repo import RatingRepository
 
 class SummaryService:
-    def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection: str):
+    def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection):
+        """collection: a slug, or a zero-arg callable returning the current slug."""
         self.criteria = criteria
         self.films = films
         self.ratings = ratings
-        self.collection = collection
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def admin_list_criteria(self) -> list[dict]:
         return [dict(r) for r in self.criteria.list_all()]

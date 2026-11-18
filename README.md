@@ -27,7 +27,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   GitHub button. Setup steps: [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md).
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
   - *Import* — populate the film database from a CSV spreadsheet instead of syncing from archive.org (see below)
-  - *Actions* — sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv`
+  - *Actions* — choose the active film collection; sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv`
   - *Criteria* — add, edit, reorder and deactivate rating criteria
   - *Users* — promote / revoke admins
   - *DB Browser* — table row counts and paged table dumps
@@ -102,14 +102,17 @@ If your Flask server is on a different port, change the proxy target in
 | `AUTH_SCHEME` | `ia` | `ia` or `local` (the `--auth-scheme` flag overrides it) |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | Enable GitHub login when **both** are set — see [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md) |
 | `GITHUB_REDIRECT_URI` | *(unset)* | Rarely needed; overrides which registered callback URL GitHub uses |
-| `IA_COLLECTION` | `2026-public-domain-day-film-contest` | The archive.org collection this app rates: raters only see films in it, and sync/import add films to it. Change it per contest year |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` |
 | `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
 | `PORT` | `5000` | Port gunicorn listens on in the Docker image (Railway sets it) |
 | `VITE_LOG_LEVEL` | `info` | Client console logging: `debug`, `info`, `warn`, `error`, `silent` |
 
-Films are tagged with the collection in `IA_COLLECTION`; if you change it, films that were added under another collection stay in the database but aren't shown to raters.
+The archive.org collection that raters see is **not** an environment variable: an admin sets it in the
+admin panel (*Actions → Film collection*) and it is stored in the database. Until one is set the built-in
+default (`2026-public-domain-day-film-contest`, in `server/config.py`) is used. Sync and spreadsheet import
+add films to the active collection; films that belong to another collection stay in the database but are
+hidden from raters until you switch back.
 
 ## Importing films from a spreadsheet
 
@@ -128,7 +131,7 @@ admin panel → **Import**.
 5. Leave "Look up missing titles" ticked if the sheet has no title column: titles are fetched from
    archive.org in the background (progress is shown); otherwise the identifier is the title.
 
-Imported films join the collection in `IA_COLLECTION`. A later archive.org *sync* will overwrite the
+Imported films join the active collection (set under *Actions → Film collection*). A later archive.org *sync* will overwrite the
 title and description of films it finds with the same identifier.
 
 ## Testing

@@ -37,6 +37,7 @@ from server.logging_config import configure_logging
 from server.repositories.criteria_repo import CriteriaRepository
 from server.repositories.film_repo import FilmRepository
 from server.repositories.rating_repo import RatingRepository
+from server.repositories.settings_repo import AppSettingsRepository
 from server.repositories.user_repo import UserRepository
 
 from server.services.auth_service import AuthService
@@ -109,12 +110,14 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     except Exception:
         app.logger.exception('Failed to introspect users schema')
     users = UserRepository(db)
-    films = FilmRepository(db, settings.collection)
+    app_settings = AppSettingsRepository(db, settings.collection)
+    # Pass the *getter* so a collection change in the admin panel takes effect everywhere at once.
+    films = FilmRepository(db, app_settings.get_collection)
     criteria = CriteriaRepository(db)
     ratings = RatingRepository(db)
 
     # --- Services ---
-    ia = InternetArchiveService(settings.collection)
+    ia = InternetArchiveService(app_settings.get_collection)
     auth = AuthService(users)
     github_auth = (
         GitHubAuthService(
@@ -130,7 +133,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     # Film data is only ever synced on demand (admin button); never at startup.
     sync = SyncService(ia, films)
     importer = ImportService(films, ia, sync)
-    summary = SummaryService(criteria, films, ratings, settings.collection)
+    summary = SummaryService(criteria, films, ratings, app_settings.get_collection)
 
     # Expose for tests / routes
     app.settings = settings
@@ -140,6 +143,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         "films": films,
         "criteria": criteria,
         "ratings": ratings,
+        "settings": app_settings,
     }
     app.services = {
         "ia": ia,

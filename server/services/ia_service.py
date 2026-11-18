@@ -8,8 +8,14 @@ logger = logging.getLogger(__name__)
 
 
 class InternetArchiveService:
-    def __init__(self, collection: str):
-        self.collection = collection
+    def __init__(self, collection):
+        """collection: a slug, or a zero-arg callable returning the current slug."""
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def iter_collection_movies(self, rows: int = 100) -> Iterator[dict]:
         page = 1

@@ -30,6 +30,7 @@ sys.path.insert(0, str(repo_root))
 from server.config import load_settings
 from server.db import Database
 from server.repositories.film_repo import FilmRepository
+from server.repositories.settings_repo import AppSettingsRepository
 from server.services.ia_service import InternetArchiveService
 
 
@@ -50,8 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--collection",
-        default=settings.collection,
-        help=f"IA collection slug (default: {settings.collection})",
+        default=None,
+        help="IA collection slug (default: the collection set in the admin panel / stored in the DB)",
     )
     parser.add_argument(
         "--force",
@@ -60,13 +61,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    db = Database(args.db)
+    if args.collection is None:
+        args.collection = AppSettingsRepository(db, settings.collection).get_collection()
+
     print(f"DB:         {args.db}")
     print(f"Collection: {args.collection}")
     print(f"Workers:    {args.workers}")
     print(f"Force:      {args.force}")
     print()
 
-    db = Database(args.db)
     films_repo = FilmRepository(db, args.collection)
     ia = InternetArchiveService(args.collection)
 

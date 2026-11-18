@@ -126,6 +126,19 @@ class Database:
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL;")
                 conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (5);")
 
+            # v6: app_settings key/value table (e.g. the active film collection,
+            # which admins change from the admin panel).
+            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "app_settings" not in tables:
+                conn.execute("""
+                  CREATE TABLE app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                  )
+                """)
+                conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (6);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES

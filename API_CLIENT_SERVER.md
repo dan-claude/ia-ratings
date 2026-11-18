@@ -250,6 +250,27 @@ CSV import's title lookup (`kind` says which).
 
 The status is held in server memory, so it resets to `idle` on restart.
 
+### GET /api/admin/settings — admin
+```json
+{
+  "collection": "2026-public-domain-day-film-contest",
+  "default_collection": "2026-public-domain-day-film-contest",
+  "collections": [{ "name": "2026-public-domain-day-film-contest", "films": 268 }]
+}
+```
+`collection` is the **active** archive.org collection: raters only see films whose collection matches it,
+and sync / import add films to it. `default_collection` is the built-in value used until an admin sets one.
+`collections` lists every collection that currently has films in the database, with counts.
+
+### PUT /api/admin/settings/collection — admin
+Request: `{ "collection": "2027-public-domain-day-film-contest" }` (whitespace trimmed).
+The value must be an archive.org identifier: letters, digits, `.`, `_`, `-`; starts with a letter or digit; at
+most 100 characters. Takes effect immediately for all users. Films stored under other collections are kept but
+hidden from raters until that collection is selected again.
+
+200: `{ "ok": true, "collection", "default_collection", "collections", "film_count": <films in the new collection> }`
+Errors: 400 invalid value; 409 while a sync or title lookup is running.
+
 ### POST /api/admin/import/preview — admin
 Reads a spreadsheet exported as CSV and suggests which column is which. Saves nothing.
 Request: `{ "csv_text": "<the CSV file's text>" }` (max 2 MB, 5000 data rows; first row = headers).
@@ -262,6 +283,7 @@ Request: `{ "csv_text": "<the CSV file's text>" }` (max 2 MB, 5000 data rows; fi
   "collection": "2026-public-domain-day-film-contest"
 }
 ```
+(`collection` is the active collection the films will be added to.)
 `suggested_mapping` indexes are 0-based positions in `headers`; `link` is the column whose cells
 most often are archive.org item links. 400 `{ "error" }` for an empty/unreadable/oversized file.
 
@@ -420,7 +442,7 @@ nothing is changed.
 The client (`client/src/App.jsx`) calls:
 - `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/github/login` and `/api/auth/github/callback` (when configured), `/api/auth/logout`
 - `/api/criteria`, `/api/films/next`, `/api/films/<identifier>/ratings`
-- Admin panel: `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/import/preview`, `/api/admin/import`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
+- Admin panel: `/api/admin/settings`, `/api/admin/settings/collection`, `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/import/preview`, `/api/admin/import`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,
   `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
   for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`

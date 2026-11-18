@@ -1,5 +1,4 @@
 """CSV (spreadsheet) import of films. Sample data is invented but shaped like a real submissions sheet."""
-import importlib
 import json
 import threading
 
@@ -280,32 +279,3 @@ def test_sync_status_reports_kind(app, client, monkeypatch):
     client.post("/api/admin/sync")
     app.services["sync"].wait(10)
     assert client.get("/api/admin/sync/status").get_json()["kind"] == "sync"
-
-
-# ---- configurable collection --------------------------------------------------------
-
-def test_collection_is_configurable_via_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "c.db"))
-    monkeypatch.setenv("SESSION_SECRET", "s")
-    monkeypatch.setenv("AUTH_SCHEME", "local")
-    monkeypatch.setenv("IA_COLLECTION", "2027-public-domain-day-film-contest")
-    import server.app as app_module
-    importlib.reload(app_module)
-    app = app_module.create_app()
-    app.config.update(TESTING=True)
-    client = app.test_client()
-
-    assert app.settings.collection == "2027-public-domain-day-film-contest"
-    assert app.services["ia"].collection == "2027-public-domain-day-film-contest"
-    make_admin(app, client)
-    post(client, csv_text="Link\nhttps://archive.org/details/a1\n", mapping={"link": 0}, on_existing="skip")
-    assert app.db.fetchone("SELECT collection c FROM films")["c"] == "2027-public-domain-day-film-contest"
-    assert client.get("/api/films/next").status_code == 200
-
-    # films from another collection are not offered to raters
-    app.db.connect().execute("UPDATE films SET collection='other'").connection.commit()
-    assert client.get("/api/films/next").get_json()["code"] == "no_films"
-
-
-def test_default_collection_unchanged(app):
-    assert app.settings.collection == "2026-public-domain-day-film-contest"

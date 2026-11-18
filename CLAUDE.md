@@ -59,7 +59,6 @@ Login body is `{username, password}` in `ia` mode and `{email, password}` in `lo
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
-| `IA_COLLECTION` | `2026-public-domain-day-film-contest` | Internet Archive collection slug this deployment rates. Raters only see films with this `collection`; sync and spreadsheet import both tag films with it. Change it per contest year |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | GitHub OAuth app credentials; GitHub login is enabled only when both are set (see `docs/GITHUB_LOGIN.md`). Secret — set only in Railway variables / local shell |
 | `GITHUB_REDIRECT_URI` | *(unset)* | Optional; sent to GitHub only if set (normally the callback URL registered on the OAuth app is used) |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
@@ -167,7 +166,7 @@ python tools/print_db.py --make-admin NAME@users.archive.org
 
 ## Database
 
-Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `schema_migrations`. Migrations recorded in `schema_migrations`:
+Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `app_settings`, `schema_migrations`. Migrations recorded in `schema_migrations`:
 
 | Version | Change |
 |---------|--------|
@@ -176,6 +175,9 @@ Schema and migrations live in `server/db.py` and are applied on every startup (`
 | 3 | `films.description` |
 | 4 | `users.ia_username` + partial unique index `idx_users_ia_username` |
 | 5 | `users.github_id` + `users.github_username` + partial unique index `idx_users_github_id` |
+| 6 | New table `app_settings(key PRIMARY KEY, value, updated_at)` — holds the admin-chosen film `collection` |
+
+The **active film collection** is a runtime admin setting (`app_settings` row `collection`, read through `AppSettingsRepository.get_collection`; falls back to `Settings.collection`, the built-in default). `FilmRepository`, `InternetArchiveService` and `SummaryService` take that getter, so a change applies immediately everywhere: raters only see films whose `collection` matches, and sync/import tag films with it. `tools/sync.py` defaults to the collection stored in the target DB. `app_settings` is in `_RESTORE_ORDER`, so backups/restores carry it.
 
 Films can come from two places: the archive.org sync, or a CSV import (`server/services/import_service.py`; admin panel → Import). The importer accepts **only** `archive.org/details|embed|download/<id>` links (exact host `archive.org`/`www.archive.org`) — rows without an archive.org source are skipped and reported. The column mapping is by column *index*; optional extra columns go to `films.metadata_json` (admin-only, never returned by `/api/films/*`). Missing titles can be looked up from archive.org by a background job (`SyncService.start_job("titles", …)`); one background job (sync or title lookup) runs at a time, and `import`/`sync`/`empty` return 409 while one runs.
 
@@ -208,6 +210,8 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 |--------|------|-------------|
 | POST | `/api/admin/sync` | Start an Internet Archive sync in the background (202; 409 if one is running) |
 | GET | `/api/admin/sync/status` | Sync progress: `state` idle/running/done/error, `phase`, `done`/`total`, `film_count` |
+| GET | `/api/admin/settings` | Active film collection, the built-in default, and every collection that has films (with counts) |
+| PUT | `/api/admin/settings/collection` | Set the active collection (`{"collection": "slug"}`; validated; 409 while a background job runs) |
 | POST | `/api/admin/import/preview` | Read a CSV (`{"csv_text"}`): headers, row count, sample rows, suggested column mapping. Saves nothing |
 | POST | `/api/admin/import` | Import films from a CSV with a column `mapping`; `dry_run` reports only; real import needs `on_existing` `"skip"`/`"update"`; optional `lookup_titles`; only archive.org item links are imported |
 | POST | `/api/admin/db/empty` | **Destructive.** Delete all films + ratings (keeps users/criteria); body `{"confirm": "EMPTY"}`; 409 while syncing |

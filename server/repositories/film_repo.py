@@ -64,9 +64,16 @@ class FilmRepository:
             return self._html_to_text(s)
         return self._clean_plain_text(s)
 
-    def __init__(self, db: Database, collection: str):
+    def __init__(self, db: Database, collection):
+        """collection: a slug, or a zero-arg callable returning the *current* slug
+        (the admin can change it at runtime)."""
         self.db = db
-        self.collection = collection
+        self._collection = collection
+
+    @property
+    def collection(self) -> str:
+        c = self._collection
+        return c() if callable(c) else c
 
     def upsert_many_from_ia(self, docs: list[dict]) -> int:
         conn = self.db.connect()

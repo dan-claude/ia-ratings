@@ -172,6 +172,7 @@ def revoke_admin(user_id: int):
 # Tables in dependency order for restore (parents before children).
 _RESTORE_ORDER = [
     "schema_migrations",
+    "app_settings",
     "users",
     "criteria",
     "films",
@@ -425,6 +426,52 @@ def empty_db():
     return jsonify({"ok": True, "deleted": deleted})
 
 # ---------------------------------------------------------------------------
+# Settings: the active film collection
+# ---------------------------------------------------------------------------
+
+def _collection_payload() -> dict:
+    app_settings = current_app.repos["settings"]
+    return {
+        "collection": app_settings.get_collection(),
+        "default_collection": app_settings.default_collection,
+        "collections": app_settings.collections_in_use(),
+    }
+
+
+@admin_bp.get("/api/admin/settings")
+def get_settings():
+    """The active collection, the built-in default, and every collection that has films."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(_collection_payload())
+
+
+@admin_bp.put("/api/admin/settings/collection")
+def set_collection():
+    """Change the archive.org collection raters see and sync/import use.
+
+    Films already in the database under another collection are kept but hidden from
+    raters until that collection is selected again. Refused while a sync or title
+    lookup is running (they act on the collection).
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    if current_app.services["sync"].is_running():
+        return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
+    try:
+        current_app.repos["settings"].set_collection(data.get("collection") or "")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    current_app.logger.warning(
+        "admin.collection.changed user_id=%s collection=%s", session.get("user_id"), current_app.repos["settings"].get_collection()
+    )
+    return jsonify({"ok": True, **_collection_payload(), "film_count": current_app.repos["films"].count()})
+
+
+# ---------------------------------------------------------------------------
 # Populate films from a spreadsheet (CSV) instead of syncing from archive.org
 # ---------------------------------------------------------------------------
 
@@ -451,7 +498,7 @@ def import_preview():
         "row_count": len(rows),
         "sample_rows": [[c[:200] for c in cells] for _, cells in rows[:5]],
         "suggested_mapping": import_service.suggest_mapping(headers, rows),
-        "collection": current_app.settings.collection,
+        "collection": current_app.repos["settings"].get_collection(),
     })
 
 
@@ -481,7 +528,7 @@ def import_films():
     if dry_run:
         return jsonify({
             "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
-            "samples": importer.samples(items), "collection": current_app.settings.collection,
+            "samples": importer.samples(items), "collection": current_app.repos["settings"].get_collection(),
         })
     if summary["new"] + summary["existing"] == 0:
         return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
