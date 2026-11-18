@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from typing import Optional
 from ..db import Database
@@ -144,6 +145,89 @@ class FilmRepository:
             "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
             (self.collection,),
         )
+
+    def existing_identifiers(self, identifiers: list[str]) -> set[str]:
+        """Subset of identifiers that already have a row in films (any collection)."""
+        found: set[str] = set()
+        ids = list(identifiers)
+        conn = self.db.connect()
+        try:
+            for i in range(0, len(ids), 500):  # stay under SQLite's bound-variable limit
+                chunk = ids[i:i + 500]
+                q = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({q})", chunk
+                ).fetchall()
+                found.update(r["ia_identifier"] for r in rows)
+        finally:
+            conn.close()
+        return found
+
+    def import_rows(self, rows: list[dict], on_existing: str) -> dict:
+        """Insert (or update) films from a spreadsheet import in one transaction.
+
+        Each row: {identifier, title|None, description|None, metadata|None}.
+        on_existing: "skip" leaves films that already exist untouched; "update"
+        overwrites the fields the row provides (a missing title/description/metadata
+        never blanks out what is stored). New films get title = identifier when the
+        row has no title, and always join this app's collection.
+        Returns {"added", "updated", "skipped_existing"}.
+        """
+        if on_existing not in ("skip", "update"):
+            raise ValueError('on_existing must be "skip" or "update"')
+        counts = {"added": 0, "updated": 0, "skipped_existing": 0}
+        existing = self.existing_identifiers([r["identifier"] for r in rows])
+        conn = self.db.connect()
+        try:
+            with conn:
+                for r in rows:
+                    ident = r["identifier"]
+                    meta = json.dumps(r["metadata"], ensure_ascii=False) if r.get("metadata") else None
+                    if ident in existing:
+                        if on_existing == "skip":
+                            counts["skipped_existing"] += 1
+                            continue
+                        conn.execute(
+                            """
+                            UPDATE films SET
+                              title = COALESCE(?, title),
+                              description = COALESCE(?, description),
+                              metadata_json = COALESCE(?, metadata_json),
+                              collection = ?,
+                              updated_at = datetime('now')
+                            WHERE ia_identifier = ?
+                            """,
+                            (r.get("title"), r.get("description"), meta, self.collection, ident),
+                        )
+                        counts["updated"] += 1
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
+                            VALUES (?, ?, ?, ?, 'movies', ?, datetime('now'))
+                            """,
+                            (ident, r.get("title") or ident, r.get("description"), self.collection, meta),
+                        )
+                        counts["added"] += 1
+        finally:
+            conn.close()
+        return counts
+
+    def update_titles(self, titles: dict[str, str]) -> int:
+        """Set looked-up titles, but only where the stored title is blank or just the identifier."""
+        n = 0
+        conn = self.db.connect()
+        try:
+            with conn:
+                for ident, title in titles.items():
+                    n += conn.execute(
+                        "UPDATE films SET title = ?, updated_at = datetime('now') "
+                        "WHERE ia_identifier = ? AND (title IS NULL OR title = '' OR title = ia_identifier)",
+                        (title, ident),
+                    ).rowcount
+        finally:
+            conn.close()
+        return n
 
     def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
         """Return the subset of identifiers that have no description stored yet.

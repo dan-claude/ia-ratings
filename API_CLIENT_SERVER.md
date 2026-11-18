@@ -223,9 +223,12 @@ films that don't have one yet. It can take minutes; poll
 409 — a sync is already running: `{ "error": "A sync is already running", "status": { ... } }`
 
 ### GET /api/admin/sync/status — admin
+This reports the single background job slot, which is used by the sync and by the
+CSV import's title lookup (`kind` says which).
 ```json
 {
   "state": "running",
+  "kind": "sync",
   "phase": "descriptions",
   "done": 120,
   "total": 268,
@@ -236,15 +239,65 @@ films that don't have one yet. It can take minutes; poll
   "film_count": 268
 }
 ```
-- `state`: `idle` (no sync since the server started), `running`, `done`, or `error`.
+- `state`: `idle` (no job since the server started), `running`, `done`, or `error`.
+- `kind`: `sync` (archive.org sync) or `titles` (title lookup started by an import); `null` when idle.
 - `phase` (only while running): `listing` (reading the film list; `total` is
-  `null`, `done` counts films found so far) or `descriptions` (`done`/`total`
-  films whose description has been fetched).
-- `synced`: number of films fetched by the last finished sync (`done`);
-  `error`: failure message (`error`). `started_at` / `finished_at` are Unix seconds.
+  `null`, `done` counts films found so far), `descriptions` (`done`/`total`
+  films whose description has been fetched) or `titles` (`done`/`total` titles looked up).
+- `synced`: items processed by the last finished job — films fetched (sync) or
+  titles found (titles); `error`: failure message. `started_at` / `finished_at` are Unix seconds.
 - `film_count`: films currently in the database (live count).
 
 The status is held in server memory, so it resets to `idle` on restart.
+
+### POST /api/admin/import/preview — admin
+Reads a spreadsheet exported as CSV and suggests which column is which. Saves nothing.
+Request: `{ "csv_text": "<the CSV file's text>" }` (max 2 MB, 5000 data rows; first row = headers).
+```json
+{
+  "headers": ["Timestamp", "…", "URL/Link to your film at archive.org", "…"],
+  "row_count": 5,
+  "sample_rows": [["11/11/2026 …", "…"]],
+  "suggested_mapping": { "link": 3, "title": null, "description": 6, "extra": [] },
+  "collection": "2026-public-domain-day-film-contest"
+}
+```
+`suggested_mapping` indexes are 0-based positions in `headers`; `link` is the column whose cells
+most often are archive.org item links. 400 `{ "error" }` for an empty/unreadable/oversized file.
+
+### POST /api/admin/import — admin
+Imports films from a CSV using a column mapping.
+```json
+{
+  "csv_text": "…",
+  "mapping": { "link": 3, "title": null, "description": 6, "extra": [7] },
+  "dry_run": false,
+  "on_existing": "skip",
+  "lookup_titles": true
+}
+```
+- `mapping.link` (required) — 0-based column of the archive.org link. `title` / `description`
+  optional (`null` = none); `extra` — columns kept in `films.metadata_json` (admin-only; never
+  returned by `/api/films/*`).
+- **Only archive.org items are imported.** A link must be `archive.org/details/<id>` (also
+  `/embed/<id>`, `/download/<id>`; host exactly `archive.org` or `www.archive.org`). Rows with no
+  link, a non-archive.org link (e.g. YouTube) or free text are skipped; a repeated item in the file
+  is skipped as a duplicate of its first row.
+- `dry_run: true` — reports without writing: `{ "ok": true, "dry_run": true, "summary":
+  { "rows", "new", "existing", "skipped" }, "skipped": [{ "row", "reason" }], "samples": [...],
+  "collection" }` (`row` is the spreadsheet row number, header = 1; `skipped` lists at most 100).
+- Real import requires `on_existing`: `"skip"` leaves films already in the database untouched,
+  `"update"` overwrites the fields the sheet provides (blank cells never erase stored data).
+  New films get the identifier as title when no title is given, and join the configured collection.
+- `lookup_titles: true` — for rows without a title, starts a background job that fetches titles
+  from archive.org (never overwriting a real title); follow it via `GET /api/admin/sync/status`
+  (`kind: "titles"`).
+
+200: `{ "ok": true, "result": { "added", "updated", "skipped_existing", "skipped_invalid",
+"title_lookup_started" }, "summary": {...}, "skipped": [...] }`
+
+Errors: 400 (bad mapping/file, missing or invalid `on_existing`, or no importable rows);
+409 while a sync or title lookup is running.
 
 ### POST /api/admin/db/empty — admin
 **Destructive.** Deletes every film and all ratings and scores (user accounts,
@@ -367,7 +420,7 @@ nothing is changed.
 The client (`client/src/App.jsx`) calls:
 - `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/github/login` and `/api/auth/github/callback` (when configured), `/api/auth/logout`
 - `/api/criteria`, `/api/films/next`, `/api/films/<identifier>/ratings`
-- Admin panel: `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
+- Admin panel: `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/import/preview`, `/api/admin/import`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,
   `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
   for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`

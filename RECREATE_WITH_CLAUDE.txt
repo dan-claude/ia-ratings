@@ -99,6 +99,7 @@ ia_ratings/
       auth_service.py
       github_auth_service.py
       ia_service.py
+      import_service.py
       rating_service.py
       sync_service.py
       summary_service.py
@@ -110,6 +111,7 @@ ia_ratings/
       test_criteria.py
       test_films_and_ratings.py
       test_github_auth.py
+      test_import.py
       test_isolation.py
       test_sync_and_empty.py
   tools/
@@ -233,6 +235,14 @@ Admin: (requires is_admin=1 session)
   POST   /api/admin/sync     -> 202 { ok: true, status }  (starts a BACKGROUND sync; 409 if already running)
   GET    /api/admin/sync/status -> { state: idle|running|done|error, phase: listing|descriptions|null,
                                      done, total, synced, error, started_at, finished_at, film_count }
+  POST   /api/admin/import/preview { csv_text } -> { headers, row_count, sample_rows, suggested_mapping, collection }
+  POST   /api/admin/import { csv_text, mapping:{link,title,description,extra[]} (0-based column indexes),
+                             dry_run?, on_existing: "skip"|"update" (required unless dry_run), lookup_titles? }
+                             dry_run -> { summary:{rows,new,existing,skipped}, skipped:[{row,reason}], samples }
+                             real    -> { result:{added,updated,skipped_existing,skipped_invalid,title_lookup_started}, summary, skipped }
+                             ONLY archive.org item links (archive.org/details|embed|download/<id>) are imported;
+                             400 bad file/mapping/on_existing/no importable rows; 409 while a background job runs
+                             (status endpoint also reports kind: sync|titles and a "titles" phase)
   POST   /api/admin/db/empty { confirm: "EMPTY" } -> { ok, deleted: { rating_scores, ratings, films } }
                              deletes all films + ratings (keeps users/criteria); 400 w/o confirm; 409 during a sync
   GET    /api/admin/ratings.csv -> CSV download
@@ -293,7 +303,9 @@ def _env(name: str, default: str):
 
 @dataclass(frozen=True)
 class Settings:
-    collection: str = "2026-public-domain-day-film-contest"
+    # The Internet Archive collection this app rates. Films are only shown to raters
+    # (and synced / imported) for this collection; change it per contest year.
+    collection: str = _env("IA_COLLECTION", "2026-public-domain-day-film-contest")
     db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
     session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
     # "ia"    — delegate login to archive.org (default)
@@ -631,6 +643,7 @@ class UserRepository:
 ============================
 FILE: server/repositories/film_repo.py
 ============================
+import json
 import sqlite3
 from typing import Optional
 from ..db import Database
@@ -777,6 +790,89 @@ class FilmRepository:
             "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
             (self.collection,),
         )
+
+    def existing_identifiers(self, identifiers: list[str]) -> set[str]:
+        """Subset of identifiers that already have a row in films (any collection)."""
+        found: set[str] = set()
+        ids = list(identifiers)
+        conn = self.db.connect()
+        try:
+            for i in range(0, len(ids), 500):  # stay under SQLite's bound-variable limit
+                chunk = ids[i:i + 500]
+                q = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({q})", chunk
+                ).fetchall()
+                found.update(r["ia_identifier"] for r in rows)
+        finally:
+            conn.close()
+        return found
+
+    def import_rows(self, rows: list[dict], on_existing: str) -> dict:
+        """Insert (or update) films from a spreadsheet import in one transaction.
+
+        Each row: {identifier, title|None, description|None, metadata|None}.
+        on_existing: "skip" leaves films that already exist untouched; "update"
+        overwrites the fields the row provides (a missing title/description/metadata
+        never blanks out what is stored). New films get title = identifier when the
+        row has no title, and always join this app's collection.
+        Returns {"added", "updated", "skipped_existing"}.
+        """
+        if on_existing not in ("skip", "update"):
+            raise ValueError('on_existing must be "skip" or "update"')
+        counts = {"added": 0, "updated": 0, "skipped_existing": 0}
+        existing = self.existing_identifiers([r["identifier"] for r in rows])
+        conn = self.db.connect()
+        try:
+            with conn:
+                for r in rows:
+                    ident = r["identifier"]
+                    meta = json.dumps(r["metadata"], ensure_ascii=False) if r.get("metadata") else None
+                    if ident in existing:
+                        if on_existing == "skip":
+                            counts["skipped_existing"] += 1
+                            continue
+                        conn.execute(
+                            """
+                            UPDATE films SET
+                              title = COALESCE(?, title),
+                              description = COALESCE(?, description),
+                              metadata_json = COALESCE(?, metadata_json),
+                              collection = ?,
+                              updated_at = datetime('now')
+                            WHERE ia_identifier = ?
+                            """,
+                            (r.get("title"), r.get("description"), meta, self.collection, ident),
+                        )
+                        counts["updated"] += 1
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
+                            VALUES (?, ?, ?, ?, 'movies', ?, datetime('now'))
+                            """,
+                            (ident, r.get("title") or ident, r.get("description"), self.collection, meta),
+                        )
+                        counts["added"] += 1
+        finally:
+            conn.close()
+        return counts
+
+    def update_titles(self, titles: dict[str, str]) -> int:
+        """Set looked-up titles, but only where the stored title is blank or just the identifier."""
+        n = 0
+        conn = self.db.connect()
+        try:
+            with conn:
+                for ident, title in titles.items():
+                    n += conn.execute(
+                        "UPDATE films SET title = ?, updated_at = datetime('now') "
+                        "WHERE ia_identifier = ? AND (title IS NULL OR title = '' OR title = ia_identifier)",
+                        (title, ident),
+                    ).rowcount
+        finally:
+            conn.close()
+        return n
 
     def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
         """Return the subset of identifiers that have no description stored yet.
@@ -1161,9 +1257,10 @@ class GitHubAuthService:
 ============================
 FILE: server/services/sync_service.py
 ============================
-"""Runs the Internet Archive collection sync in a background thread.
+"""Runs long admin jobs (the Internet Archive sync, CSV-import title lookups)
+in a background thread, one at a time.
 
-A sync can take minutes, so the admin API starts it and returns immediately;
+A job can take minutes, so the admin API starts it and returns immediately;
 the client polls `status()` to show progress. State lives in this process
 only, which is fine because production runs a single gunicorn worker (see
 CLAUDE.md) — it resets on restart.
@@ -1171,7 +1268,7 @@ CLAUDE.md) — it resets on restart.
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -1192,10 +1289,11 @@ class SyncService:
     def _blank_status() -> dict:
         return {
             "state": "idle",        # idle | running | done | error
-            "phase": None,          # listing | descriptions (while running)
+            "kind": None,           # sync | titles — which job this status is about
+            "phase": None,          # listing | descriptions | titles (while running)
             "done": 0,
             "total": None,
-            "synced": None,         # films fetched by the last finished sync
+            "synced": None,         # items processed by the last finished job (films synced / titles found)
             "error": None,
             "started_at": None,     # unix seconds
             "finished_at": None,
@@ -1210,13 +1308,29 @@ class SyncService:
             return self._status["state"] == "running"
 
     def start(self) -> bool:
-        """Start a sync in the background. Returns False if one is already running."""
+        """Start an Internet Archive collection sync. False if a job is already running."""
+        return self.start_job(
+            "sync",
+            lambda progress: self.ia.sync_collection(self.films, progress=progress),
+            first_phase="listing",
+        )
+
+    def start_job(
+        self,
+        kind: str,
+        fn: Callable[[Callable[[str, int, Optional[int]], None]], int],
+        first_phase: Optional[str] = None,
+    ) -> bool:
+        """Run fn(progress) in the background; fn returns the number of items processed.
+
+        Returns False (and does nothing) if another job is already running.
+        """
         with self._lock:
             if self._status["state"] == "running":
                 return False
             self._status = self._blank_status()
-            self._status.update(state="running", phase="listing", started_at=_now())
-            self._thread = threading.Thread(target=self._run, name="ia-sync", daemon=True)
+            self._status.update(state="running", kind=kind, phase=first_phase or kind, started_at=_now())
+            self._thread = threading.Thread(target=self._run, args=(fn,), name=f"job-{kind}", daemon=True)
             self._thread.start()
             return True
 
@@ -1232,11 +1346,11 @@ class SyncService:
         with self._lock:
             self._status.update(phase=phase, done=done, total=total)
 
-    def _run(self) -> None:
+    def _run(self, fn) -> None:
         try:
-            synced = self.ia.sync_collection(self.films, progress=self._progress)
+            synced = fn(self._progress)
         except Exception as exc:  # noqa: BLE001 — surface any failure to the admin UI
-            logger.exception("sync.failed")
+            logger.exception("job.failed")
             with self._lock:
                 self._status.update(
                     state="error", phase=None, error=str(exc) or exc.__class__.__name__, finished_at=_now()
@@ -1244,6 +1358,231 @@ class SyncService:
             return
         with self._lock:
             self._status.update(state="done", phase=None, synced=synced, finished_at=_now())
+
+============================
+FILE: server/services/import_service.py
+============================
+"""Populate the film database from a spreadsheet exported as CSV.
+
+The admin picks which spreadsheet column holds what (see `mapping` below). Only
+rows whose link points at an archive.org item are imported: the film is played
+from archive.org, so a YouTube link, a bare title or free text is skipped (and
+reported) rather than creating a film that can't be shown.
+
+mapping = {
+    "link":        <column index>,          # required: an archive.org item URL
+    "title":       <column index> | None,   # optional; blank -> looked up / identifier
+    "description": <column index> | None,   # optional
+    "extra":       [<column index>, ...],   # optional: kept in films.metadata_json (admin-only)
+}
+Columns are addressed by index (not header text) so duplicate/blank headers work.
+"""
+import csv
+import io
+import re
+from typing import Optional
+from urllib.parse import urlsplit
+
+MAX_BYTES = 2 * 1024 * 1024
+MAX_ROWS = 5000
+
+_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
+_ARCHIVE_HOSTS = {"archive.org", "www.archive.org"}
+_ITEM_PATHS = {"details", "embed", "download"}
+
+
+def parse_archive_url(value: Optional[str]) -> Optional[str]:
+    """Return the item identifier from an archive.org item URL, else None.
+
+    Accepts https://archive.org/details/<id> (also /embed/<id>, /download/<id>,
+    http, www, no scheme, trailing path/query). The host must be exactly
+    archive.org / www.archive.org; anything else (YouTube, lookalike domains,
+    bare identifiers, free text) returns None.
+    """
+    v = (value or "").strip()
+    if not v or any(c.isspace() for c in v):
+        return None
+    if "://" not in v:
+        v = "https://" + v
+    try:
+        u = urlsplit(v)
+    except ValueError:
+        return None
+    if u.scheme not in ("http", "https") or (u.hostname or "").lower() not in _ARCHIVE_HOSTS:
+        return None
+    parts = [p for p in u.path.split("/") if p]
+    if len(parts) < 2 or parts[0] not in _ITEM_PATHS:
+        return None
+    return parts[1] if _ID_RE.match(parts[1]) else None
+
+
+def parse_csv(text: str) -> tuple[list[str], list[tuple[int, list[str]]]]:
+    """Parse CSV text into (headers, [(row_number, cells)]).
+
+    row_number is the spreadsheet row (header = 1), so messages match what the
+    admin sees. Fully blank rows are dropped; short rows are padded.
+    """
+    if len(text.encode("utf-8")) > MAX_BYTES:
+        raise ValueError(f"File is too large (maximum {MAX_BYTES // (1024 * 1024)} MB)")
+    text = text.lstrip("﻿")
+    try:
+        records = list(csv.reader(io.StringIO(text, newline="")))
+    except csv.Error as exc:
+        raise ValueError(f"Could not read the CSV: {exc}") from exc
+    numbered = [(i + 1, r) for i, r in enumerate(records) if any(c.strip() for c in r)]
+    if not numbered:
+        raise ValueError("The file is empty")
+    _, header_cells = numbered[0]
+    headers = [h.strip() for h in header_cells]
+    width = len(headers)
+    rows = [(n, (cells + [""] * width)[: max(width, len(cells))]) for n, cells in numbered[1:]]
+    if not rows:
+        raise ValueError("The file has a header row but no data rows")
+    if len(rows) > MAX_ROWS:
+        raise ValueError(f"Too many rows (maximum {MAX_ROWS})")
+    return headers, rows
+
+
+def suggest_mapping(headers: list[str], rows: list[tuple[int, list[str]]]) -> dict:
+    """Guess a mapping: the link column is the one whose cells most often are archive.org links."""
+    best, best_n = None, 0
+    for i in range(len(headers)):
+        n = sum(1 for _, cells in rows if i < len(cells) and parse_archive_url(cells[i]))
+        if n > best_n:
+            best, best_n = i, n
+
+    def find(pattern: str, skip: Optional[int]) -> Optional[int]:
+        rx = re.compile(pattern, re.IGNORECASE)
+        for i, h in enumerate(headers):
+            if i != skip and rx.search(h):
+                return i
+        return None
+
+    return {
+        "link": best,
+        "title": find(r"\btitle\b", best),
+        "description": find(r"description|statement|synopsis|summary", best),
+        "extra": [],
+    }
+
+
+def validate_mapping(mapping, ncols: int) -> dict:
+    """Return a cleaned mapping or raise ValueError with a message for the admin."""
+    if not isinstance(mapping, dict):
+        raise ValueError("mapping is required")
+
+    def col(name: str, required: bool = False) -> Optional[int]:
+        v = mapping.get(name)
+        if v is None or v == "":
+            if required:
+                raise ValueError(f"Choose which column holds the {name}")
+            return None
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v < ncols:
+            raise ValueError(f"Invalid column for {name}")
+        return v
+
+    extra = mapping.get("extra") or []
+    if not isinstance(extra, list) or any(isinstance(x, bool) or not isinstance(x, int) or not 0 <= x < ncols for x in extra):
+        raise ValueError("Invalid extra columns")
+    return {
+        "link": col("link", required=True),
+        "title": col("title"),
+        "description": col("description"),
+        "extra": list(dict.fromkeys(extra)),
+    }
+
+
+class ImportService:
+    def __init__(self, films, ia, sync):
+        self.films = films
+        self.ia = ia
+        self.sync = sync
+
+    # -- planning -----------------------------------------------------------
+
+    def build_plan(self, headers, rows, mapping) -> list[dict]:
+        """Classify every row: importable (new/existing) or skipped with a reason."""
+        def cell(cells, idx):
+            return cells[idx].strip() if idx is not None and idx < len(cells) else ""
+
+        items, first_row_for = [], {}
+        for rownum, cells in rows:
+            link = cell(cells, mapping["link"])
+            ident = parse_archive_url(link)
+            item = {"row": rownum, "identifier": ident, "skip": None}
+            if not link:
+                item["skip"] = "No link"
+            elif not ident:
+                item["skip"] = "Not an archive.org item link"
+            elif ident in first_row_for:
+                item["skip"] = f"Duplicate of row {first_row_for[ident]}"
+            if item["skip"]:
+                items.append(item)
+                continue
+            first_row_for[ident] = rownum
+            item["title"] = cell(cells, mapping["title"]) or None
+            item["description"] = (
+                self.films._normalize_description(cell(cells, mapping["description"])) or None
+            )
+            extras = {headers[i] or f"column {i + 1}": cells[i].strip()
+                      for i in mapping["extra"] if i < len(cells) and cells[i].strip()}
+            item["metadata"] = {"source": "csv_import", "columns": extras} if mapping["extra"] else None
+            items.append(item)
+
+        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]])
+        for i in items:
+            i["exists"] = (not i["skip"]) and i["identifier"] in existing
+        return items
+
+    @staticmethod
+    def summarize(items: list[dict]) -> dict:
+        ok = [i for i in items if not i["skip"]]
+        return {
+            "rows": len(items),
+            "new": sum(1 for i in ok if not i["exists"]),
+            "existing": sum(1 for i in ok if i["exists"]),
+            "skipped": len(items) - len(ok),
+        }
+
+    @staticmethod
+    def skipped_rows(items: list[dict], limit: int = 100) -> list[dict]:
+        return [{"row": i["row"], "reason": i["skip"]} for i in items if i["skip"]][:limit]
+
+    @staticmethod
+    def samples(items: list[dict], limit: int = 5) -> list[dict]:
+        out = []
+        for i in items:
+            if i["skip"]:
+                continue
+            desc = i["description"] or ""
+            out.append({
+                "row": i["row"],
+                "identifier": i["identifier"],
+                "title": i["title"],            # None -> will be looked up / identifier
+                "description": desc[:200] + ("…" if len(desc) > 200 else ""),
+                "exists": i["exists"],
+            })
+            if len(out) >= limit:
+                break
+        return out
+
+    # -- doing it -----------------------------------------------------------
+
+    def run(self, items: list[dict], on_existing: str, lookup_titles: bool) -> dict:
+        ok = [i for i in items if not i["skip"]]
+        counts = self.films.import_rows(ok, on_existing)
+        lookup_started = False
+        if lookup_titles:
+            # Rows that gave no title; update_titles never overwrites a real title.
+            ids = [i["identifier"] for i in ok
+                   if not i["title"] and not (i["exists"] and on_existing == "skip")]
+            if ids:
+                lookup_started = self.sync.start_job("titles", lambda progress: self._lookup_titles(ids, progress))
+        return {**counts, "skipped_invalid": len(items) - len(ok), "title_lookup_started": lookup_started}
+
+    def _lookup_titles(self, identifiers: list[str], progress) -> int:
+        titles = self.ia.fetch_titles(identifiers, progress=progress)
+        return self.films.update_titles(titles)
 
 ============================
 FILE: server/services/ia_service.py
@@ -1412,6 +1751,44 @@ class InternetArchiveService:
                 except Exception as e:
                     logger.warning("fetch failed for %s: %s", ident, e)
         return html_map
+
+    def fetch_title(self, identifier: str) -> Optional[str]:
+        """Fetch an item's title from the metadata API. Returns None on failure/absence."""
+        url = f"https://archive.org/metadata/{identifier}/metadata/title"
+        try:
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            result = r.json().get("result")
+            if isinstance(result, list):
+                result = result[0] if result else None
+            if isinstance(result, str) and result.strip():
+                return result.strip()
+            return None
+        except Exception as e:
+            logger.warning("fetch_title failed for %s: %s", identifier, e)
+            return None
+
+    def fetch_titles(
+        self,
+        identifiers: list[str],
+        workers: int = 10,
+        progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    ) -> dict[str, str]:
+        """Look up titles for many items concurrently. Items without a title are omitted."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        titles: dict[str, str] = {}
+        total = len(identifiers)
+        if progress:
+            progress("titles", 0, total)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(self.fetch_title, ident): ident for ident in identifiers}
+            for done, future in enumerate(as_completed(futures), 1):
+                title = future.result()
+                if title:
+                    titles[futures[future]] = title
+                if progress:
+                    progress("titles", done, total)
+        return titles
 
     def fetch_description_html(self, identifier: str) -> Optional[str]:
         """Fetch the HTML description from the metadata API (sync). Returns None on failure."""
@@ -1884,6 +2261,8 @@ import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
+from ..services import import_service
+
 admin_bp = Blueprint("admin", __name__)
 
 # ---------------------------------------------------------------------------
@@ -2302,6 +2681,72 @@ def empty_db():
     current_app.logger.warning("admin.db.emptied user_id=%s deleted=%s", session.get("user_id"), deleted)
     return jsonify({"ok": True, "deleted": deleted})
 
+# ---------------------------------------------------------------------------
+# Populate films from a spreadsheet (CSV) instead of syncing from archive.org
+# ---------------------------------------------------------------------------
+
+def _parse_import_request(data: dict):
+    """Return (headers, rows, mapping) from an import request body, or raise ValueError."""
+    headers, rows = import_service.parse_csv(data.get("csv_text") or "")
+    mapping = import_service.validate_mapping(data.get("mapping"), len(headers))
+    return headers, rows, mapping
+
+
+@admin_bp.post("/api/admin/import/preview")
+def import_preview():
+    """Read a CSV and suggest a column mapping. Saves nothing."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        headers, rows = import_service.parse_csv(data.get("csv_text") or "")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "headers": headers,
+        "row_count": len(rows),
+        "sample_rows": [[c[:200] for c in cells] for _, cells in rows[:5]],
+        "suggested_mapping": import_service.suggest_mapping(headers, rows),
+        "collection": current_app.settings.collection,
+    })
+
+
+@admin_bp.post("/api/admin/import")
+def import_films():
+    """Import films from a CSV using a column mapping; `dry_run` only reports what would happen."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get("dry_run"))
+    on_existing = data.get("on_existing")
+    if not dry_run:
+        if on_existing not in ("skip", "update"):
+            return jsonify({"error": 'on_existing must be "skip" or "update"'}), 400
+        if current_app.services["sync"].is_running():
+            return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
+    try:
+        headers, rows, mapping = _parse_import_request(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    importer = current_app.services["import"]
+    items = importer.build_plan(headers, rows, mapping)
+    summary = importer.summarize(items)
+    skipped = importer.skipped_rows(items)
+    if dry_run:
+        return jsonify({
+            "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
+            "samples": importer.samples(items), "collection": current_app.settings.collection,
+        })
+    if summary["new"] + summary["existing"] == 0:
+        return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
+    result = importer.run(items, on_existing, bool(data.get("lookup_titles")))
+    current_app.logger.info("admin.import user_id=%s result=%s", session.get("user_id"), result)
+    return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
+
+
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():
     ok, err = _require_admin_user()
@@ -2341,6 +2786,7 @@ Key behaviors (implement fully):
     app.services = { "ia": InternetArchiveService, "auth": AuthService,
                      "github_auth": GitHubAuthService or None (None unless settings.github_enabled),
                      "rating": RatingService, "sync": SyncService(ia, films),
+                     "import": ImportService(films, ia, sync),
                      "summary": SummaryService }
   Film data is NEVER synced at startup — only via the admin sync endpoint.
 - Startup schema check: fetchall PRAGMA table_info(users), log column names,
@@ -2432,6 +2878,8 @@ Helper functions at module level:
 State:
   me, authScheme (default 'ia'), email, password
   film, criteria (sorted by sortOrder ascending), scores (key->string)
+  AdminPanel Import tab state: impFile, impCsv, impPreview, impMap {link,title,description,extra}, impPlan (dry run),
+  impOnExisting ('' until chosen), impLookup (default true), impBusy, impMsg, impResult
   notice ({ code, text } | null — "no_films"/"all_rated" shown as a neutral notice, not an error)
   loading, error, submitError
 
@@ -2461,6 +2909,11 @@ submit():
   ok -> loadNextFilm()
   fail -> setSubmitError(data?.error || 'Submit failed')
 
+AdminPanel Import tab: file input (.csv) -> FileReader text -> POST /api/admin/import/preview; selects for link/title/
+  description pre-filled from suggested_mapping, checkboxes for admin-only extra columns, table of first rows;
+  a debounced dry run (POST /api/admin/import dry_run) shows "N new, M already in the database, K skipped" with the
+  skipped rows' reasons; if any films already exist the admin MUST choose skip or update (Import stays disabled
+  until chosen); "Look up missing titles" checkbox; Import -> result summary, then loadSyncStatus + onDataChanged
 AdminPanel Actions tab (props: apiJson, onDataChanged = loadNextFilm):
   shows "Films in database: N" from GET /api/admin/sync/status (film_count)
   "Sync Collection" button -> POST /api/admin/sync (409 = already running, just show its progress);

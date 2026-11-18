@@ -33,11 +33,13 @@ function isIntString(s) {
 function describeSync(st) {
   if (!st) return ''
   if (st.state === 'running') {
+    if (st.phase === 'titles') return st.total ? `Looking up film titles on archive.org… ${st.done} of ${st.total}` : 'Looking up film titles on archive.org…'
     if (st.phase === 'descriptions' && st.total) return `Fetching film descriptions… ${st.done} of ${st.total}`
     return st.done ? `Fetching film list from the Internet Archive… ${st.done} found` : 'Fetching film list from the Internet Archive…'
   }
+  if (st.state === 'done' && st.kind === 'titles') return `Title lookup finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.synced} titles found.`
   if (st.state === 'done') return `Last sync finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.synced} films.`
-  if (st.state === 'error') return `Last sync failed: ${st.error}`
+  if (st.state === 'error') return `Last ${st.kind === 'titles' ? 'title lookup' : 'sync'} failed: ${st.error}`
   return ''
 }
 
@@ -50,6 +52,18 @@ function AdminPanel({ apiJson, onDataChanged }) {
   const [syncStatus, setSyncStatus] = useState(null)   // { state, phase, done, total, synced, error, film_count, ... }
   const [syncMsg, setSyncMsg] = useState('')
   const prevSyncState = useRef(null)
+
+  // Spreadsheet (CSV) import state
+  const [impFile, setImpFile] = useState('')          // file name, for display
+  const [impCsv, setImpCsv] = useState('')            // CSV text
+  const [impPreview, setImpPreview] = useState(null)  // { headers, row_count, sample_rows, collection }
+  const [impMap, setImpMap] = useState({ link: null, title: null, description: null, extra: [] })
+  const [impPlan, setImpPlan] = useState(null)        // dry-run result
+  const [impOnExisting, setImpOnExisting] = useState('')  // '' | 'skip' | 'update' — admin must choose if any exist
+  const [impLookup, setImpLookup] = useState(true)
+  const [impBusy, setImpBusy] = useState(false)
+  const [impMsg, setImpMsg] = useState('')
+  const [impResult, setImpResult] = useState(null)
 
   // Empty-database state
   const [emptyOpen, setEmptyOpen] = useState(false)
@@ -241,6 +255,55 @@ function AdminPanel({ apiJson, onDataChanged }) {
     }
   }
 
+  function resetImport() {
+    setImpFile(''); setImpCsv(''); setImpPreview(null); setImpPlan(null)
+    setImpMap({ link: null, title: null, description: null, extra: [] })
+    setImpOnExisting('')
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files[0]
+    e.target.value = ''   // allow re-selecting the same file
+    if (!file) return
+    setImpMsg(''); setImpResult(null); resetImport()
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      const text = String(ev.target.result || '')
+      const { ok, data } = await apiJson('/api/admin/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csv_text: text }),
+      })
+      if (!ok) { setImpMsg(`Error: ${data?.error || 'Could not read that file'}`); return }
+      setImpFile(file.name)
+      setImpCsv(text)
+      setImpPreview(data)
+      setImpMap({ ...data.suggested_mapping, extra: [] })
+    }
+    reader.onerror = () => setImpMsg('Error: could not read that file')
+    reader.readAsText(file)
+  }
+
+  function importBody(extra = {}) {
+    return JSON.stringify({ csv_text: impCsv, mapping: impMap, ...extra })
+  }
+
+  async function runImport() {
+    setImpBusy(true); setImpMsg('')
+    const { ok, data } = await apiJson('/api/admin/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: importBody({ on_existing: impOnExisting || 'skip', lookup_titles: impLookup }),
+    })
+    setImpBusy(false)
+    if (!ok) { setImpMsg(`Error: ${data?.error || 'Import failed'}`); return }
+    setImpResult({ result: data.result, skipped: data.skipped, file: impFile })
+    resetImport()
+    setTables(null); setRows(null)
+    await loadSyncStatus()   // starts progress polling if a title lookup was started
+    onDataChanged()
+  }
+
   async function loadSyncStatus() {
     const { ok, data } = await apiJson('/api/admin/sync/status')
     if (ok) setSyncStatus(data)
@@ -278,6 +341,22 @@ function AdminPanel({ apiJson, onDataChanged }) {
       setEmptyMsg(`Error: ${data?.error || 'Could not empty the database'}`)
     }
   }
+
+  // Re-check the import (dry run) whenever the file or the column mapping changes.
+  useEffect(() => {
+    if (!impCsv || impMap.link === null) { setImpPlan(null); return }
+    let cancelled = false
+    const t = setTimeout(async () => {
+      const { ok, data } = await apiJson('/api/admin/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: importBody({ dry_run: true }),
+      })
+      if (cancelled) return
+      if (ok) { setImpPlan(data); setImpMsg('') } else { setImpPlan(null); setImpMsg(`Error: ${data?.error || 'Could not check the import'}`) }
+    }, 250)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [impCsv, impMap])
 
   // Load sync status once, then poll while a sync is running.
   useEffect(() => { loadSyncStatus() }, [])
@@ -317,9 +396,9 @@ function AdminPanel({ apiJson, onDataChanged }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'criteria', 'users', 'db', 'backup'].map(t => (
+        {['actions', 'import', 'criteria', 'users', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {{ actions: 'Actions', criteria: 'Criteria', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
+            {{ actions: 'Actions', import: 'Import', criteria: 'Criteria', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
           </button>
         ))}
       </div>
@@ -340,7 +419,7 @@ function AdminPanel({ apiJson, onDataChanged }) {
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div>
                   <button onClick={startSync} disabled={running}>
-                    {running ? 'Syncing…' : 'Sync Collection'}
+                    {running ? (syncStatus.kind === 'titles' ? 'Busy (title lookup)…' : 'Syncing…') : 'Sync Collection'}
                   </button>
                 </div>
                 {running && (
@@ -403,6 +482,155 @@ function AdminPanel({ apiJson, onDataChanged }) {
                   <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? '#a00' : '#060' }}>{emptyMsg}</div>
                 )}
               </div>
+            </div>
+          )
+        })()}
+
+        {/* ── Import from spreadsheet ── */}
+        {tab === 'import' && (() => {
+          const running = syncStatus?.state === 'running'
+          const headers = impPreview?.headers || []
+          const colLabel = (i) => `${i + 1}. ${(headers[i] || '(no header)').slice(0, 60)}`
+          const setCol = (key) => (e) => setImpMap({ ...impMap, [key]: e.target.value === '' ? null : Number(e.target.value) })
+          const toggleExtra = (i) => setImpMap({
+            ...impMap,
+            extra: impMap.extra.includes(i) ? impMap.extra.filter(x => x !== i) : [...impMap.extra, i],
+          })
+          const sum = impPlan?.summary
+          const needChoice = sum && sum.existing > 0 && !impOnExisting
+          const canImport = !!sum && sum.new + sum.existing > 0 && !needChoice && !impBusy && !running
+          const select = (key, optional) => (
+            <select value={impMap[key] ?? ''} onChange={setCol(key)}>
+              <option value="">{optional ? '— none —' : '— choose a column —'}</option>
+              {headers.map((_, i) => <option key={i} value={i}>{colLabel(i)}</option>)}
+            </select>
+          )
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760 }}>
+              <p style={{ margin: 0, fontSize: 13, color: '#555' }}>
+                Add films from a spreadsheet exported as <strong>CSV</strong> instead of syncing from the Internet Archive.
+                Only rows with an <strong>archive.org</strong> link are imported; other rows (YouTube links, free text, blanks) are skipped.
+              </p>
+
+              {running && <div role="status" style={{ fontSize: 13, color: '#666' }}>{describeSync(syncStatus)}</div>}
+
+              <div>
+                <input type="file" accept=".csv,text/csv" onChange={handleImportFile} disabled={impBusy} />
+                {impFile && <span style={{ marginLeft: 8, fontSize: 13 }}>{impFile} — {impPreview.row_count} rows</span>}
+              </div>
+              {impMsg && <div style={{ fontSize: 13, color: impMsg.startsWith('Error') ? '#a00' : '#060' }}>{impMsg}</div>}
+
+              {impPreview && (
+                <>
+                  <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>Which column is which?</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 12px', alignItems: 'center', fontSize: 14 }}>
+                      <label>Archive.org link <span style={{ color: '#a00' }}>*</span></label>{select('link', false)}
+                      <label>Title</label>{select('title', true)}
+                      <label>Description</label>{select('description', true)}
+                    </div>
+                    <div style={{ marginTop: 10, fontSize: 13 }}>
+                      <div style={{ color: '#555', marginBottom: 4 }}>
+                        Also keep these columns (admin-only, never shown to raters; leave empty to keep none):
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                        {headers.map((_, i) => (
+                          i !== impMap.link && i !== impMap.title && i !== impMap.description && (
+                            <label key={i} style={{ whiteSpace: 'nowrap' }}>
+                              <input type="checkbox" checked={impMap.extra.includes(i)} onChange={() => toggleExtra(i)} /> {colLabel(i)}
+                            </label>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ overflowX: 'auto' }}>
+                    <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>First rows of your file:</div>
+                    <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 12 }}>
+                      <thead><tr>{headers.map((h, i) => <th key={i}>{colLabel(i)}</th>)}</tr></thead>
+                      <tbody>
+                        {impPreview.sample_rows.map((r, ri) => (
+                          <tr key={ri}>{r.map((c, ci) => (
+                            <td key={ci} style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c}</td>
+                          ))}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {sum && (
+                    <div style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: 12, fontSize: 14 }}>
+                      <div>
+                        Of <strong>{sum.rows}</strong> rows: <strong>{sum.new}</strong> new film{sum.new === 1 ? '' : 's'}
+                        {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in the database</>}
+                        , <strong>{sum.skipped}</strong> skipped.
+                      </div>
+                      <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>
+                        Films are added to the collection <code>{impPlan.collection}</code>.
+                      </div>
+
+                      {impPlan.samples.length > 0 && (
+                        <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
+                          {impPlan.samples.map(f => (
+                            <li key={f.row}>
+                              <strong>{f.title || <em>(title will be looked up)</em>}</strong> — {f.identifier}
+                              {f.exists && <span style={{ color: '#a60' }}> (already exists)</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {impPlan.skipped.length > 0 && (
+                        <details style={{ marginTop: 8, fontSize: 13 }}>
+                          <summary>{sum.skipped} skipped row{sum.skipped === 1 ? '' : 's'}</summary>
+                          <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                            {impPlan.skipped.map(r => <li key={r.row}>Row {r.row}: {r.reason}</li>)}
+                            {sum.skipped > impPlan.skipped.length && <li>…and {sum.skipped - impPlan.skipped.length} more</li>}
+                          </ul>
+                        </details>
+                      )}
+
+                      {sum.existing > 0 && (
+                        <fieldset style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6 }}>
+                          <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the database — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
+                          <label style={{ display: 'block', fontSize: 13 }}>
+                            <input type="radio" name="on-existing" checked={impOnExisting === 'skip'} onChange={() => setImpOnExisting('skip')} />
+                            {' '}Skip them (keep what is stored)
+                          </label>
+                          <label style={{ display: 'block', fontSize: 13 }}>
+                            <input type="radio" name="on-existing" checked={impOnExisting === 'update'} onChange={() => setImpOnExisting('update')} />
+                            {' '}Update them from the spreadsheet (blank cells never erase stored data)
+                          </label>
+                        </fieldset>
+                      )}
+
+                      <label style={{ display: 'block', marginTop: 10, fontSize: 13 }}>
+                        <input type="checkbox" checked={impLookup} onChange={e => setImpLookup(e.target.checked)} />
+                        {' '}Look up missing titles on archive.org (runs in the background; otherwise the identifier is used as the title)
+                      </label>
+
+                      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                        <button className="btn-primary" onClick={runImport} disabled={!canImport}>
+                          {impBusy ? 'Importing…' : `Import ${sum.new + (impOnExisting === 'update' ? sum.existing : 0)} film${sum.new + (impOnExisting === 'update' ? sum.existing : 0) === 1 ? '' : 's'}`}
+                        </button>
+                        <button onClick={() => { resetImport(); setImpMsg('') }} disabled={impBusy}>Cancel</button>
+                      </div>
+                      {needChoice && <div style={{ fontSize: 12, color: '#a60', marginTop: 6 }}>Choose what to do with the existing films to continue.</div>}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {impResult && (
+                <div role="status" style={{ border: '1px solid #b9d9b9', background: '#f3faf3', borderRadius: 8, padding: 12, fontSize: 14 }}>
+                  Imported from <strong>{impResult.file}</strong>: {impResult.result.added} added
+                  {impResult.result.updated > 0 && `, ${impResult.result.updated} updated`}
+                  {impResult.result.skipped_existing > 0 && `, ${impResult.result.skipped_existing} existing left as they were`}
+                  {`, ${impResult.result.skipped_invalid} skipped (no archive.org link).`}
+                  {impResult.result.title_lookup_started && ' Looking up titles in the background — progress shows above and under Actions.'}
+                </div>
+              )}
             </div>
           )
         })()}

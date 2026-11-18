@@ -4,6 +4,8 @@ import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
+from ..services import import_service
+
 admin_bp = Blueprint("admin", __name__)
 
 # ---------------------------------------------------------------------------
@@ -421,6 +423,72 @@ def empty_db():
     deleted = current_app.repos["films"].delete_all_with_ratings()
     current_app.logger.warning("admin.db.emptied user_id=%s deleted=%s", session.get("user_id"), deleted)
     return jsonify({"ok": True, "deleted": deleted})
+
+# ---------------------------------------------------------------------------
+# Populate films from a spreadsheet (CSV) instead of syncing from archive.org
+# ---------------------------------------------------------------------------
+
+def _parse_import_request(data: dict):
+    """Return (headers, rows, mapping) from an import request body, or raise ValueError."""
+    headers, rows = import_service.parse_csv(data.get("csv_text") or "")
+    mapping = import_service.validate_mapping(data.get("mapping"), len(headers))
+    return headers, rows, mapping
+
+
+@admin_bp.post("/api/admin/import/preview")
+def import_preview():
+    """Read a CSV and suggest a column mapping. Saves nothing."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        headers, rows = import_service.parse_csv(data.get("csv_text") or "")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "headers": headers,
+        "row_count": len(rows),
+        "sample_rows": [[c[:200] for c in cells] for _, cells in rows[:5]],
+        "suggested_mapping": import_service.suggest_mapping(headers, rows),
+        "collection": current_app.settings.collection,
+    })
+
+
+@admin_bp.post("/api/admin/import")
+def import_films():
+    """Import films from a CSV using a column mapping; `dry_run` only reports what would happen."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get("dry_run"))
+    on_existing = data.get("on_existing")
+    if not dry_run:
+        if on_existing not in ("skip", "update"):
+            return jsonify({"error": 'on_existing must be "skip" or "update"'}), 400
+        if current_app.services["sync"].is_running():
+            return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
+    try:
+        headers, rows, mapping = _parse_import_request(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    importer = current_app.services["import"]
+    items = importer.build_plan(headers, rows, mapping)
+    summary = importer.summarize(items)
+    skipped = importer.skipped_rows(items)
+    if dry_run:
+        return jsonify({
+            "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
+            "samples": importer.samples(items), "collection": current_app.settings.collection,
+        })
+    if summary["new"] + summary["existing"] == 0:
+        return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
+    result = importer.run(items, on_existing, bool(data.get("lookup_titles")))
+    current_app.logger.info("admin.import user_id=%s result=%s", session.get("user_id"), result)
+    return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
+
 
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():
