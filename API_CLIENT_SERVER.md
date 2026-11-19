@@ -383,6 +383,14 @@ first. Columns:
 
 `created_at, user_email, identifier, title, <one column per active criterion key>`
 
+### GET /api/admin/notes.csv — admin
+CSV download (`Content-Disposition: attachment; filename="notes.csv"`) of judges'
+notes on films in the **active collection**, grouped by film (by identifier) and
+oldest first within a film. Columns: `created_at, author, identifier, title, text`
+(`author` as in the notes API). Text cells that start with `=`, `+`, `-` or `@`
+are prefixed with `'` to stop spreadsheet apps evaluating them as formulas.
+Admins can download this even without the judge role.
+
 ### Criteria management
 
 #### GET /api/admin/criteria — admin
@@ -496,7 +504,7 @@ nothing is changed.
 The client (`client/src/App.jsx`) calls:
 - `/api/config`, `/api/me`, `/api/auth/login`, `/api/auth/register` (local mode only), `/api/auth/github/login` and `/api/auth/github/callback` (when configured), `/api/auth/logout`
 - `/api/criteria`, `/api/films/next`, `/api/films/<identifier>/ratings`
-- Admin panel: `/api/admin/settings`, `/api/admin/settings/collection`, `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/import/preview`, `/api/admin/import`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/criteria`,
+- Admin panel: `/api/admin/settings`, `/api/admin/settings/collection`, `/api/admin/sync`, `/api/admin/sync/status`, `/api/admin/import/preview`, `/api/admin/import`, `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/notes.csv`, `/api/admin/criteria`,
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,
   `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
   for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`

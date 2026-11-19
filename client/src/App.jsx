@@ -654,6 +654,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
               <div>
                 <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
+                <a href="/api/admin/notes.csv" style={{ fontSize: 14, marginLeft: 16 }}>⬇ Download notes.csv</a>
               </div>
 
               <div style={{ borderTop: '1px solid #eee', paddingTop: 12 }}>

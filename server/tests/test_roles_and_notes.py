@@ -219,3 +219,70 @@ def test_migration_v8_upgrades_an_old_database(tmp_path):
     assert db.fetchone("SELECT COUNT(1) AS n FROM film_notes")["n"] == 0
     assert db.fetchone("SELECT 1 AS ok FROM schema_migrations WHERE version = 8")["ok"] == 1
     Database(path)  # idempotent: a second startup changes nothing and doesn't fail
+
+
+# ---- notes.csv export -----------------------------------------------------------
+
+def test_notes_csv_is_admin_only(app):
+    assert app.test_client().get("/api/admin/notes.csv").status_code == 401
+    judge, _ = make_user(app, "j@example.com", ["judge"])
+    assert judge.get("/api/admin/notes.csv").status_code == 403
+
+
+def test_notes_csv_lists_notes_for_active_collection(app):
+    import csv
+    import io
+    seed_film(app, "f1")
+    seed_film(app, "f2")
+    j, _ = make_user(app, "j@example.com", ["judge"])
+    admin, _ = make_user(app, "a@example.com", ["admin"])
+    j.post("/api/films/f2/notes", json={"text": "about f2, with a comma, and\na newline"})
+    j.post("/api/films/f1/notes", json={"text": "first"})
+    j.post("/api/films/f1/notes", json={"text": "second"})
+    r = admin.get("/api/admin/notes.csv")
+    assert r.status_code == 200
+    assert r.mimetype == "text/csv"
+    assert 'filename="notes.csv"' in r.headers["Content-Disposition"]
+    rows = list(csv.reader(io.StringIO(r.get_data(as_text=True))))
+    assert rows[0] == ["created_at", "author", "identifier", "title", "text"]
+    assert [(x[2], x[4]) for x in rows[1:]] == [
+        ("f1", "first"), ("f1", "second"), ("f2", "about f2, with a comma, and\na newline"),
+    ]
+    assert rows[1][1] == "j@example.com"
+
+
+def test_notes_csv_only_includes_active_collection(app):
+    import csv
+    import io
+    seed_film(app, "f1")
+    j, jid = make_user(app, "j@example.com", ["judge"])
+    admin, _ = make_user(app, "a@example.com", ["admin"])
+    j.post("/api/films/f1/notes", json={"text": "in active collection"})
+    # A film in another collection, with a note written directly.
+    conn = app.db.connect()
+    with conn:
+        fid = conn.execute("INSERT INTO films (ia_identifier, title, collection) VALUES ('x1', 'X', 'other-coll')").lastrowid
+        conn.execute("INSERT INTO film_notes (film_id, user_id, body) VALUES (?, ?, 'in other collection')", (fid, jid))
+    conn.close()
+    rows = list(csv.reader(io.StringIO(admin.get("/api/admin/notes.csv").get_data(as_text=True))))
+    assert [x[4] for x in rows[1:]] == ["in active collection"]
+
+
+def test_notes_csv_neutralises_spreadsheet_formulas(app):
+    import csv
+    import io
+    seed_film(app, "f1")
+    j, _ = make_user(app, "j@example.com", ["judge"])
+    admin, _ = make_user(app, "a@example.com", ["admin"])
+    j.post("/api/films/f1/notes", json={"text": '=HYPERLINK("http://evil.example","click")'})
+    j.post("/api/films/f1/notes", json={"text": "@SUM(1+1)"})
+    j.post("/api/films/f1/notes", json={"text": "-2+3"})
+    rows = list(csv.reader(io.StringIO(admin.get("/api/admin/notes.csv").get_data(as_text=True))))
+    assert all(x[4].startswith("'") for x in rows[1:])
+    # The API itself still returns the text verbatim.
+    assert j.get("/api/films/f1/notes").get_json()[0]["text"].startswith("=")
+
+
+def test_notes_csv_empty_has_header_only(app):
+    admin, _ = make_user(app, "a@example.com", ["admin"])
+    assert admin.get("/api/admin/notes.csv").get_data(as_text=True).strip() == "created_at,author,identifier,title,text"

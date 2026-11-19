@@ -278,6 +278,8 @@ Admin: (requires is_admin=1 session)
   POST   /api/admin/db/empty { confirm: "EMPTY" } -> { ok, deleted: { rating_scores, ratings, film_notes, films } }
                              deletes all films + ratings (keeps users/criteria); 400 w/o confirm; 409 during a sync
   GET    /api/admin/ratings.csv -> CSV download
+  GET    /api/admin/notes.csv -> CSV download of judges' notes in the active collection: created_at,author,identifier,title,text
+                             (grouped by film; cells starting = + - @ are prefixed with ' against formula injection)
   GET    /api/admin/criteria -> all criteria incl. inactive (raw column names)
   POST   /api/admin/criteria { key, label, min_score, max_score, sort_order, active } -> 201
   PUT    /api/admin/criteria/<id> (partial; key immutable)
@@ -865,7 +867,6 @@ class AppSettingsRepository:
         )
         return [{"name": r["name"], "films": int(r["films"])} for r in rows]
 
-
 ============================
 FILE: server/repositories/note_repo.py
 ============================
@@ -893,6 +894,21 @@ class NoteRepository:
             (int(film_id),),
         )
 
+    def list_for_export(self, collection: str) -> list[sqlite3.Row]:
+        """Every note on films in `collection`, grouped by film, oldest first within a film."""
+        return self.db.fetchall(
+            """
+            SELECT n.created_at, f.ia_identifier AS identifier, f.title AS title, n.body,
+                   COALESCE(u.ia_username, u.github_username, u.email) AS author
+            FROM film_notes n
+            JOIN films f ON f.id = n.film_id
+            JOIN users u ON u.id = n.user_id
+            WHERE f.collection = ?
+            ORDER BY f.ia_identifier, n.created_at, n.id
+            """,
+            (collection,),
+        )
+
     def add(self, film_id: int, user_id: int, body: str) -> sqlite3.Row:
         conn = self.db.connect()
         try:
@@ -912,6 +928,7 @@ class NoteRepository:
                 ).fetchone()
         finally:
             conn.close()
+
 ============================
 FILE: server/repositories/film_repo.py
 ============================
@@ -2184,14 +2201,23 @@ class RatingService:
         # This prevents partially-written ratings if the process crashes between steps.
         self.ratings.upsert_rating_with_scores(user_id, int(film_row["id"]), validated)
 
-
 ============================
 FILE: server/services/note_service.py
 ============================
+import csv
+from io import StringIO
+
 from ..repositories.film_repo import FilmRepository
 from ..repositories.note_repo import NoteRepository
 
 MAX_NOTE_LENGTH = 5000
+
+
+def _csv_safe(value):
+    """Stop spreadsheet apps treating free text as a formula (CSV injection)."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _note_json(row) -> dict:
@@ -2226,6 +2252,16 @@ class NoteService:
             raise ValueError(f"Note is too long (max {MAX_NOTE_LENGTH} characters)")
         film_id = self._film_id(identifier)
         return _note_json(self.notes.add(film_id, user_id, text))
+
+    def export_csv(self) -> str:
+        """All notes on films in the active collection, as CSV (admin download)."""
+        out = StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["created_at", "author", "identifier", "title", "text"])
+        for r in self.notes.list_for_export(self.films.collection):
+            writer.writerow([r["created_at"], _csv_safe(r["author"]), r["identifier"], _csv_safe(r["title"] or ""), _csv_safe(r["body"])])
+        return out.getvalue()
+
 ============================
 FILE: server/services/summary_service.py
 ============================
@@ -3220,6 +3256,19 @@ def import_films():
     return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
 
 
+@admin_bp.get("/api/admin/notes.csv")
+def notes_csv():
+    """Judges' notes for the active collection as a CSV download (admin only)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return Response(
+        current_app.services["notes"].export_csv(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="notes.csv"'},
+    )
+
+
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():
     ok, err = _require_admin_user()
@@ -3440,7 +3489,7 @@ Render (me set):
         "Sync Collection" button (disabled while syncing, label "Syncing…")
         While syncing: "Fetching from Internet Archive — may take a few minutes…" (#666)
         On success: syncResult "Sync complete — N films updated." (#060)
-        Link: "⬇ Download ratings.csv" -> /api/admin/ratings.csv
+        Link: "⬇ Download ratings.csv" -> /api/admin/ratings.csv; "⬇ Download notes.csv" -> /api/admin/notes.csv
       Criteria:
         Refresh + "Add criterion" buttons; table id|key|label|range|sort|active|Edit
         Edit form: Key (new only), Label, Min score, Max score, Sort order, Active

@@ -1,7 +1,17 @@
+import csv
+from io import StringIO
+
 from ..repositories.film_repo import FilmRepository
 from ..repositories.note_repo import NoteRepository
 
 MAX_NOTE_LENGTH = 5000
+
+
+def _csv_safe(value):
+    """Stop spreadsheet apps treating free text as a formula (CSV injection)."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _note_json(row) -> dict:
@@ -36,3 +46,12 @@ class NoteService:
             raise ValueError(f"Note is too long (max {MAX_NOTE_LENGTH} characters)")
         film_id = self._film_id(identifier)
         return _note_json(self.notes.add(film_id, user_id, text))
+
+    def export_csv(self) -> str:
+        """All notes on films in the active collection, as CSV (admin download)."""
+        out = StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["created_at", "author", "identifier", "title", "text"])
+        for r in self.notes.list_for_export(self.films.collection):
+            writer.writerow([r["created_at"], _csv_safe(r["author"]), r["identifier"], _csv_safe(r["title"] or ""), _csv_safe(r["body"])])
+        return out.getvalue()

@@ -575,6 +575,19 @@ def import_films():
     return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
 
 
+@admin_bp.get("/api/admin/notes.csv")
+def notes_csv():
+    """Judges' notes for the active collection as a CSV download (admin only)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return Response(
+        current_app.services["notes"].export_csv(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="notes.csv"'},
+    )
+
+
 @admin_bp.get("/api/admin/ratings.csv")
 def ratings_csv():
     ok, err = _require_admin_user()

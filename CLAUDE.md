@@ -222,6 +222,7 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | POST | `/api/admin/import` | Import films from a CSV with a column `mapping`; `dry_run` reports only; real import needs `on_existing` `"skip"`/`"update"`; optional `lookup_titles`; only archive.org item links are imported |
 | POST | `/api/admin/db/empty` | **Destructive.** Delete all films + ratings (keeps users/criteria); body `{"confirm": "EMPTY"}`; 409 while syncing |
 | GET | `/api/admin/ratings.csv` | Export all ratings |
+| GET | `/api/admin/notes.csv` | Export judges' notes for the active collection (admin; formula-like cells are prefixed with `'`) |
 | GET | `/api/admin/criteria` | List all criteria (incl. inactive) |
 | POST | `/api/admin/criteria` | Create criterion |
 | PUT | `/api/admin/criteria/<id>` | Update criterion |

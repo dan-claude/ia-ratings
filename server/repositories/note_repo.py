@@ -22,6 +22,21 @@ class NoteRepository:
             (int(film_id),),
         )
 
+    def list_for_export(self, collection: str) -> list[sqlite3.Row]:
+        """Every note on films in `collection`, grouped by film, oldest first within a film."""
+        return self.db.fetchall(
+            """
+            SELECT n.created_at, f.ia_identifier AS identifier, f.title AS title, n.body,
+                   COALESCE(u.ia_username, u.github_username, u.email) AS author
+            FROM film_notes n
+            JOIN films f ON f.id = n.film_id
+            JOIN users u ON u.id = n.user_id
+            WHERE f.collection = ?
+            ORDER BY f.ia_identifier, n.created_at, n.id
+            """,
+            (collection,),
+        )
+
     def add(self, film_id: int, user_id: int, body: str) -> sqlite3.Row:
         conn = self.db.connect()
         try:

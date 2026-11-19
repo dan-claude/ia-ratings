@@ -31,7 +31,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   film page, visible to judges only.
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
   - *Import* — populate the film database from a CSV spreadsheet instead of syncing from archive.org (see below)
-  - *Actions* — choose the active film collection; sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv`
+  - *Actions* — choose the active film collection; sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv` and `notes.csv`
   - *Criteria* — add, edit, reorder and deactivate rating criteria
   - *Users* — tick Admin / Judge for each user
   - *DB Browser* — table row counts and paged table dumps
