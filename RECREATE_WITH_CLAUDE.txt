@@ -1,6 +1,6 @@
 Project: IA Film Rater (React + Flask + SQLite) with Admin/Judge mode
 Collection: 2026-public-domain-day-film-contest
-Version: 1.2.0
+Version: 1.3.0
 
 === HOW TO USE THIS FILE ===
 This file is a complete, self-contained specification for recreating this
@@ -3620,6 +3620,9 @@ CHANGELOG
       fixed missing loading state declaration (was accidentally deleted)
     RECREATE_GUARDRAILS.md: rewritten to add code editing rules (read before edit,
       verify after edit, one change per edit)
+- 1.3.0 (2026-11-19): see CHANGELOG.md — GitHub login, background sync + empty-database command, CSV import,
+    admin-set film collection (films unique per identifier+collection), user roles (admin/judge), judges' notes,
+    notes.csv export; DB migrations v5-v8. FILE: sections regenerated from the source.
 - 1.2.0 (2026-11-03): documentation refresh —
     Regenerated every exact FILE: section from the current source (config, db,
     repositories, services, routes, requirements, client package.json/vite config).

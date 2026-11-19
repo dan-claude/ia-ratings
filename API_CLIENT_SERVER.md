@@ -4,7 +4,7 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-19.
+Last verified against the code: 2026-11-19 (version 1.3.0).
 
 ## Conventions (Binding)
 
