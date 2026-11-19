@@ -1511,7 +1511,15 @@ export default function App() {
         <div className="film-panel">
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 6 }}>
             <h3 style={{ margin: 0 }}>{film.title || film.identifier}</h3>
-            {me?.is_judge ? <button onClick={() => setNoteOpen(true)}>Add note</button> : null}
+            {me?.is_judge ? (
+              <button
+                className="btn-primary"
+                onClick={() => setNoteOpen(true)}
+                style={{ marginLeft: 'auto', fontSize: 16, padding: '10px 22px' }}
+              >
+                Add note
+              </button>
+            ) : null}
           </div>
           <div className="film-meta">
             <div><strong>Identifier:</strong> {film.identifier}</div>
