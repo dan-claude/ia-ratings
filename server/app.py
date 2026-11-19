@@ -36,6 +36,7 @@ from server.logging_config import configure_logging
 
 from server.repositories.criteria_repo import CriteriaRepository
 from server.repositories.film_repo import FilmRepository
+from server.repositories.note_repo import NoteRepository
 from server.repositories.rating_repo import RatingRepository
 from server.repositories.settings_repo import AppSettingsRepository
 from server.repositories.user_repo import UserRepository
@@ -44,6 +45,7 @@ from server.services.auth_service import AuthService
 from server.services.github_auth_service import GitHubAuthService
 from server.services.ia_service import InternetArchiveService
 from server.services.import_service import ImportService
+from server.services.note_service import NoteService
 from server.services.rating_service import RatingService
 from server.services.sync_service import SyncService
 from server.services.summary_service import SummaryService
@@ -115,6 +117,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     films = FilmRepository(db, app_settings.get_collection)
     criteria = CriteriaRepository(db)
     ratings = RatingRepository(db)
+    notes = NoteRepository(db)
 
     # --- Services ---
     ia = InternetArchiveService(app_settings.get_collection)
@@ -133,6 +136,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     # Film data is only ever synced on demand (admin button); never at startup.
     sync = SyncService(ia, films)
     importer = ImportService(films, ia, sync)
+    note_service = NoteService(films, notes)
     summary = SummaryService(criteria, films, ratings, app_settings.get_collection)
 
     # Expose for tests / routes
@@ -144,6 +148,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         "criteria": criteria,
         "ratings": ratings,
         "settings": app_settings,
+        "notes": notes,
     }
     app.services = {
         "ia": ia,
@@ -153,6 +158,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         "sync": sync,
         "import": importer,
         "summary": summary,
+        "notes": note_service,
     }
 
     # --- Request logging + request id ---

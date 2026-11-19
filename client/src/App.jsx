@@ -46,9 +46,140 @@ function describeSync(st) {
   return ''
 }
 
+// ---------------------------------------------------------------------------
+// Judges' notes on a film (only rendered for users with the judge role)
+// ---------------------------------------------------------------------------
+
+const MAX_NOTE_LENGTH = 5000 // same limit as the server
+
+function NotesSection({ identifier, apiJson }) {
+  const [notes, setNotes] = useState(null)   // null = loading
+  const [loadError, setLoadError] = useState('')
+  const [open, setOpen] = useState(false)    // the "add a note" popup
+  const [text, setText] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const textRef = useRef(null)
+
+  async function loadNotes() {
+    setLoadError('')
+    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(identifier)}/notes`)
+    if (ok && Array.isArray(data)) setNotes(data)
+    else { setNotes([]); setLoadError(data?.error || 'Could not load notes') }
+  }
+
+  useEffect(() => {
+    setNotes(null)
+    setOpen(false)
+    loadNotes()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identifier])
+
+  useEffect(() => {
+    if (!open) return undefined
+    textRef.current?.focus()
+    const onKey = (e) => { if (e.key === 'Escape' && !saving) closePopup() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, saving])
+
+  function openPopup() {
+    setText('')
+    setSaveError('')
+    setOpen(true)
+  }
+
+  function closePopup() {
+    setOpen(false)
+  }
+
+  async function saveNote() {
+    setSaving(true)
+    setSaveError('')
+    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(identifier)}/notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    })
+    setSaving(false)
+    if (!ok) {
+      setSaveError(data?.error || 'Could not save the note')
+      return
+    }
+    setNotes((prev) => [...(prev || []), data])
+    setOpen(false)
+  }
+
+  const trimmed = text.trim()
+  const canSave = trimmed.length > 0 && text.length <= MAX_NOTE_LENGTH && !saving
+
+  return (
+    <section className="notes-section" aria-labelledby="notes-heading">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <h3 id="notes-heading" style={{ margin: 0 }}>Judges’ notes</h3>
+        <button onClick={openPopup}>Add note</button>
+      </div>
+
+      {loadError ? <div style={{ color: '#a00', marginTop: 8 }}>{loadError}</div> : null}
+      {notes === null ? <p style={{ color: '#666' }}>Loading notes…</p> : null}
+      {notes && notes.length === 0 && !loadError ? (
+        <p style={{ color: '#666' }}>No notes on this film yet.</p>
+      ) : null}
+      {notes && notes.length > 0 ? (
+        <table className="notes-table">
+          <thead>
+            <tr>
+              <th scope="col" className="col-who">Who</th>
+              <th scope="col" className="col-when">When</th>
+              <th scope="col">Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {notes.map((n) => (
+              <tr key={n.id}>
+                <td className="col-who" data-label="Who">{n.author}</td>
+                <td className="col-when" data-label="When">{new Date(n.createdAt).toLocaleString()}</td>
+                <td className="note-text" data-label="Note">{linkifyText(n.text)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+
+      {open ? (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) closePopup() }}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="note-dialog-title">
+            <h3 id="note-dialog-title" style={{ marginTop: 0 }}>Add a note</h3>
+            <textarea
+              ref={textRef}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              rows={6}
+              aria-label="Note text"
+              placeholder="Write your note about this film…"
+              style={{ width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8 }}
+            />
+            <div style={{ fontSize: 12, color: text.length > MAX_NOTE_LENGTH ? '#a00' : '#666', marginTop: 4 }}>
+              {text.length} / {MAX_NOTE_LENGTH}
+            </div>
+            {saveError ? <div role="alert" style={{ color: '#a00', marginTop: 8 }}>{saveError}</div> : null}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={closePopup} disabled={saving}>Cancel</button>
+              <button className="btn-primary" onClick={saveNote} disabled={!canSave}>
+                {saving ? 'Saving…' : 'Save note'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
 // onDataChanged: called after a sync finishes or the DB is emptied, so the
 // rating view can reload.
-function AdminPanel({ apiJson, onDataChanged }) {
+function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [tab, setTab] = useState('actions')
 
   // Sync state (status comes from the server, so it survives a page reload)
@@ -146,16 +277,21 @@ function AdminPanel({ apiJson, onDataChanged }) {
     else setUsersError(data?.error || 'Failed to load users')
   }
 
-  async function setAdmin(userId, makeAdmin) {
+  async function setRole(user, role, on) {
     setActionMsg('')
-    const action = makeAdmin ? 'make-admin' : 'revoke-admin'
-    const { ok, data } = await apiJson(`/api/admin/users/${userId}/${action}`, { method: 'POST' })
+    const current = [user.is_admin ? 'admin' : null, user.is_judge ? 'judge' : null].filter(Boolean)
+    const roles = on ? [...new Set([...current, role])] : current.filter((r) => r !== role)
+    const { ok, data } = await apiJson(`/api/admin/users/${user.id}/roles`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roles }),
+    })
     if (ok) {
-      setActionMsg(`User ${userId} ${makeAdmin ? 'promoted to' : 'removed from'} admin.`)
-      loadUsers()
+      setActionMsg(`Roles for user ${user.id} updated: ${data.roles.length ? data.roles.join(', ') : 'none'}.`)
     } else {
       setActionMsg(data?.error || 'Action failed')
     }
+    loadUsers()
   }
 
   async function loadCriteriaAdmin() {
@@ -958,9 +1094,8 @@ function AdminPanel({ apiJson, onDataChanged }) {
                       <th>email</th>
                       <th>ia_username</th>
                       <th>github_username</th>
-                      <th>is_admin</th>
+                      <th>roles</th>
                       <th>created_at</th>
-                      <th>actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -970,14 +1105,26 @@ function AdminPanel({ apiJson, onDataChanged }) {
                         <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
                         <td>{u.ia_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
                         <td>{u.github_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
-                        <td>{u.is_admin ? '✓' : ''}</td>
-                        <td style={{ whiteSpace: 'nowrap' }}>{u.created_at}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          {u.is_admin
-                            ? <button onClick={() => setAdmin(u.id, false)} style={{ fontSize: 12 }}>Revoke admin</button>
-                            : <button onClick={() => setAdmin(u.id, true)}  style={{ fontSize: 12 }}>Make admin</button>
-                          }
+                          <label style={{ marginRight: 12 }} title={u.id === meId ? "You can't remove your own admin role" : undefined}>
+                            <input
+                              type="checkbox"
+                              checked={!!u.is_admin}
+                              disabled={u.id === meId && !!u.is_admin}
+                              onChange={(e) => setRole(u, 'admin', e.target.checked)}
+                              aria-label={`Admin role for ${u.email}`}
+                            /> Admin
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={!!u.is_judge}
+                              onChange={(e) => setRole(u, 'judge', e.target.checked)}
+                              aria-label={`Judge role for ${u.email}`}
+                            /> Judge
+                          </label>
                         </td>
+                        <td style={{ whiteSpace: 'nowrap' }}>{u.created_at}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1325,9 +1472,23 @@ export default function App() {
 .film-panel { margin-top: 14px; }
         .film-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 14px; color: #444; }
         .film-desc { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
+        .notes-section { margin-top: 28px; padding-top: 14px; border-top: 2px solid #ddd; }
+        .notes-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .notes-table th { text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; padding: 8px; }
+        .notes-table td { border-bottom: 1px solid #eee; padding: 8px; vertical-align: top; }
+        .notes-table .col-who { width: 18%; word-break: break-word; }
+        .notes-table .col-when { width: 20%; white-space: nowrap; }
+        .notes-table .note-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
+        .modal { background: #fff; border-radius: 10px; padding: 18px; width: 100%; max-width: 520px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         .player { width: 100%; max-width: 900px; aspect-ratio: 16/9; border: 0; margin: 12px 0 16px; }
         @media (max-width: 768px) {
           .grid-table, .grid-table thead, .grid-table tbody, .grid-table th, .grid-table td, .grid-table tr { display: block; }
+          .notes-table, .notes-table thead, .notes-table tbody, .notes-table th, .notes-table td, .notes-table tr { display: block; width: auto; }
+          .notes-table thead { display: none; }
+          .notes-table tr { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; padding: 8px; }
+          .notes-table td { border: 0; padding: 4px 0; }
+          .notes-table td::before { content: attr(data-label) ': '; font-weight: 600; }
           .grid-table thead { display: none; }
           .grid-table tr { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; padding: 10px; }
           .grid-table td { border: 0; padding: 6px 0; }
@@ -1343,7 +1504,7 @@ export default function App() {
       </div>
 
       {me?.is_admin ? (
-        <AdminPanel apiJson={apiJson} onDataChanged={loadNextFilm} />
+        <AdminPanel apiJson={apiJson} onDataChanged={loadNextFilm} meId={me.id} />
       ) : null}
 
       {loading ? <p>Loading…</p> : null}
@@ -1445,6 +1606,8 @@ export default function App() {
           </div>
 
           {submitError ? <div style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
+
+          {me?.is_judge ? <NotesSection identifier={film.identifier} apiJson={apiJson} /> : null}
         </div>
       ) : notice || error || loading ? null : (
         <p style={{ marginTop: 14 }}>No films left.</p>

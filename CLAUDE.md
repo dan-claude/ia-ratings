@@ -21,7 +21,7 @@ React + Flask + SQLite app for rating public-domain films from the Internet Arch
 - **Client:** `client/src/App.jsx` — single-file React app, Vite, no component library
 - **Server:** Flask app-factory (`server/app.py`), organized as routes → services → repositories
 - **DB:** SQLite at `server/app.db` (path overridable via `DB_PATH` env var)
-- **Auth:** Cookie-based sessions; two schemes (see below); admin access via `users.is_admin` column
+- **Auth:** Cookie-based sessions; two schemes (see below); roles (`admin`, `judge`) are columns on `users` (`is_admin`, `is_judge`)
 
 ### Server layout
 
@@ -46,6 +46,8 @@ Controlled by the `AUTH_SCHEME` env var (or `--auth-scheme` CLI flag). Default: 
 | `local` | Email + password stored locally (werkzeug `generate_password_hash`) | Supported via `/api/auth/register` |
 
 **GitHub OAuth** is an optional extra on top of either scheme: it is enabled when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set, and `GET /api/config` then lists `"github"` in `oauth_providers` so the client shows "Continue with GitHub". Flow (`server/routes/auth.py` + `server/services/github_auth_service.py`): `GET /api/auth/github/login` stores a random single-use `state` in the session and redirects to GitHub → `GET /api/auth/github/callback` checks the state, exchanges the code, reads the public profile (no scopes requested), find-or-creates the user keyed on `users.github_id` (synthetic email `{id}+{login}@users.noreply.github.com`, `password_hash='GITHUB_AUTH'`), rotates the session and redirects to `/` (failures redirect to `/?auth_error=<code>`). Accounts from different login methods are never merged. Setup instructions: `docs/GITHUB_LOGIN.md`.
+
+**Roles.** A user can hold any combination of `admin` and `judge` (checkboxes in the admin panel → Users; `PUT /api/admin/users/<id>/roles` with `{"roles": [...]}`, which sets the list exactly; an admin can't remove their own admin role). Roles are independent: admin does not imply judge. `/api/me` returns `is_admin`, `is_judge` and `roles`. Role names ↔ columns live in `ROLE_COLUMNS` in `server/repositories/user_repo.py`; to add a role add a column (migration) and an entry there. **Judges** can read and add free-text notes on films (`GET/POST /api/films/<id>/notes`, judge-only; non-judges get 403, so notes are invisible to everyone else, admins included). Notes live in `film_notes` (many per film, attached to `films.id`, so they survive re-syncs but are deleted by "empty database"); the client shows them at the bottom of the film page in a Who / When / Note table with an "Add note" popup. Author shown = `ia_username`, else `github_username`, else email. Max 5000 characters.
 
 Login body is `{username, password}` in `ia` mode and `{email, password}` in `local` mode. `/api/auth/login` and `/api/auth/register` are rate-limited (10/min, 50/hour per IP). Sessions: 8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` unless the dev default secret is in use.
 
@@ -166,7 +168,7 @@ python tools/print_db.py --make-admin NAME@users.archive.org
 
 ## Database
 
-Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `app_settings`, `schema_migrations`. Migrations recorded in `schema_migrations`:
+Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `film_notes`, `app_settings`, `schema_migrations`. Migrations recorded in `schema_migrations`:
 
 | Version | Change |
 |---------|--------|
@@ -177,6 +179,7 @@ Schema and migrations live in `server/db.py` and are applied on every startup (`
 | 5 | `users.github_id` + `users.github_username` + partial unique index `idx_users_github_id` |
 | 6 | New table `app_settings(key PRIMARY KEY, value, updated_at)` — holds the admin-chosen film `collection` |
 | 7 | `films` is unique per `(ia_identifier, collection)` instead of per `ia_identifier` (table rebuilt in place, ids and ratings preserved; all-or-nothing). The same archive.org item can be in several collections, each with its own row and ratings |
+| 8 | `users.is_judge` + new table `film_notes(id, film_id, user_id, body, created_at)` (judges' notes; in backup/restore order) |
 
 The **active film collection** is a runtime admin setting (`app_settings` row `collection`, read through `AppSettingsRepository.get_collection`; falls back to `Settings.collection`, the built-in default). `FilmRepository`, `InternetArchiveService` and `SummaryService` take that getter, so a change applies immediately everywhere: raters only see films whose `collection` matches, and sync/import tag films with it. `tools/sync.py` defaults to the collection stored in the target DB. `app_settings` is in `_RESTORE_ORDER`, so backups/restores carry it.
 
@@ -205,6 +208,8 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | GET | `/api/films/next` | Random unrated film for current user |
 | GET | `/api/films/<id>` | One film by IA identifier |
 | POST | `/api/films/<id>/ratings` | Submit scores (`{"scores": {"key": int}}`) |
+| GET | `/api/films/<id>/notes` | Notes on a film, oldest first (**judge only**) |
+| POST | `/api/films/<id>/notes` | Add a note `{"text": str}` → 201 (**judge only**) |
 
 ### Admin only (`is_admin=1` required)
 | Method | Path | Description |
@@ -225,6 +230,7 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | GET | `/api/admin/db/<table>` | Dump table rows (`order_by`, `limit`, `offset` params) |
 | GET | `/api/admin/db/backup` | Download full DB as versioned JSON |
 | POST | `/api/admin/db/restore` | Restore DB from a backup JSON |
+| PUT | `/api/admin/users/<id>/roles` | Set a user's roles exactly (`{"roles": ["admin","judge"]}`) |
 | POST | `/api/admin/users/<id>/make-admin` | Promote user to admin |
 | POST | `/api/admin/users/<id>/revoke-admin` | Revoke admin from user |
 

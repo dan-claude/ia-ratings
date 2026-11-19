@@ -24,7 +24,7 @@ def me():
     svc = current_app.services["auth"]
     try:
         me = svc.get_me(uid)
-        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin})
+        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin, "is_judge": me.is_judge, "roles": me.roles})
     except LookupError:
         return jsonify({"error": "Not logged in"}), 401
 

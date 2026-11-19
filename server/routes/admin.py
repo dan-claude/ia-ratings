@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
+from ..repositories.user_repo import ROLE_COLUMNS
 from ..services import import_service
 
 admin_bp = Blueprint("admin", __name__)
@@ -117,7 +118,7 @@ def db_table(table: str):
                 "FROM films"
             )
         elif table == "users":
-            base = "SELECT id, email, ia_username, github_username, is_admin, created_at FROM users"
+            base = "SELECT id, email, ia_username, github_username, is_admin, is_judge, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 
@@ -165,6 +166,29 @@ def revoke_admin(user_id: int):
     users.set_admin(user_id, False)
     return jsonify({"ok": True, "user_id": user_id, "is_admin": False})
 
+@admin_bp.put("/api/admin/users/<int:user_id>/roles")
+def set_roles(user_id: int):
+    """Set a user's roles to exactly the given list (checkboxes in the admin UI)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    roles = data.get("roles")
+    if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+        return jsonify({"error": "roles must be a list of role names"}), 400
+    users = current_app.repos["users"]
+    unknown = [r for r in roles if r not in ROLE_COLUMNS]
+    if unknown:
+        return jsonify({"error": f"Unknown role: {unknown[0]}"}), 400
+    row = users.get_by_id(user_id)
+    if not row:
+        return jsonify({"error": f"User not found: {user_id}"}), 404
+    # Don't let admins lock themselves out of the admin panel.
+    if user_id == int(session["user_id"]) and "admin" not in roles:
+        return jsonify({"error": "You can't remove your own admin role"}), 400
+    users.set_roles(user_id, roles)
+    return jsonify({"ok": True, "user_id": user_id, "roles": users.roles_of(users.get_by_id(user_id))})
+
 # ---------------------------------------------------------------------------
 # Backup / restore
 # ---------------------------------------------------------------------------
@@ -178,6 +202,7 @@ _RESTORE_ORDER = [
     "films",
     "ratings",
     "rating_scores",
+    "film_notes",
 ]
 
 BACKUP_FORMAT_VERSION = 1
@@ -252,6 +277,10 @@ def db_restore():
         restored = {}
         try:
             with conn:  # single atomic transaction — rolls back on any exception
+                # Notes point at film ids. A backup that replaces films but has no notes
+                # (e.g. made before notes existed) would leave them attached to the wrong films.
+                if tables_data.get("films") is not None and tables_data.get("film_notes") is None:
+                    conn.execute("DELETE FROM film_notes")
                 for table in _RESTORE_ORDER:
                     rows = tables_data.get(table)
                     if rows is None:

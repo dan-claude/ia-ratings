@@ -64,3 +64,40 @@ def rate(identifier: str):
         return jsonify({"error": str(e)}), 400
     except LookupError as e:
         return jsonify({"error": str(e)}), 404
+
+
+def _require_judge():
+    """(user_id, None) for a logged-in judge; otherwise (None, error response)."""
+    uid, err = _require_auth()
+    if err:
+        return None, err
+    row = current_app.repos["users"].get_by_id(uid)
+    if not row:
+        return None, (jsonify({"error": "Not logged in"}), 401)
+    if "judge" not in current_app.repos["users"].roles_of(row):
+        return None, (jsonify({"error": "Forbidden"}), 403)
+    return uid, None
+
+@films_bp.get("/api/films/<identifier>/notes")
+def list_notes(identifier: str):
+    uid, err = _require_judge()
+    if err:
+        return err
+    try:
+        return jsonify(current_app.services["notes"].list_notes(identifier))
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+
+@films_bp.post("/api/films/<identifier>/notes")
+def add_note(identifier: str):
+    uid, err = _require_judge()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        note = current_app.services["notes"].add_note(uid, identifier, data.get("text"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(note), 201

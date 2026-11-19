@@ -4,6 +4,9 @@ from typing import Optional
 
 from ..db import Database
 
+# Roles a user can hold; each maps to an INTEGER 0/1 column on users.
+ROLE_COLUMNS = {"admin": "is_admin", "judge": "is_judge"}
+
 
 class UserRepository:
     def __init__(self, db: Database):
@@ -23,19 +26,19 @@ class UserRepository:
 
     def get_by_email(self, email: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, password_hash, is_admin, created_at FROM users WHERE email = ?",
+            "SELECT id, email, password_hash, is_admin, is_judge, created_at FROM users WHERE email = ?",
             (email,),
         )
 
     def get_by_id(self, user_id: int) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at FROM users WHERE id = ?",
+            "SELECT id, email, is_admin, is_judge, created_at FROM users WHERE id = ?",
             (user_id,),
         )
 
     def get_by_ia_username(self, ia_username: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at FROM users WHERE ia_username = ?",
+            "SELECT id, email, is_admin, is_judge, created_at FROM users WHERE ia_username = ?",
             (ia_username,),
         )
 
@@ -53,7 +56,7 @@ class UserRepository:
 
     def get_by_github_id(self, github_id: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at, github_username FROM users WHERE github_id = ?",
+            "SELECT id, email, is_admin, is_judge, created_at, github_username FROM users WHERE github_id = ?",
             (github_id,),
         )
 
@@ -91,6 +94,27 @@ class UserRepository:
                 "UPDATE users SET is_admin = ? WHERE id = ?",
                 (1 if is_admin else 0, int(user_id)),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def roles_of(row) -> list[str]:
+        """Role names held by a users row (in ROLE_COLUMNS order)."""
+        keys = row.keys()
+        return [role for role, col in ROLE_COLUMNS.items() if col in keys and bool(row[col])]
+
+    def set_roles(self, user_id: int, roles: list[str]) -> None:
+        """Set the user's roles to exactly `roles` (unknown names raise ValueError)."""
+        unknown = [r for r in roles if r not in ROLE_COLUMNS]
+        if unknown:
+            raise ValueError(f"Unknown role: {unknown[0]}")
+        wanted = set(roles)
+        assignments = ", ".join(f"{col} = ?" for col in ROLE_COLUMNS.values())
+        params = [1 if role in wanted else 0 for role in ROLE_COLUMNS] + [int(user_id)]
+        conn = self.db.connect()
+        try:
+            conn.execute(f"UPDATE users SET {assignments} WHERE id = ?", params)
             conn.commit()
         finally:
             conn.close()

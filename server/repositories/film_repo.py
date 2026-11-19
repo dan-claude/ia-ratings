@@ -133,7 +133,7 @@ class FilmRepository:
         return int(row["n"]) if row else 0
 
     def delete_all_with_ratings(self) -> dict:
-        """Delete every film plus all ratings and scores (which reference films).
+        """Delete every film plus all ratings, scores and judges' notes (which reference films).
 
         One transaction, so a failure leaves the data untouched. Users and
         criteria are kept. Returns the number of rows deleted per table.
@@ -142,10 +142,10 @@ class FilmRepository:
         try:
             deleted = {}
             with conn:
-                for table in ("rating_scores", "ratings", "films"):  # children first
+                for table in ("rating_scores", "ratings", "film_notes", "films"):  # children first
                     deleted[table] = conn.execute(f"DELETE FROM {table}").rowcount
                 # Restart the AUTOINCREMENT counters so a fresh sync starts at id 1.
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'films')")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'film_notes', 'films')")
             return deleted
         finally:
             conn.close()

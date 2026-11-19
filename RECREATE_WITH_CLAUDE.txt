@@ -137,6 +137,15 @@ Table: users
   ia_username   TEXT           <- added by migration v4; NULL for local users
   github_id     TEXT           <- added by migration v5; NULL unless created via GitHub
   github_username TEXT         <- added by migration v5; display only, refreshed on login
+  is_judge      INTEGER NOT NULL DEFAULT 0   <- added by migration v8 (roles: admin = is_admin, judge = is_judge)
+
+Table: film_notes   <- added by migration v8 (judges' notes; many per film)
+  id         INTEGER PRIMARY KEY AUTOINCREMENT
+  film_id    INTEGER NOT NULL REFERENCES films(id)
+  user_id    INTEGER NOT NULL REFERENCES users(id)
+  body       TEXT NOT NULL
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  (index idx_film_notes_film ON film_notes(film_id); deleted by the empty-database command; restored after films)
 
 Table: app_settings   <- added by migration v6
   key        TEXT PRIMARY KEY      (e.g. 'collection' = the active archive.org collection)
@@ -187,6 +196,7 @@ Indexes:
   idx_users_github_id ON users(github_id) WHERE github_id IS NOT NULL  (UNIQUE, v5)
 
 MIGRATIONS (run at startup in db.py):
+  v8: ALTER TABLE users ADD COLUMN is_judge INTEGER NOT NULL DEFAULT 0; CREATE TABLE film_notes (see above) + index
   v1: ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0
   v2: ALTER TABLE ratings ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   v3: ALTER TABLE films ADD COLUMN description TEXT
@@ -223,7 +233,7 @@ Auth:  (login/register rate-limited: 10 per minute; 50 per hour, per IP)
   POST   /api/auth/logout    -> { ok: true }
 
 User:
-  GET    /api/me             -> { id, email, created_at, is_admin }
+  GET    /api/me             -> { id, email, created_at, is_admin, is_judge, roles: ["admin"?, "judge"?] }
 
 Criteria: (requires auth, defined in routes/user.py NOT films.py)
   GET    /api/criteria       -> [{ key, label, min, max, sortOrder, active }]
@@ -235,6 +245,11 @@ Films: (requires auth)
                                 or 404 { error, code: "all_rated" } (films exist; user rated them all)
   GET    /api/films/<id>     -> { identifier, title, description, embedUrl }
                                 or 404 { error: "Film not found" }
+
+Judges' notes: (requires the judge role; 401 not logged in, 403 not a judge — admins are NOT judges unless they also have the role)
+  GET    /api/films/<id>/notes -> [{ id, author, createdAt (UTC ISO-8601 "...Z"), text }] oldest first; 404 { error: "Film not found" }
+  POST   /api/films/<id>/notes { text } -> 201 note; text trimmed; 400 blank/non-string/over 5000 chars; 404 unknown film
+                             author = ia_username, else github_username, else email
 
 Ratings: (requires auth)
   POST   /api/films/<id>/ratings
@@ -260,12 +275,14 @@ Admin: (requires is_admin=1 session)
                              ONLY archive.org item links (archive.org/details|embed|download/<id>) are imported;
                              400 bad file/mapping/on_existing/no importable rows; 409 while a background job runs
                              (status endpoint also reports kind: sync|titles and a "titles" phase)
-  POST   /api/admin/db/empty { confirm: "EMPTY" } -> { ok, deleted: { rating_scores, ratings, films } }
+  POST   /api/admin/db/empty { confirm: "EMPTY" } -> { ok, deleted: { rating_scores, ratings, film_notes, films } }
                              deletes all films + ratings (keeps users/criteria); 400 w/o confirm; 409 during a sync
   GET    /api/admin/ratings.csv -> CSV download
   GET    /api/admin/criteria -> all criteria incl. inactive (raw column names)
   POST   /api/admin/criteria { key, label, min_score, max_score, sort_order, active } -> 201
   PUT    /api/admin/criteria/<id> (partial; key immutable)
+  PUT    /api/admin/users/<id>/roles { roles: ["admin"|"judge"...] } -> { ok, user_id, roles }  (sets the list EXACTLY;
+                             400 bad list / unknown role / removing your own admin role; 404 unknown user)
   POST   /api/admin/users/<id>/make-admin   -> { ok, user_id, is_admin: true }
   POST   /api/admin/users/<id>/revoke-admin -> { ok, user_id, is_admin: false }
   GET    /api/admin/db/tables  -> { table: rowCount }
@@ -503,6 +520,28 @@ class Database:
                 self._rebuild_films_table(conn)
             conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);")
 
+            # v8: user roles beyond admin (currently admin + judge) and judges' film notes.
+            # Roles are columns on users (is_admin already existed; is_judge is new) so a
+            # backup/restore of the users table carries them automatically.
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "is_judge" not in ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN is_judge INTEGER NOT NULL DEFAULT 0;")
+            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "film_notes" not in tables:
+                conn.execute("""
+                  CREATE TABLE film_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    film_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    body TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY(film_id) REFERENCES films(id),
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                  )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_film_notes_film ON film_notes(film_id)")
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES
@@ -593,6 +632,11 @@ class User:
     email: str
     created_at: str
     is_admin: bool = False
+    is_judge: bool = False
+
+    @property
+    def roles(self) -> list[str]:
+        return [r for r, on in (("admin", self.is_admin), ("judge", self.is_judge)) if on]
 
 ============================
 FILE: server/models/film.py
@@ -643,6 +687,9 @@ from typing import Optional
 
 from ..db import Database
 
+# Roles a user can hold; each maps to an INTEGER 0/1 column on users.
+ROLE_COLUMNS = {"admin": "is_admin", "judge": "is_judge"}
+
 
 class UserRepository:
     def __init__(self, db: Database):
@@ -662,19 +709,19 @@ class UserRepository:
 
     def get_by_email(self, email: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, password_hash, is_admin, created_at FROM users WHERE email = ?",
+            "SELECT id, email, password_hash, is_admin, is_judge, created_at FROM users WHERE email = ?",
             (email,),
         )
 
     def get_by_id(self, user_id: int) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at FROM users WHERE id = ?",
+            "SELECT id, email, is_admin, is_judge, created_at FROM users WHERE id = ?",
             (user_id,),
         )
 
     def get_by_ia_username(self, ia_username: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at FROM users WHERE ia_username = ?",
+            "SELECT id, email, is_admin, is_judge, created_at FROM users WHERE ia_username = ?",
             (ia_username,),
         )
 
@@ -692,7 +739,7 @@ class UserRepository:
 
     def get_by_github_id(self, github_id: str) -> Optional[sqlite3.Row]:
         return self.db.fetchone(
-            "SELECT id, email, is_admin, created_at, github_username FROM users WHERE github_id = ?",
+            "SELECT id, email, is_admin, is_judge, created_at, github_username FROM users WHERE github_id = ?",
             (github_id,),
         )
 
@@ -730,6 +777,27 @@ class UserRepository:
                 "UPDATE users SET is_admin = ? WHERE id = ?",
                 (1 if is_admin else 0, int(user_id)),
             )
+            conn.commit()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def roles_of(row) -> list[str]:
+        """Role names held by a users row (in ROLE_COLUMNS order)."""
+        keys = row.keys()
+        return [role for role, col in ROLE_COLUMNS.items() if col in keys and bool(row[col])]
+
+    def set_roles(self, user_id: int, roles: list[str]) -> None:
+        """Set the user's roles to exactly `roles` (unknown names raise ValueError)."""
+        unknown = [r for r in roles if r not in ROLE_COLUMNS]
+        if unknown:
+            raise ValueError(f"Unknown role: {unknown[0]}")
+        wanted = set(roles)
+        assignments = ", ".join(f"{col} = ?" for col in ROLE_COLUMNS.values())
+        params = [1 if role in wanted else 0 for role in ROLE_COLUMNS] + [int(user_id)]
+        conn = self.db.connect()
+        try:
+            conn.execute(f"UPDATE users SET {assignments} WHERE id = ?", params)
             conn.commit()
         finally:
             conn.close()
@@ -797,6 +865,53 @@ class AppSettingsRepository:
         )
         return [{"name": r["name"], "films": int(r["films"])} for r in rows]
 
+
+============================
+FILE: server/repositories/note_repo.py
+============================
+import sqlite3
+
+from ..db import Database
+
+
+class NoteRepository:
+    """Judges' free-text notes about films (many per film)."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def list_for_film(self, film_id: int) -> list[sqlite3.Row]:
+        """Notes for a film, oldest first. `author` is the writer's best display name."""
+        return self.db.fetchall(
+            """
+            SELECT n.id, n.body, n.created_at,
+                   COALESCE(u.ia_username, u.github_username, u.email) AS author
+            FROM film_notes n JOIN users u ON u.id = n.user_id
+            WHERE n.film_id = ?
+            ORDER BY n.created_at, n.id
+            """,
+            (int(film_id),),
+        )
+
+    def add(self, film_id: int, user_id: int, body: str) -> sqlite3.Row:
+        conn = self.db.connect()
+        try:
+            with conn:
+                cur = conn.execute(
+                    "INSERT INTO film_notes (film_id, user_id, body) VALUES (?, ?, ?)",
+                    (int(film_id), int(user_id), body),
+                )
+                return conn.execute(
+                    """
+                    SELECT n.id, n.body, n.created_at,
+                           COALESCE(u.ia_username, u.github_username, u.email) AS author
+                    FROM film_notes n JOIN users u ON u.id = n.user_id
+                    WHERE n.id = ?
+                    """,
+                    (cur.lastrowid,),
+                ).fetchone()
+        finally:
+            conn.close()
 ============================
 FILE: server/repositories/film_repo.py
 ============================
@@ -935,7 +1050,7 @@ class FilmRepository:
         return int(row["n"]) if row else 0
 
     def delete_all_with_ratings(self) -> dict:
-        """Delete every film plus all ratings and scores (which reference films).
+        """Delete every film plus all ratings, scores and judges' notes (which reference films).
 
         One transaction, so a failure leaves the data untouched. Users and
         criteria are kept. Returns the number of rows deleted per table.
@@ -944,10 +1059,10 @@ class FilmRepository:
         try:
             deleted = {}
             with conn:
-                for table in ("rating_scores", "ratings", "films"):  # children first
+                for table in ("rating_scores", "ratings", "film_notes", "films"):  # children first
                     deleted[table] = conn.execute(f"DELETE FROM {table}").rowcount
                 # Restart the AUTOINCREMENT counters so a fresh sync starts at id 1.
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'films')")
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'film_notes', 'films')")
             return deleted
         finally:
             conn.close()
@@ -1327,7 +1442,7 @@ class AuthService:
         row = self.users.get_by_id(user_id)
         if not row:
             raise LookupError("User not found")
-        return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])))
+        return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])), is_judge=("is_judge" in row.keys() and bool(row["is_judge"])))
 
 ============================
 FILE: server/services/github_auth_service.py
@@ -2069,6 +2184,48 @@ class RatingService:
         # This prevents partially-written ratings if the process crashes between steps.
         self.ratings.upsert_rating_with_scores(user_id, int(film_row["id"]), validated)
 
+
+============================
+FILE: server/services/note_service.py
+============================
+from ..repositories.film_repo import FilmRepository
+from ..repositories.note_repo import NoteRepository
+
+MAX_NOTE_LENGTH = 5000
+
+
+def _note_json(row) -> dict:
+    # SQLite stores UTC as "YYYY-MM-DD HH:MM:SS"; hand clients an unambiguous ISO-8601 string.
+    return {
+        "id": int(row["id"]),
+        "author": row["author"],
+        "createdAt": str(row["created_at"]).replace(" ", "T") + "Z",
+        "text": row["body"],
+    }
+
+
+class NoteService:
+    def __init__(self, films: FilmRepository, notes: NoteRepository):
+        self.films = films
+        self.notes = notes
+
+    def _film_id(self, identifier: str) -> int:
+        film = self.films.get_by_identifier(identifier)
+        if not film:
+            raise LookupError("Film not found")
+        return int(film["id"])
+
+    def list_notes(self, identifier: str) -> list[dict]:
+        return [_note_json(r) for r in self.notes.list_for_film(self._film_id(identifier))]
+
+    def add_note(self, user_id: int, identifier: str, text) -> dict:
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Note text is required")
+        text = text.strip()
+        if len(text) > MAX_NOTE_LENGTH:
+            raise ValueError(f"Note is too long (max {MAX_NOTE_LENGTH} characters)")
+        film_id = self._film_id(identifier)
+        return _note_json(self.notes.add(film_id, user_id, text))
 ============================
 FILE: server/services/summary_service.py
 ============================
@@ -2356,7 +2513,7 @@ def me():
     svc = current_app.services["auth"]
     try:
         me = svc.get_me(uid)
-        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin})
+        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin, "is_judge": me.is_judge, "roles": me.roles})
     except LookupError:
         return jsonify({"error": "Not logged in"}), 401
 
@@ -2446,6 +2603,43 @@ def rate(identifier: str):
     except LookupError as e:
         return jsonify({"error": str(e)}), 404
 
+
+def _require_judge():
+    """(user_id, None) for a logged-in judge; otherwise (None, error response)."""
+    uid, err = _require_auth()
+    if err:
+        return None, err
+    row = current_app.repos["users"].get_by_id(uid)
+    if not row:
+        return None, (jsonify({"error": "Not logged in"}), 401)
+    if "judge" not in current_app.repos["users"].roles_of(row):
+        return None, (jsonify({"error": "Forbidden"}), 403)
+    return uid, None
+
+@films_bp.get("/api/films/<identifier>/notes")
+def list_notes(identifier: str):
+    uid, err = _require_judge()
+    if err:
+        return err
+    try:
+        return jsonify(current_app.services["notes"].list_notes(identifier))
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+
+@films_bp.post("/api/films/<identifier>/notes")
+def add_note(identifier: str):
+    uid, err = _require_judge()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        note = current_app.services["notes"].add_note(uid, identifier, data.get("text"))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except LookupError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(note), 201
+
 ============================
 FILE: server/routes/admin.py
 ============================
@@ -2455,6 +2649,7 @@ import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
+from ..repositories.user_repo import ROLE_COLUMNS
 from ..services import import_service
 
 admin_bp = Blueprint("admin", __name__)
@@ -2568,7 +2763,7 @@ def db_table(table: str):
                 "FROM films"
             )
         elif table == "users":
-            base = "SELECT id, email, ia_username, github_username, is_admin, created_at FROM users"
+            base = "SELECT id, email, ia_username, github_username, is_admin, is_judge, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 
@@ -2616,6 +2811,29 @@ def revoke_admin(user_id: int):
     users.set_admin(user_id, False)
     return jsonify({"ok": True, "user_id": user_id, "is_admin": False})
 
+@admin_bp.put("/api/admin/users/<int:user_id>/roles")
+def set_roles(user_id: int):
+    """Set a user's roles to exactly the given list (checkboxes in the admin UI)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    roles = data.get("roles")
+    if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+        return jsonify({"error": "roles must be a list of role names"}), 400
+    users = current_app.repos["users"]
+    unknown = [r for r in roles if r not in ROLE_COLUMNS]
+    if unknown:
+        return jsonify({"error": f"Unknown role: {unknown[0]}"}), 400
+    row = users.get_by_id(user_id)
+    if not row:
+        return jsonify({"error": f"User not found: {user_id}"}), 404
+    # Don't let admins lock themselves out of the admin panel.
+    if user_id == int(session["user_id"]) and "admin" not in roles:
+        return jsonify({"error": "You can't remove your own admin role"}), 400
+    users.set_roles(user_id, roles)
+    return jsonify({"ok": True, "user_id": user_id, "roles": users.roles_of(users.get_by_id(user_id))})
+
 # ---------------------------------------------------------------------------
 # Backup / restore
 # ---------------------------------------------------------------------------
@@ -2629,6 +2847,7 @@ _RESTORE_ORDER = [
     "films",
     "ratings",
     "rating_scores",
+    "film_notes",
 ]
 
 BACKUP_FORMAT_VERSION = 1
@@ -2703,6 +2922,10 @@ def db_restore():
         restored = {}
         try:
             with conn:  # single atomic transaction — rolls back on any exception
+                # Notes point at film ids. A backup that replaces films but has no notes
+                # (e.g. made before notes existed) would leave them attached to the wrong films.
+                if tables_data.get("films") is not None and tables_data.get("film_notes") is None:
+                    conn.execute("DELETE FROM film_notes")
                 for table in _RESTORE_ORDER:
                     rows = tables_data.get(table)
                     if rows is None:
@@ -3223,8 +3446,8 @@ Render (me set):
         Edit form: Key (new only), Label, Min score, Max score, Sort order, Active
         Save -> POST /api/admin/criteria or PUT /api/admin/criteria/<id>
       Users:
-        GET /api/admin/db/users?order_by=id; table id|email|ia_username|is_admin|created_at|actions
-        "Make admin" / "Revoke admin" -> POST /api/admin/users/<id>/make-admin|revoke-admin
+        GET /api/admin/db/users?order_by=id; table id|email|ia_username|github_username|roles|created_at
+        roles = Admin and Judge checkboxes -> PUT /api/admin/users/<id>/roles (own Admin box disabled)
       DB Browser:
         Table buttons with row counts (GET /api/admin/db/tables) + Refresh
         ORDER BY + LIMIT (default 100) inputs, Load -> GET /api/admin/db/<table>
@@ -3245,6 +3468,10 @@ Render (me set):
         Quick buttons shown when (c.max - c.min) >= 1 AND <= 6
         row-invalid class on invalid rows
       Submit & Next button (disabled when !validation.allOk)
+      Judges only (me.is_judge): NotesSection at the very end of the page — heading "Judges' notes" + "Add note" button;
+        table columns Who | When (local time) | Note (plain text, URLs linkified) from GET /api/films/<id>/notes;
+        "Add note" opens a modal popup (textarea, 5000-char counter, Cancel / Save note; Esc or backdrop click closes)
+        that POSTs { text } and appends the returned note to the table
       submitError div
   - "No films left." paragraph (if !film)
 

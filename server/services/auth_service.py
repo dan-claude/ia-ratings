@@ -54,4 +54,4 @@ class AuthService:
         row = self.users.get_by_id(user_id)
         if not row:
             raise LookupError("User not found")
-        return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])))
+        return User(id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]), is_admin=("is_admin" in row.keys() and bool(row["is_admin"])), is_judge=("is_judge" in row.keys() and bool(row["is_judge"])))

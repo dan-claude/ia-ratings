@@ -25,11 +25,15 @@ Production runs on Railway (new deployment being set up; URL to follow).
 - **Continue with GitHub** *(optional, in addition to either mode)* — set
   `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` and the login screen gains a
   GitHub button. Setup steps: [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md).
+- **Roles.** A user can be an *admin*, a *judge*, both or neither (checkboxes in
+  the admin panel's Users tab). Judges can add notes about a film (in a popup);
+  all notes on a film appear in a Who / When / Note table at the bottom of the
+  film page, visible to judges only.
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
   - *Import* — populate the film database from a CSV spreadsheet instead of syncing from archive.org (see below)
   - *Actions* — choose the active film collection; sync the IA collection (runs in the background with a progress display; nothing syncs automatically at startup), empty the film database (films + ratings; asks for confirmation), download `ratings.csv`
   - *Criteria* — add, edit, reorder and deactivate rating criteria
-  - *Users* — promote / revoke admins
+  - *Users* — tick Admin / Judge for each user
   - *DB Browser* — table row counts and paged table dumps
   - *Backup* — download the full DB as JSON; restore from a backup file
 - Cookie sessions (8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` when a

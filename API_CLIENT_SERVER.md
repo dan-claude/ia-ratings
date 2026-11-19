@@ -4,7 +4,7 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-03 (version 1.2.0).
+Last verified against the code: 2026-11-19.
 
 ## Conventions (Binding)
 
@@ -128,9 +128,14 @@ Clears the session.
   "id": 1,
   "email": "judge1@example.com",
   "created_at": "2026-01-01 00:00:00",
-  "is_admin": false
+  "is_admin": false,
+  "is_judge": false,
+  "roles": []
 }
 ```
+`roles` lists the roles the user holds, in the order `admin`, `judge`; `is_admin`
+and `is_judge` are the same information as booleans. Roles are independent: an
+admin is not automatically a judge.
 `created_at` is SQLite `datetime('now')` format (UTC, space-separated).
 
 ---
@@ -177,6 +182,33 @@ exist in several collections, each as its own film).
 
 Errors:
 - 404 `{ "error": "Film not found" }`
+
+---
+
+### GET /api/films/<identifier>/notes — judge
+Judges' notes on a film, oldest first. Requires the `judge` role: 401 if not logged
+in, 403 `{ "error": "Forbidden" }` for any user who is not a judge (admins
+included).
+```json
+[
+  { "id": 12, "author": "judge1@example.com",
+    "createdAt": "2026-11-19T16:02:11Z", "text": "Lovely colour work." }
+]
+```
+`author` is the writer's archive.org username, else GitHub username, else email.
+`createdAt` is UTC ISO-8601. `text` is plain text (render it as text, not HTML).
+
+Errors: 404 `{ "error": "Film not found" }`.
+
+### POST /api/films/<identifier>/notes — judge
+Adds a note (a film can have any number). Every judge can see every note.
+```json
+{ "text": "Lovely colour work." }
+```
+Response 201: the created note (same shape as above). The text is trimmed.
+
+Errors: 400 — `"Note text is required"` (missing, not a string, or blank),
+`"Note is too long (max 5000 characters)"`; 404 `"Film not found"`.
 
 ---
 
@@ -385,6 +417,16 @@ and from the CSV export. Existing scores stay in the database.
 
 ### User management
 
+#### PUT /api/admin/users/<id>/roles — admin
+Sets the user's roles to **exactly** the list given (a role not listed is removed).
+Known roles: `admin`, `judge`.
+```json
+{ "roles": ["admin", "judge"] }
+```
+Response 200 `{ "ok": true, "user_id": 7, "roles": ["admin", "judge"] }`.
+Errors: 400 (`roles` not a list of strings, unknown role, or an admin removing
+their *own* admin role), 404 (unknown user).
+
 #### POST /api/admin/users/<id>/make-admin — admin
 #### POST /api/admin/users/<id>/revoke-admin — admin
 ```json
@@ -412,7 +454,7 @@ Query parameters:
 - `limit`, `offset` — integers
 
 Special cases: `films` rows include a computed `rating_count`; `users` rows
-omit `password_hash` (columns: `id, email, ia_username, github_username, is_admin, created_at`).
+omit `password_hash` (columns: `id, email, ia_username, github_username, is_admin, is_judge, created_at`).
 
 Errors: 400 (bad `order_by`), 404 `{ "error": "Unknown table: <name>" }`.
 
@@ -434,8 +476,8 @@ The backup includes `password_hash` values. Treat backup files as secrets.
 
 #### POST /api/admin/db/restore — admin, destructive
 The request body is a backup file as produced above. In a single transaction,
-for each of `schema_migrations, users, criteria, films, ratings, rating_scores`
-that is present in the backup, all existing rows are deleted and replaced with
+for each of `schema_migrations, app_settings, users, criteria, films, ratings,
+rating_scores, film_notes` that is present in the backup, all existing rows are deleted and replaced with
 the backup's rows. Tables missing from the backup are left alone.
 
 Response 200:
@@ -458,6 +500,9 @@ The client (`client/src/App.jsx`) calls:
   `/api/admin/criteria/<id>`, `/api/admin/users/<id>/make-admin|revoke-admin`,
   `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
   for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`
+
+Judges' notes: `/api/films/<identifier>/notes` (GET and POST, only for users with the
+judge role). Admin Users tab: `/api/admin/users/<id>/roles`.
 
 The client does not call `/api/films/<identifier>`, `/api/admin/db/schema` or
 `/api/health`.

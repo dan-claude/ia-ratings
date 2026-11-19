@@ -148,6 +148,28 @@ class Database:
                 self._rebuild_films_table(conn)
             conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (7);")
 
+            # v8: user roles beyond admin (currently admin + judge) and judges' film notes.
+            # Roles are columns on users (is_admin already existed; is_judge is new) so a
+            # backup/restore of the users table carries them automatically.
+            ucols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+            if "is_judge" not in ucols:
+                conn.execute("ALTER TABLE users ADD COLUMN is_judge INTEGER NOT NULL DEFAULT 0;")
+            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "film_notes" not in tables:
+                conn.execute("""
+                  CREATE TABLE film_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    film_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    body TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY(film_id) REFERENCES films(id),
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                  )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_film_notes_film ON film_notes(film_id)")
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES

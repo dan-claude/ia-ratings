@@ -164,7 +164,7 @@ def test_empty_deletes_films_and_ratings_but_keeps_users_and_criteria(app, clien
     r = client.post("/api/admin/db/empty", json={"confirm": "EMPTY"})
     assert r.status_code == 200
     d = r.get_json()["deleted"]
-    assert d == {"rating_scores": 2, "ratings": 1, "films": 2}
+    assert d == {"rating_scores": 2, "ratings": 1, "film_notes": 0, "films": 2}
 
     for table in ("films", "ratings", "rating_scores"):
         assert app.db.fetchone(f"SELECT COUNT(1) AS n FROM {table}")["n"] == 0
