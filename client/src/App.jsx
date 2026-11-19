@@ -52,10 +52,10 @@ function describeSync(st) {
 
 const MAX_NOTE_LENGTH = 5000 // same limit as the server
 
-function NotesSection({ identifier, apiJson }) {
+// open / onClose: the "add a note" popup, controlled by the parent (the Add note button sits by the film title).
+function NotesSection({ identifier, apiJson, open, onClose }) {
   const [notes, setNotes] = useState(null)   // null = loading
   const [loadError, setLoadError] = useState('')
-  const [open, setOpen] = useState(false)    // the "add a note" popup
   const [text, setText] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -70,7 +70,7 @@ function NotesSection({ identifier, apiJson }) {
 
   useEffect(() => {
     setNotes(null)
-    setOpen(false)
+    onClose()
     loadNotes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identifier])
@@ -78,21 +78,13 @@ function NotesSection({ identifier, apiJson }) {
   useEffect(() => {
     if (!open) return undefined
     textRef.current?.focus()
-    const onKey = (e) => { if (e.key === 'Escape' && !saving) closePopup() }
+    setText('')
+    setSaveError('')
+    const onKey = (e) => { if (e.key === 'Escape' && !saving) onClose() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, saving])
-
-  function openPopup() {
-    setText('')
-    setSaveError('')
-    setOpen(true)
-  }
-
-  function closePopup() {
-    setOpen(false)
-  }
+  }, [open])
 
   async function saveNote() {
     setSaving(true)
@@ -108,7 +100,7 @@ function NotesSection({ identifier, apiJson }) {
       return
     }
     setNotes((prev) => [...(prev || []), data])
-    setOpen(false)
+    onClose()
   }
 
   const trimmed = text.trim()
@@ -116,10 +108,7 @@ function NotesSection({ identifier, apiJson }) {
 
   return (
     <section className="notes-section" aria-labelledby="notes-heading">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-        <h3 id="notes-heading" style={{ margin: 0 }}>Judges’ notes</h3>
-        <button onClick={openPopup}>Add note</button>
-      </div>
+      <h3 id="notes-heading" style={{ margin: 0 }}>Judges’ notes</h3>
 
       {loadError ? <div style={{ color: '#a00', marginTop: 8 }}>{loadError}</div> : null}
       {notes === null ? <p style={{ color: '#666' }}>Loading notes…</p> : null}
@@ -148,7 +137,7 @@ function NotesSection({ identifier, apiJson }) {
       ) : null}
 
       {open ? (
-        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) closePopup() }}>
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose() }}>
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="note-dialog-title">
             <h3 id="note-dialog-title" style={{ marginTop: 0 }}>Add a note</h3>
             <textarea
@@ -165,7 +154,7 @@ function NotesSection({ identifier, apiJson }) {
             </div>
             {saveError ? <div role="alert" style={{ color: '#a00', marginTop: 8 }}>{saveError}</div> : null}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <button onClick={closePopup} disabled={saving}>Cancel</button>
+              <button onClick={onClose} disabled={saving}>Cancel</button>
               <button className="btn-primary" onClick={saveNote} disabled={!canSave}>
                 {saving ? 'Saving…' : 'Save note'}
               </button>
@@ -1084,7 +1073,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.includes('failed') || actionMsg.includes('error') ? '#a00' : '#060', fontSize: 13 }}>{actionMsg}</div>}
             {usersError && <div style={{ color: '#a00', marginBottom: 8 }}>{usersError}</div>}
             <button onClick={loadUsers} disabled={usersLoading} style={{ marginBottom: 10, fontSize: 12 }}>
-              {usersLoading ? 'Loading…' : '↻ Refresh'}
+              {usersLoading ? 'Loading…' : '↻ Update'}
             </button>
             {users && (
               <div style={{ overflowX: 'auto' }}>
@@ -1237,6 +1226,7 @@ export default function App() {
   const [password, setPassword] = useState('')
 
   const [film, setFilm] = useState(null)
+  const [noteOpen, setNoteOpen] = useState(false) // judges' "add a note" popup
   const [criteria, setCriteria] = useState([])
   const [scores, setScores] = useState({}) // key -> string (user input)
 
@@ -1519,7 +1509,10 @@ export default function App() {
 
       {film ? (
         <div className="film-panel">
-          <h3 style={{ marginBottom: 6 }}>{film.title || film.identifier}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 6 }}>
+            <h3 style={{ margin: 0 }}>{film.title || film.identifier}</h3>
+            {me?.is_judge ? <button onClick={() => setNoteOpen(true)}>Add note</button> : null}
+          </div>
           <div className="film-meta">
             <div><strong>Identifier:</strong> {film.identifier}</div>
             {archiveUrl ? (
@@ -1608,7 +1601,7 @@ export default function App() {
 
           {submitError ? <div style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
 
-          {me?.is_judge ? <NotesSection identifier={film.identifier} apiJson={apiJson} /> : null}
+          {me?.is_judge ? <NotesSection identifier={film.identifier} apiJson={apiJson} open={noteOpen} onClose={() => setNoteOpen(false)} /> : null}
         </div>
       ) : notice || error || loading ? null : (
         <p style={{ marginTop: 14 }}>No films left.</p>
