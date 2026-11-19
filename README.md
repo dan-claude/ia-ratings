@@ -186,4 +186,3 @@ See `CLAUDE.md` for the full deployment notes.
 | `docs/GITHUB_LOGIN.md` | Creating and configuring the GitHub OAuth app |
 | `CLAUDE.md` | Working notes for Claude: architecture, env vars, deployment, admin API |
 | `CHANGELOG.md` | Version history |
-| `RECREATE_WITH_CLAUDE.txt` | Full from-scratch rebuild spec (embeds the server source) |

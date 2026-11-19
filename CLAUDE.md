@@ -264,4 +264,3 @@ python tools/sync.py --workers 20 --force --db server/app.db
 | `API_CLIENT_SERVER.md` | Binding API contract — update with any route change |
 | `CHANGELOG.md` | Version history |
 | `docs/GITHUB_LOGIN.md` | Step-by-step GitHub OAuth app setup (dev + production) |
-| `RECREATE_WITH_CLAUDE.txt` | Rebuild spec that embeds server source verbatim — regenerate the `FILE:` sections when server files change |
