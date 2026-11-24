@@ -37,10 +37,21 @@ class UserRepository:
         )
 
     def get_by_ia_username(self, ia_username: str) -> Optional[sqlite3.Row]:
+        """Case-insensitive (archive.org usernames are), oldest account first if older
+        databases hold several spellings of the same name."""
         return self.db.fetchone(
-            "SELECT id, email, is_admin, is_judge, created_at FROM users WHERE ia_username = ?",
+            "SELECT id, email, is_admin, is_judge, created_at FROM users "
+            "WHERE ia_username = ? COLLATE NOCASE ORDER BY id LIMIT 1",
             (ia_username,),
         )
+
+    def set_ia_username(self, user_id: int, ia_username: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute("UPDATE users SET ia_username = ? WHERE id = ?", (ia_username, int(user_id)))
+            conn.commit()
+        finally:
+            conn.close()
 
     def create_ia_user(self, ia_username: str) -> int:
         conn = self.db.connect()

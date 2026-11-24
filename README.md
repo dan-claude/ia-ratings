@@ -36,8 +36,11 @@ Production runs on Railway (new deployment being set up; URL to follow).
   - *Users* — tick Admin / Judge for each user
   - *DB Browser* — table row counts and paged table dumps
   - *Backup* — download the full DB as JSON; restore from a backup file
-- Cookie sessions (8-hour lifetime, `HttpOnly`, `SameSite=Lax`, `Secure` when a
-  real `SESSION_SECRET` is set) and rate-limited login/register endpoints.
+- Cookie sessions backed by a server-side record (8-hour lifetime, `HttpOnly`,
+  `SameSite=Lax`, `Secure`): logging out really ends the session, and restoring a
+  backup logs everyone else out. Login/register are rate-limited per client.
+- archive.org logins are matched on archive.org's own account name, so typing your
+  username in a different case, or your email, still lands on the same account.
 
 ## Tech stack
 
@@ -63,6 +66,9 @@ make dev                                   # = PYTHONPATH=. python -m server.app
 # or, with local email/password accounts instead of archive.org login:
 PYTHONPATH=. python -m server.app --auth-scheme local
 ```
+
+The local server listens on `127.0.0.1` only and, without `SESSION_SECRET`, uses a
+random secret per run (you are logged out when you restart it).
 
 Useful flags: `--host`, `--port`, `--debug` / `--no-debug`, `--auth-scheme ia|local`,
 `--with-client` (runs `npm install && npm run build` in `client/` first, so Flask
@@ -102,12 +108,13 @@ If your Flask server is on a different port, change the proxy target in
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `DB_PATH` | `server/app.db` | SQLite file location |
-| `SESSION_SECRET` | insecure dev value | Session signing key. **Set this in production.** While unset, the server warns at startup and session cookies are not marked `Secure`. |
+| `SESSION_SECRET` | *(none)* | Session signing key. **Required**: the server refuses to start without it (gunicorn/Railway). Only `python -m server.app` for local development may omit it. |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app (Railway: `1`, set by the Dockerfile) so the login rate limit is per real client |
 | `AUTH_SCHEME` | `ia` | `ia` or `local` (the `--auth-scheme` flag overrides it) |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | Enable GitHub login when **both** are set — see [`docs/GITHUB_LOGIN.md`](docs/GITHUB_LOGIN.md) |
 | `GITHUB_REDIRECT_URI` | *(unset)* | Rarely needed; overrides which registered callback URL GitHub uses |
 | `LOG_LEVEL` | `INFO` | Server log level |
-| `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `0.0.0.0` / `5000` | Defaults for `--host` / `--port` |
+| `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `127.0.0.1` / `5000` | Defaults for `--host` / `--port` (local only by default) |
 | `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
 | `PORT` | `5000` | Port gunicorn listens on in the Docker image (Railway sets it) |
 | `VITE_LOG_LEVEL` | `info` | Client console logging: `debug`, `info`, `warn`, `error`, `silent` |

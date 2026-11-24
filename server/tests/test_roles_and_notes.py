@@ -111,12 +111,12 @@ def test_judge_adds_and_lists_notes_oldest_first(app):
     assert r.status_code == 201
     n = r.get_json()
     assert n["text"] == "Lovely colour work."
-    assert n["author"] == "j1@example.com"
+    assert n["author"] == "j1"  # the part before the @: judges never see each other's addresses
     assert n["createdAt"].endswith("Z") and "T" in n["createdAt"]
     j2.post("/api/films/f1/notes", json={"text": "Second opinion"})
     notes = j1.get("/api/films/f1/notes").get_json()  # every judge sees every judge's notes
     assert [x["text"] for x in notes] == ["Lovely colour work.", "Second opinion"]
-    assert [x["author"] for x in notes] == ["j1@example.com", "j2@example.com"]
+    assert [x["author"] for x in notes] == ["j1", "j2"]
 
 
 def test_notes_are_per_film(app):
@@ -134,6 +134,7 @@ def test_note_author_prefers_ia_then_github_username(app):
     c = app.test_client()
     with c.session_transaction() as s:
         s["user_id"] = uid
+        s["sid"] = app.repos["sessions"].create(uid)
     c.post("/api/films/f1/notes", json={"text": "hello"})
     assert c.get("/api/films/f1/notes").get_json()[0]["author"] == "some_ia_user"
 
@@ -248,7 +249,7 @@ def test_notes_csv_lists_notes_for_active_collection(app):
     assert [(x[2], x[4]) for x in rows[1:]] == [
         ("f1", "first"), ("f1", "second"), ("f2", "about f2, with a comma, and\na newline"),
     ]
-    assert rows[1][1] == "j@example.com"
+    assert rows[1][1] == "j"
 
 
 def test_notes_csv_only_includes_active_collection(app):

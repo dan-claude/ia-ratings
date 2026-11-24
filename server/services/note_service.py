@@ -2,23 +2,17 @@ import csv
 from io import StringIO
 
 from ..repositories.film_repo import FilmRepository
-from ..repositories.note_repo import NoteRepository
+from .csv_utils import csv_safe
+from ..repositories.note_repo import NoteRepository, author_name
 
 MAX_NOTE_LENGTH = 5000
-
-
-def _csv_safe(value):
-    """Stop spreadsheet apps treating free text as a formula (CSV injection)."""
-    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + value
-    return value
 
 
 def _note_json(row) -> dict:
     # SQLite stores UTC as "YYYY-MM-DD HH:MM:SS"; hand clients an unambiguous ISO-8601 string.
     return {
         "id": int(row["id"]),
-        "author": row["author"],
+        "author": author_name(row),
         "createdAt": str(row["created_at"]).replace(" ", "T") + "Z",
         "text": row["body"],
     }
@@ -53,5 +47,5 @@ class NoteService:
         writer = csv.writer(out)
         writer.writerow(["created_at", "author", "identifier", "title", "text"])
         for r in self.notes.list_for_export(self.films.collection):
-            writer.writerow([r["created_at"], _csv_safe(r["author"]), r["identifier"], _csv_safe(r["title"] or ""), _csv_safe(r["body"])])
+            writer.writerow([r["created_at"], csv_safe(author_name(r)), csv_safe(r["identifier"]), csv_safe(r["title"] or ""), csv_safe(r["body"])])
         return out.getvalue()

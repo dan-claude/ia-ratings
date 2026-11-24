@@ -19,6 +19,7 @@ import argparse
 import dataclasses
 import logging
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory, g
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from server.config import load_settings, _DEV_SECRET
 from server.db import Database
@@ -38,6 +40,7 @@ from server.repositories.criteria_repo import CriteriaRepository
 from server.repositories.film_repo import FilmRepository
 from server.repositories.note_repo import NoteRepository
 from server.repositories.rating_repo import RatingRepository
+from server.repositories.session_repo import SessionRepository
 from server.repositories.settings_repo import AppSettingsRepository
 from server.repositories.user_repo import UserRepository
 
@@ -59,7 +62,17 @@ from server.routes.user import user_bp
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: "Settings | None" = None) -> Flask:
+# Request-body limits. Everything the app accepts is small JSON except these admin
+# uploads; Flask would otherwise read any size into memory (even before login).
+MAX_BODY_BYTES = 1 * 1024 * 1024
+_LARGE_BODY_LIMITS = {
+    "admin.import_preview": 16 * 1024 * 1024,   # CSV text (2 MB max once decoded) inside JSON
+    "admin.import_films": 16 * 1024 * 1024,
+    "admin.db_restore": 64 * 1024 * 1024,        # a whole-database backup
+}
+
+
+def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     """Create and configure the Flask app.
 
     All configuration and dependency construction happens here (NOT at import time)
@@ -67,11 +80,28 @@ def create_app(settings: "Settings | None" = None) -> Flask:
 
     Pass a Settings instance to override defaults (useful for tests and the CLI
     --auth-scheme flag).
+
+    `dev=True` is for the local development entrypoint only (`python -m server.app`):
+    sessions get a random per-process secret when SESSION_SECRET is unset, and the
+    cookie isn't marked Secure so it works over plain http://localhost. Everywhere
+    else (gunicorn, tests) SESSION_SECRET is required.
     """
 
     configure_logging()
     if settings is None:
         settings = load_settings()
+
+    # The development default is public (it is in the repo), so a server using it would
+    # accept forged admin sessions. Never run with it: refuse to start, except that the
+    # local dev entrypoint swaps in a random secret.
+    if settings.session_secret == _DEV_SECRET:
+        if not dev:
+            raise RuntimeError(
+                "SESSION_SECRET is not set. Set it to a long random value, e.g. "
+                "python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        settings = dataclasses.replace(settings, session_secret=secrets.token_hex(32))
+        logger.info("SESSION_SECRET not set: using a random per-process secret (sessions reset on restart)")
 
     # --- Serve the built React client (client/dist) directly from Flask ---
     repo_root = Path(__file__).resolve().parents[1]
@@ -82,15 +112,6 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     else:
         app = Flask(__name__)
 
-    # H2: Refuse to start in production with the default insecure secret.
-    if settings.session_secret == _DEV_SECRET:
-        import warnings
-        warnings.warn(
-            "SESSION_SECRET is not set — using the insecure development default. "
-            "Set SESSION_SECRET to a random secret before deploying.",
-            stacklevel=2,
-        )
-
     app.secret_key = settings.session_secret
     app.config["DB_PATH"] = settings.db_path
 
@@ -99,7 +120,11 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     # Only send the cookie over HTTPS in production (not on localhost dev).
-    app.config["SESSION_COOKIE_SECURE"] = not (settings.session_secret == _DEV_SECRET)
+    app.config["SESSION_COOKIE_SECURE"] = not dev
+    app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+    if settings.trusted_proxy_hops:
+        # Trust exactly that many proxy hops for the client address and scheme.
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=settings.trusted_proxy_hops, x_proto=settings.trusted_proxy_hops)
 
     # --- Database + repos ---
     db = Database(settings.db_path)
@@ -118,6 +143,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     criteria = CriteriaRepository(db)
     ratings = RatingRepository(db)
     notes = NoteRepository(db)
+    sessions = SessionRepository(db)
 
     # --- Services ---
     ia = InternetArchiveService(app_settings.get_collection)
@@ -149,6 +175,7 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         "ratings": ratings,
         "settings": app_settings,
         "notes": notes,
+        "sessions": sessions,
     }
     app.services = {
         "ia": ia,
@@ -188,7 +215,18 @@ def create_app(settings: "Settings | None" = None) -> Flask:
         response.headers["X-Request-Id"] = rid
         return response
 
+    @app.before_request
+    def _body_limit():
+        # Per-route override of MAX_CONTENT_LENGTH for the few admin uploads.
+        limit = _LARGE_BODY_LIMITS.get(request.endpoint)
+        if limit:
+            request.max_content_length = limit
+
     # --- Error handling ---
+    @app.errorhandler(413)
+    def _too_large(err):
+        return jsonify({"error": "Request body is too large"}), 413
+
     @app.errorhandler(Exception)
     def _unhandled_error(err):
         # Preserve normal Flask/Werkzeug HTTP exceptions (404/405/etc.)
@@ -253,6 +291,10 @@ def create_app(settings: "Settings | None" = None) -> Flask:
     return app
 
 
+def _is_loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
 def _is_port_available(host: str, port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -286,7 +328,7 @@ def _build_client(repo_root: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    env_host = os.getenv("FLASK_RUN_HOST", "0.0.0.0")
+    env_host = os.getenv("FLASK_RUN_HOST", "127.0.0.1")
     env_port = int(os.getenv("FLASK_RUN_PORT", "5000"))
     env_debug = os.getenv("FLASK_DEBUG", "0")
 
@@ -322,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
 
     host = args.host
     port = args.port
+    if debug and not _is_loopback(host):
+        # Werkzeug's debugger runs arbitrary code for anyone who can reach it.
+        raise SystemExit(f"Refusing to run with the debugger on a non-local address ({host}). Use --host 127.0.0.1 or drop --debug.")
 
     chosen_port = _pick_available_port(host, port)
     if chosen_port != port:
@@ -336,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = dataclasses.replace(settings, auth_scheme=args.auth_scheme)
     print(f"Auth scheme: {settings.auth_scheme}")
 
-    app = create_app(settings=settings)
+    app = create_app(settings=settings, dev=True)
     app.run(host=host, port=chosen_port, debug=debug)
     return 0
 

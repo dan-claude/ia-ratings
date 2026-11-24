@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, session, current_app, redirect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
+from ..auth_session import end_session, start_session
 from ..services.github_auth_service import GitHubAuthError
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,8 @@ def register():
     data = request.get_json(silent=True) or {}
     try:
         uid = svc.register(data.get("email") or "", data.get("password") or "")
-        # L4: Rotate session after successful auth to prevent session fixation.
-        session.clear()
-        session.permanent = True
-        session["user_id"] = uid
+        # L4: a fresh session after successful auth prevents session fixation.
+        start_session(uid)
         return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -50,10 +49,8 @@ def login():
             uid = svc.login_via_ia(data.get("username") or "", data.get("password") or "")
         else:
             uid = svc.login(data.get("email") or "", data.get("password") or "")
-        # L4: Rotate session after successful auth to prevent session fixation.
-        session.clear()
-        session.permanent = True
-        session["user_id"] = uid
+        # L4: a fresh session after successful auth prevents session fixation.
+        start_session(uid)
         return jsonify({"ok": True})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -63,7 +60,7 @@ def login():
 
 @auth_bp.post("/api/auth/logout")
 def logout():
-    session.clear()
+    end_session()  # also deletes the server-side session, so a copied cookie stops working
     return jsonify({"ok": True})
 
 
@@ -114,8 +111,6 @@ def github_callback():
         logger.warning("github.login.failed", exc_info=True)
         return _login_error("github_failed")
 
-    # L4: Rotate session after successful auth to prevent session fixation.
-    session.clear()
-    session.permanent = True
-    session["user_id"] = uid
+    # L4: a fresh session after successful auth prevents session fixation.
+    start_session(uid)
     return redirect("/")

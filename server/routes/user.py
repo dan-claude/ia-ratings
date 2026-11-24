@@ -1,12 +1,14 @@
-from flask import Blueprint, jsonify, session, current_app
+from flask import Blueprint, jsonify, current_app
+
+from ..auth_session import current_user_id
 
 user_bp = Blueprint("user", __name__)
 
 def _require_auth():
-    uid = session.get("user_id")
+    uid = current_user_id()
     if not uid:
         return None, (jsonify({"error": "Not logged in"}), 401)
-    return int(uid), None
+    return uid, None
 
 @user_bp.get("/api/config")
 def config():

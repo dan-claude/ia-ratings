@@ -170,6 +170,22 @@ class Database:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_film_notes_film ON film_notes(film_id)")
             conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);")
 
+            # v9: server-side login sessions. The signed cookie carries a random session id;
+            # only its SHA-256 is stored here, so logout (and a backup restore) can revoke
+            # sessions instead of leaving them valid until the cookie expires.
+            tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "user_sessions" not in tables:
+                conn.execute("""
+                  CREATE TABLE user_sessions (
+                    sid_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                  )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id)")
+            conn.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (9);")
+
 # ---- SEED DATA ----
             conn.execute("""
               INSERT OR IGNORE INTO criteria (key, label, sort_order) VALUES

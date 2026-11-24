@@ -3,6 +3,21 @@ import sqlite3
 from ..db import Database
 
 
+def author_name(row) -> str:
+    """The name shown for a note's author: archive.org username, else GitHub username,
+    else the part of the email before the "@".
+
+    Never an email address: an `ia_username` can be one (older accounts were keyed on
+    whatever was typed at login), and judges must not see each other's addresses.
+    """
+    for key in ("ia_username", "github_username", "email"):
+        value = (row[key] or "").strip()
+        local = value.split("@", 1)[0].strip()
+        if local:
+            return local
+    return "unknown"
+
+
 class NoteRepository:
     """Judges' free-text notes about films (many per film)."""
 
@@ -10,11 +25,11 @@ class NoteRepository:
         self.db = db
 
     def list_for_film(self, film_id: int) -> list[sqlite3.Row]:
-        """Notes for a film, oldest first. `author` is the writer's best display name."""
+        """Notes for a film, oldest first. Use `author_name(row)` for the writer's display name."""
         return self.db.fetchall(
             """
             SELECT n.id, n.body, n.created_at,
-                   COALESCE(u.ia_username, u.github_username, u.email) AS author
+                   u.ia_username, u.github_username, u.email
             FROM film_notes n JOIN users u ON u.id = n.user_id
             WHERE n.film_id = ?
             ORDER BY n.created_at, n.id
@@ -27,7 +42,7 @@ class NoteRepository:
         return self.db.fetchall(
             """
             SELECT n.created_at, f.ia_identifier AS identifier, f.title AS title, n.body,
-                   COALESCE(u.ia_username, u.github_username, u.email) AS author
+                   u.ia_username, u.github_username, u.email
             FROM film_notes n
             JOIN films f ON f.id = n.film_id
             JOIN users u ON u.id = n.user_id
@@ -48,7 +63,7 @@ class NoteRepository:
                 return conn.execute(
                     """
                     SELECT n.id, n.body, n.created_at,
-                           COALESCE(u.ia_username, u.github_username, u.email) AS author
+                           u.ia_username, u.github_username, u.email
                     FROM film_notes n JOIN users u ON u.id = n.user_id
                     WHERE n.id = ?
                     """,

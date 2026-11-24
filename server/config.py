@@ -14,6 +14,13 @@ def _env(name: str, default: str):
     return field(default_factory=lambda: os.environ.get(name, default))
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     # DEFAULT Internet Archive collection, used until an admin sets one in the admin
@@ -32,6 +39,12 @@ class Settings:
     # Normally leave empty: GitHub then uses the callback URL registered on the
     # OAuth app. Set it only if you registered more than one callback URL.
     github_redirect_uri: str = _env("GITHUB_REDIRECT_URI", "")
+
+    # How many reverse proxies sit in front of the app (Railway: 1). Only then is the
+    # X-Forwarded-For header trusted, so the login rate limit sees each client's own
+    # address instead of the proxy's. Leave 0 when clients connect directly: otherwise
+    # anyone could spoof the header to dodge the limit.
+    trusted_proxy_hops: int = field(default_factory=lambda: _env_int("TRUSTED_PROXY_HOPS", 0))
 
     @property
     def github_enabled(self) -> bool:

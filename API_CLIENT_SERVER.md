@@ -4,7 +4,7 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-19 (version 1.3.0).
+Last verified against the code: 2026-11-24 (version 1.3.0 + security hardening).
 
 ## Conventions (Binding)
 
@@ -17,6 +17,9 @@ Last verified against the code: 2026-11-19 (version 1.3.0).
 - Unhandled server errors return 500
   `{ "ok": false, "error": "Internal Server Error", "request_id": "<id>" }`.
 - Every response carries an `X-Request-Id` header matching the server log line.
+- Request bodies are limited to **1 MB** (admin CSV import 16 MB, backup restore
+  64 MB). Larger ones get 413 `{ "error": "Request body is too large" }` before
+  the body is read, on every route including `/api/auth/login`.
 - Film objects always include the `description` key. Its value is plain text, or
   `null` when archive.org has no description.
 - The client MUST treat `description` as **plain text** (no HTML rendering). It
@@ -55,7 +58,12 @@ which case it is `["github"]`. Clients must tolerate unknown provider names.
 (Flask-Limiter's default response, which is not the JSON error shape).
 
 A successful login or registration clears any existing session and starts a new
-one (8-hour lifetime).
+one (8-hour lifetime). Sessions are also recorded on the server: a request counts
+as logged in only while that record exists, so `POST /api/auth/logout` invalidates
+the session even if the cookie was copied, and a successful
+`POST /api/admin/db/restore` ends every session except the restoring admin's own
+(kept only if their account, same id and email, is still present afterwards).
+Deploying the server-side sessions logs everyone out once.
 
 ### POST /api/auth/login — public
 
@@ -67,8 +75,13 @@ Request body depends on the auth scheme:
 | `local` | `{ "email": "string", "password": "string" }` |
 
 In `ia` mode the credentials are checked against
-`https://archive.org/services/xauthn/?op=login`. On the first successful login a
-local user is created with email `<username>@users.archive.org`.
+`https://archive.org/services/xauthn/?op=login`. The local account is keyed on the
+**account name archive.org reports** (`itemname`/`screenname`, lower-cased), not on
+the text typed, so a username in any case and the account's email address all log
+in to the same user. On the first successful login a local user is created with
+email `<name>@users.archive.org`. If archive.org reports no name and an email
+address was typed, the login is refused with 401 (`"Please log in with your
+archive.org username rather than your email address."`).
 
 Response 200:
 ```json
@@ -195,7 +208,8 @@ included).
     "createdAt": "2026-11-19T16:02:11Z", "text": "Lovely colour work." }
 ]
 ```
-`author` is the writer's archive.org username, else GitHub username, else email.
+`author` is the writer's archive.org username, else GitHub username, else the part
+of their email before the `@` — never an email address.
 `createdAt` is UTC ISO-8601. `text` is plain text (render it as text, not HTML).
 
 Errors: 404 `{ "error": "Film not found" }`.
@@ -379,7 +393,8 @@ the next sync. Download a backup first if the data may be needed.
 
 ### GET /api/admin/ratings.csv — admin
 CSV download (`Content-Disposition: attachment; filename="ratings.csv"`), newest
-first. Columns:
+first. Text cells (`user_email`, `identifier`, `title`) that start with `=`, `+`,
+`-` or `@` are prefixed with `'` so spreadsheet apps don't evaluate them. Columns:
 
 `created_at, user_email, identifier, title, <one column per active criterion key>`
 
@@ -480,7 +495,8 @@ Downloads the whole database as JSON
   "tables": { "users": [ { "id": 1, "...": "..." } ], "films": [] }
 }
 ```
-The backup includes `password_hash` values. Treat backup files as secrets.
+The backup includes `password_hash` values. Treat backup files as secrets. Login
+sessions are never included.
 
 #### POST /api/admin/db/restore — admin, destructive
 The request body is a backup file as produced above. In a single transaction,

@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
+from ..auth_session import current_user_id
 from ..repositories.user_repo import ROLE_COLUMNS
 from ..services import import_service
 
@@ -14,11 +15,11 @@ admin_bp = Blueprint("admin", __name__)
 # ---------------------------------------------------------------------------
 
 def _require_admin_user():
-    uid = session.get("user_id")
+    uid = current_user_id()
     if not uid:
         return False, (jsonify({"error": "Not logged in"}), 401)
     users = current_app.repos["users"]
-    row = users.get_by_id(int(uid))
+    row = users.get_by_id(uid)
     if not row:
         return False, (jsonify({"error": "Not logged in"}), 401)
     if not ("is_admin" in row.keys() and bool(row["is_admin"])):
@@ -37,10 +38,14 @@ def _db_conn():
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
+# Internal tables that must never be dumped, browsed or backed up (live login sessions).
+_HIDDEN_TABLES = {"user_sessions"}
+
+
 def _list_tables(conn):
     return [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    ).fetchall()]
+    ).fetchall() if r[0] not in _HIDDEN_TABLES]
 
 @admin_bp.get("/api/admin/db/tables")
 def db_tables():
@@ -184,7 +189,7 @@ def set_roles(user_id: int):
     if not row:
         return jsonify({"error": f"User not found: {user_id}"}), 404
     # Don't let admins lock themselves out of the admin panel.
-    if user_id == int(session["user_id"]) and "admin" not in roles:
+    if user_id == current_user_id() and "admin" not in roles:
         return jsonify({"error": "You can't remove your own admin role"}), 400
     users.set_roles(user_id, roles)
     return jsonify({"ok": True, "user_id": user_id, "roles": users.roles_of(users.get_by_id(user_id))})
@@ -271,12 +276,21 @@ def db_restore():
     if not isinstance(tables_data, dict):
         return jsonify({"error": "Invalid backup: 'tables' must be an object"}), 400
 
+    # A restore replaces the users table, so ids can end up belonging to different people.
+    # Every login session is therefore revoked; the admin doing the restore keeps theirs
+    # only if their account (same id and email) is still there afterwards.
+    keep_sid = session.get("sid")
+    keep_uid = current_user_id()
+    keep_row = current_app.repos["users"].get_by_id(keep_uid) if keep_uid else None
+    keep_email = keep_row["email"] if keep_row else None
+
     conn = _db_conn()
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         restored = {}
         try:
             with conn:  # single atomic transaction — rolls back on any exception
+                conn.execute("DELETE FROM user_sessions")
                 # Notes point at film ids. A backup that replaces films but has no notes
                 # (e.g. made before notes existed) would leave them attached to the wrong films.
                 if tables_data.get("films") is not None and tables_data.get("film_notes") is None:
@@ -321,6 +335,11 @@ def db_restore():
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
 
+        sessions = current_app.repos["sessions"]
+        if keep_sid and keep_uid and keep_email:
+            after = current_app.repos["users"].get_by_id(keep_uid)
+            if after and after["email"] == keep_email:
+                sessions.create(keep_uid, sid=keep_sid)
         return jsonify({
             "ok": True,
             "exported_at": backup.get("exported_at"),

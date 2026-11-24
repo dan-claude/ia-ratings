@@ -3,6 +3,7 @@ from io import StringIO
 from ..repositories.criteria_repo import CriteriaRepository
 from ..repositories.film_repo import FilmRepository
 from ..repositories.rating_repo import RatingRepository
+from .csv_utils import csv_safe
 
 class SummaryService:
     def __init__(self, criteria: CriteriaRepository, films: FilmRepository, ratings: RatingRepository, collection):
@@ -86,6 +87,6 @@ class SummaryService:
             for c in crit:
                 s = self.ratings.get_score(int(r["rating_id"]), int(c["id"]))
                 scores.append("" if s is None else s)
-            writer.writerow([r["created_at"], r["user_email"], r["identifier"], r["title"], *scores])
+            writer.writerow([r["created_at"], csv_safe(r["user_email"]), csv_safe(r["identifier"]), csv_safe(r["title"]), *scores])
 
         return output.getvalue()

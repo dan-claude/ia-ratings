@@ -1,12 +1,14 @@
-from flask import Blueprint, jsonify, session, current_app, request
+from flask import Blueprint, jsonify, current_app, request
+
+from ..auth_session import current_user_id
 
 films_bp = Blueprint("films", __name__)
 
 def _require_auth():
-    uid = session.get("user_id")
+    uid = current_user_id()
     if not uid:
         return None, (jsonify({"error": "Not logged in"}), 401)
-    return int(uid), None
+    return uid, None
 
 @films_bp.get("/api/films/next")
 def next_film():
