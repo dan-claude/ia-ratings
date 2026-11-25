@@ -1,8 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-
-function archiveDetailsUrl(identifier) {
-  return identifier ? `https://archive.org/details/${identifier}` : null
-}
+import { useEffect, useRef, useState } from 'react'
 
 function linkifyText(text) {
   const urlRegex = /(https?:\/\/[^\s]+)/g
@@ -20,176 +16,35 @@ function linkifyText(text) {
   })
 }
 
-function isIntString(s) {
-  if (s === null || s === undefined) return false
-  const t = String(s).trim()
-  return /^-?\d+$/.test(t)
-}
-
 // ---------------------------------------------------------------------------
 // AdminPanel
 // ---------------------------------------------------------------------------
 
-// Same rule as the server: an archive.org collection identifier.
-const COLLECTION_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/
-
-function describeSync(st) {
+function describeJob(st) {
   if (!st) return ''
   if (st.state === 'running') {
-    if (st.phase === 'titles') return st.total ? `Looking up film titles on archive.org… ${st.done} of ${st.total}` : 'Looking up film titles on archive.org…'
-    if (st.phase === 'descriptions' && st.total) return `Fetching film descriptions… ${st.done} of ${st.total}`
-    return st.done ? `Fetching film list from the Internet Archive… ${st.done} found` : 'Fetching film list from the Internet Archive…'
+    return st.total ? `Looking up film titles on archive.org… ${st.done} of ${st.total}` : 'Looking up film titles on archive.org…'
   }
-  if (st.state === 'done' && st.kind === 'titles') return `Title lookup finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.synced} titles found.`
-  if (st.state === 'done') return `Last sync finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.synced} films.`
-  if (st.state === 'error') return `Last ${st.kind === 'titles' ? 'title lookup' : 'sync'} failed: ${st.error}`
+  if (st.state === 'done') return `Title lookup finished ${new Date(st.finished_at * 1000).toLocaleString()} — ${st.processed} titles found.`
+  if (st.state === 'error') return `Last title lookup failed: ${st.error}`
   return ''
 }
 
-// ---------------------------------------------------------------------------
-// Judges' notes on a film (only rendered for users with the judge role)
-// ---------------------------------------------------------------------------
-
-const MAX_NOTE_LENGTH = 5000 // same limit as the server
-
-// open / onClose: the "add a note" popup, controlled by the parent (the Add note button sits by the film title).
-function NotesSection({ identifier, apiJson, open, onClose }) {
-  const [notes, setNotes] = useState(null)   // null = loading
-  const [loadError, setLoadError] = useState('')
-  const [text, setText] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
-  const textRef = useRef(null)
-
-  async function loadNotes() {
-    setLoadError('')
-    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(identifier)}/notes`)
-    if (ok && Array.isArray(data)) setNotes(data)
-    else { setNotes([]); setLoadError(data?.error || 'Could not load notes') }
-  }
-
-  useEffect(() => {
-    setNotes(null)
-    onClose()
-    loadNotes()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identifier])
-
-  useEffect(() => {
-    if (!open) return undefined
-    textRef.current?.focus()
-    setText('')
-    setSaveError('')
-    const onKey = (e) => { if (e.key === 'Escape' && !saving) onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  async function saveNote() {
-    setSaving(true)
-    setSaveError('')
-    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(identifier)}/notes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    })
-    setSaving(false)
-    if (!ok) {
-      setSaveError(data?.error || 'Could not save the note')
-      return
-    }
-    setNotes((prev) => [...(prev || []), data])
-    onClose()
-  }
-
-  const trimmed = text.trim()
-  const canSave = trimmed.length > 0 && text.length <= MAX_NOTE_LENGTH && !saving
-
-  return (
-    <section className="notes-section" aria-labelledby="notes-heading">
-      <h3 id="notes-heading" style={{ margin: 0 }}>Judges’ notes</h3>
-
-      {loadError ? <div style={{ color: '#a00', marginTop: 8 }}>{loadError}</div> : null}
-      {notes === null ? <p style={{ color: '#666' }}>Loading notes…</p> : null}
-      {notes && notes.length === 0 && !loadError ? (
-        <p style={{ color: '#666' }}>No notes on this film yet.</p>
-      ) : null}
-      {notes && notes.length > 0 ? (
-        <table className="notes-table">
-          <thead>
-            <tr>
-              <th scope="col" className="col-who">Who</th>
-              <th scope="col" className="col-when">When</th>
-              <th scope="col">Note</th>
-            </tr>
-          </thead>
-          <tbody>
-            {notes.map((n) => (
-              <tr key={n.id}>
-                <td className="col-who" data-label="Who">{n.author}</td>
-                <td className="col-when" data-label="When">{new Date(n.createdAt).toLocaleString()}</td>
-                <td className="note-text" data-label="Note">{linkifyText(n.text)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : null}
-
-      {open ? (
-        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose() }}>
-          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="note-dialog-title">
-            <h3 id="note-dialog-title" style={{ marginTop: 0 }}>Add a note</h3>
-            <textarea
-              ref={textRef}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={6}
-              aria-label="Note text"
-              placeholder="Write your note about this film…"
-              style={{ width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8 }}
-            />
-            <div style={{ fontSize: 12, color: text.length > MAX_NOTE_LENGTH ? '#a00' : '#666', marginTop: 4 }}>
-              {text.length} / {MAX_NOTE_LENGTH}
-            </div>
-            {saveError ? <div role="alert" style={{ color: '#a00', marginTop: 8 }}>{saveError}</div> : null}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
-              <button onClick={onClose} disabled={saving}>Cancel</button>
-              <button className="btn-primary" onClick={saveNote} disabled={!canSave}>
-                {saving ? 'Saving…' : 'Save note'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </section>
-  )
-}
-
-// onDataChanged: called after a sync finishes or the DB is emptied, so the
+// onDataChanged: called after an import or when the DB is emptied, so the
 // rating view can reload.
 function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [tab, setTab] = useState('actions')
 
-  // Sync state (status comes from the server, so it survives a page reload)
-  const [syncStatus, setSyncStatus] = useState(null)   // { state, phase, done, total, synced, error, film_count, ... }
-  const [syncMsg, setSyncMsg] = useState('')
-  const prevSyncState = useRef(null)
-
-  // Active film collection (admin setting)
-  const [colInfo, setColInfo] = useState(null)   // { collection, default_collection, collections: [{name, films}] }
-  const [colInput, setColInput] = useState('')
-  const [colSaving, setColSaving] = useState(false)
-  const [colMsg, setColMsg] = useState('')
+  // Background job state (the title lookup after an import; status comes from the server, so it survives a page reload)
+  const [jobStatus, setJobStatus] = useState(null)   // { state, kind, phase, done, total, processed, error, film_count, ... }
+  const prevJobState = useRef(null)
 
   // Spreadsheet (CSV) import state
   const [impFile, setImpFile] = useState('')          // file name, for display
   const [impCsv, setImpCsv] = useState('')            // CSV text
-  const [impPreview, setImpPreview] = useState(null)  // { headers, row_count, sample_rows, collection }
-  const [impMap, setImpMap] = useState({ link: null, title: null, description: null, extra: [] })
+  const [impPreview, setImpPreview] = useState(null)  // { headers, row_count, sample_rows }
+  const [impMap, setImpMap] = useState({ link: null, title: null, description: null })
   const [impPlan, setImpPlan] = useState(null)        // dry-run result
-  const [impCollection, setImpCollection] = useState('')  // collection the films are put in (starts as the active one)
-  const [impActivate, setImpActivate] = useState(false)    // also make it the active collection
   const [impOnExisting, setImpOnExisting] = useState('')  // '' | 'skip' | 'update' — admin must choose if any exist
   const [impLookup, setImpLookup] = useState(true)
   const [impBusy, setImpBusy] = useState(false)
@@ -201,13 +56,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [emptyConfirmText, setEmptyConfirmText] = useState('')
   const [emptying, setEmptying] = useState(false)
   const [emptyMsg, setEmptyMsg] = useState('')
-
-  // Criteria state
-  const [criteria, setCriteria] = useState(null)
-  const [criteriaLoading, setCriteriaLoading] = useState(false)
-  const [criteriaError, setCriteriaError] = useState('')
-  const [editingCriterion, setEditingCriterion] = useState(null)   // { id?, key, label, min_score, max_score, sort_order, active }
-  const [criteriaMsg, setCriteriaMsg] = useState('')
 
   // Backup/restore state
   const [backupStatus, setBackupStatus] = useState('')
@@ -268,7 +116,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
   async function setRole(user, role, on) {
     setActionMsg('')
-    const current = [user.is_admin ? 'admin' : null, user.is_judge ? 'judge' : null].filter(Boolean)
+    const current = [user.is_admin ? 'admin' : null, user.is_reviewer ? 'reviewer' : null, user.is_judge ? 'judge' : null].filter(Boolean)
     const roles = on ? [...new Set([...current, role])] : current.filter((r) => r !== role)
     const { ok, data } = await apiJson(`/api/admin/users/${user.id}/roles`, {
       method: 'PUT',
@@ -281,47 +129,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       setActionMsg(data?.error || 'Action failed')
     }
     loadUsers()
-  }
-
-  async function loadCriteriaAdmin() {
-    setCriteriaLoading(true)
-    setCriteriaError('')
-    const { ok, data } = await apiJson('/api/admin/criteria')
-    setCriteriaLoading(false)
-    if (ok) setCriteria(data)
-    else setCriteriaError(data?.error || 'Failed to load criteria')
-  }
-
-  function blankCriterion() {
-    return { key: '', label: '', min_score: 1, max_score: 5, sort_order: 0, active: true }
-  }
-
-  async function saveCriterion() {
-    if (!editingCriterion) return
-    setCriteriaMsg('')
-    const isNew = !editingCriterion.id
-    const path = isNew ? '/api/admin/criteria' : `/api/admin/criteria/${editingCriterion.id}`
-    const method = isNew ? 'POST' : 'PUT'
-    const body = {
-      key:        editingCriterion.key,
-      label:      editingCriterion.label,
-      min_score:  Number(editingCriterion.min_score),
-      max_score:  Number(editingCriterion.max_score),
-      sort_order: Number(editingCriterion.sort_order),
-      active:     editingCriterion.active,
-    }
-    const { ok, data } = await apiJson(path, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    if (ok) {
-      setCriteriaMsg(isNew ? 'Criterion created.' : 'Criterion updated.')
-      setEditingCriterion(null)
-      loadCriteriaAdmin()
-    } else {
-      setCriteriaMsg(`Error: ${data?.error || 'Save failed'}`)
-    }
   }
 
   async function downloadBackup() {
@@ -391,31 +198,10 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
     }
   }
 
-  async function loadCollection() {
-    const { ok, data } = await apiJson('/api/admin/settings')
-    if (ok) { setColInfo(data); setColInput(data.collection) }
-  }
-
-  async function saveCollection() {
-    setColSaving(true); setColMsg('')
-    const { ok, data } = await apiJson('/api/admin/settings/collection', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ collection: colInput }),
-    })
-    setColSaving(false)
-    if (!ok) { setColMsg(`Error: ${data?.error || 'Could not change the collection'}`); return }
-    setColInfo(data); setColInput(data.collection)
-    setColMsg(`Collection set to ${data.collection} (${data.film_count} film${data.film_count === 1 ? '' : 's'} in it).`)
-    await loadSyncStatus()   // refreshes "Films in database"
-    onDataChanged()          // rating view reloads for the new collection
-  }
-
   function resetImport() {
     setImpFile(''); setImpCsv(''); setImpPreview(null); setImpPlan(null)
-    setImpMap({ link: null, title: null, description: null, extra: [] })
+    setImpMap({ link: null, title: null, description: null })
     setImpOnExisting('')
-    setImpCollection(''); setImpActivate(false)
   }
 
   function handleImportFile(e) {
@@ -435,15 +221,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       setImpFile(file.name)
       setImpCsv(text)
       setImpPreview(data)
-      setImpMap({ ...data.suggested_mapping, extra: [] })
-      setImpCollection(data.collection)   // default: the active collection
+      setImpMap({ ...data.suggested_mapping })
     }
     reader.onerror = () => setImpMsg('Error: could not read that file')
     reader.readAsText(file)
   }
 
   function importBody(extra = {}) {
-    return JSON.stringify({ csv_text: impCsv, mapping: impMap, collection: impCollection.trim(), ...extra })
+    return JSON.stringify({ csv_text: impCsv, mapping: impMap, ...extra })
   }
 
   async function runImport() {
@@ -454,7 +239,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       body: importBody({
         on_existing: impOnExisting || 'skip',
         lookup_titles: impLookup,
-        activate_collection: impActivate && impCollection.trim() !== colInfo?.collection,
       }),
     })
     setImpBusy(false)
@@ -462,25 +246,13 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
     setImpResult({ result: data.result, skipped: data.skipped, file: impFile })
     resetImport()
     setTables(null); setRows(null)
-    await loadCollection()   // the active collection may have changed
-    await loadSyncStatus()   // starts progress polling if a title lookup was started
+    await loadJobStatus()    // starts progress polling if a title lookup was started
     onDataChanged()
   }
 
-  async function loadSyncStatus() {
-    const { ok, data } = await apiJson('/api/admin/sync/status')
-    if (ok) setSyncStatus(data)
-  }
-
-  async function startSync() {
-    setSyncMsg('')
-    setEmptyMsg('')
-    const { ok, status, data } = await apiJson('/api/admin/sync', { method: 'POST' })
-    if (ok || status === 409) {
-      setSyncStatus(data.status)   // 409 = already running; just show its progress
-    } else {
-      setSyncMsg(`Error: ${data?.error || 'Could not start sync'}`)
-    }
+  async function loadJobStatus() {
+    const { ok, data } = await apiJson('/api/admin/jobs/status')
+    if (ok) setJobStatus(data)
   }
 
   async function emptyDatabase() {
@@ -494,11 +266,11 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
     setEmptying(false)
     if (ok) {
       const d = data.deleted || {}
-      setEmptyMsg(`Emptied: ${d.films ?? 0} films and ${d.ratings ?? 0} ratings deleted.`)
+      setEmptyMsg(`Emptied: ${d.films ?? 0} films, ${d.assignments ?? 0} assignments and ${d.ratings ?? 0} ratings deleted.`)
       setEmptyOpen(false)
       setEmptyConfirmText('')
       setTables(null); setRows(null)   // invalidate cached DB browser data
-      await loadSyncStatus()
+      await loadJobStatus()
       onDataChanged()
     } else {
       setEmptyMsg(`Error: ${data?.error || 'Could not empty the database'}`)
@@ -507,7 +279,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
   // Re-check the import (dry run) whenever the file or the column mapping changes.
   useEffect(() => {
-    if (!impCsv || impMap.link === null || !COLLECTION_RE.test(impCollection.trim())) { setImpPlan(null); return }
+    if (!impCsv || impMap.link === null) { setImpPlan(null); return }
     let cancelled = false
     const t = setTimeout(async () => {
       const { ok, data } = await apiJson('/api/admin/import', {
@@ -519,26 +291,25 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       if (ok) { setImpPlan(data); setImpMsg('') } else { setImpPlan(null); setImpMsg(`Error: ${data?.error || 'Could not check the import'}`) }
     }, 250)
     return () => { cancelled = true; clearTimeout(t) }
-  }, [impCsv, impMap, impCollection, colInfo?.collection])
+  }, [impCsv, impMap])
 
-  // Load sync status once, then poll while a sync is running.
-  useEffect(() => { loadSyncStatus(); loadCollection() }, [])
+  // Load the job status once, then poll while a job is running.
+  useEffect(() => { loadJobStatus() }, [])
   useEffect(() => {
-    if (syncStatus?.state !== 'running') return
-    const id = setInterval(loadSyncStatus, 1500)
+    if (jobStatus?.state !== 'running') return
+    const id = setInterval(loadJobStatus, 1500)
     return () => clearInterval(id)
-  }, [syncStatus?.state])
-  // When a sync we were watching completes, refresh the rating view.
+  }, [jobStatus?.state])
+  // When a job we were watching completes, refresh the rating view.
   useEffect(() => {
-    const cur = syncStatus?.state
-    if (prevSyncState.current === 'running' && cur && cur !== 'running') onDataChanged()
-    prevSyncState.current = cur
-  }, [syncStatus?.state])
+    const cur = jobStatus?.state
+    if (prevJobState.current === 'running' && cur && cur !== 'running') onDataChanged()
+    prevJobState.current = cur
+  }, [jobStatus?.state])
 
   useEffect(() => {
     if (tab === 'db'       && tables   === null) loadTables()
     if (tab === 'users'    && users    === null) loadUsers()
-    if (tab === 'criteria' && criteria === null) loadCriteriaAdmin()
   }, [tab])
 
   const tabStyle = (t) => ({
@@ -559,9 +330,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'import', 'criteria', 'users', 'db', 'backup'].map(t => (
+        {['actions', 'import', 'users', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {{ actions: 'Actions', import: 'Import', criteria: 'Criteria', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
+            {{ actions: 'Actions', import: 'Import', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
           </button>
         ))}
       </div>
@@ -570,80 +341,22 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
         {/* ── Actions ── */}
         {tab === 'actions' && (() => {
-          const running = syncStatus?.state === 'running'
-          const pct = running && syncStatus.phase === 'descriptions' && syncStatus.total
-            ? Math.round((100 * syncStatus.done) / syncStatus.total) : null
+          const running = jobStatus?.state === 'running'
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 620 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Film collection</div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <input
-                    list="known-collections"
-                    value={colInput}
-                    onChange={e => { setColInput(e.target.value); setColMsg('') }}
-                    style={{ width: 330, fontFamily: 'monospace' }}
-                    aria-label="archive.org collection identifier"
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={colSaving || running}
-                  />
-                  <datalist id="known-collections">
-                    {(colInfo?.collections || []).map(c => <option key={c.name} value={c.name} />)}
-                  </datalist>
-                  <button
-                    onClick={saveCollection}
-                    disabled={!colInfo || colSaving || running || colInput.trim() === colInfo.collection || !colInput.trim()}
-                  >
-                    {colSaving ? 'Saving…' : 'Change collection'}
-                  </button>
-                </div>
-                <div style={{ fontSize: 12, color: '#555', marginTop: 6 }}>
-                  The archive.org collection raters see; Sync and Import add films to it. Films already in the
-                  database under another collection are kept but hidden until you switch back.
-                  {running && ' (Unavailable while a sync or title lookup is running.)'}
-                </div>
-                {colInfo && colInfo.collections.length > 0 && (
-                  <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>
-                    In the database: {colInfo.collections.map(c => `${c.name} (${c.films})`).join(', ')}
-                  </div>
-                )}
-                {colMsg && (
-                  <div style={{ marginTop: 6, fontSize: 13, color: colMsg.startsWith('Error') ? '#a00' : '#060' }}>{colMsg}</div>
-                )}
-              </div>
-
               <div style={{ fontSize: 14 }}>
-                Films in the active collection: <strong>{syncStatus ? syncStatus.film_count : '…'}</strong>
+                Films in the database: <strong>{jobStatus ? jobStatus.film_count : '…'}</strong>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div>
-                  <button onClick={startSync} disabled={running}>
-                    {running ? (syncStatus.kind === 'titles' ? 'Busy (title lookup)…' : 'Syncing…') : 'Sync Collection'}
-                  </button>
+              {jobStatus && jobStatus.state !== 'idle' && (
+                <div role="status" style={{ fontSize: 13, color: jobStatus.state === 'error' ? '#a00' : running ? '#666' : '#060' }}>
+                  {running && <progress style={{ width: 320, display: 'block', marginBottom: 6 }} {...(jobStatus.total ? { value: jobStatus.done, max: jobStatus.total } : {})} aria-label="Background job progress" />}
+                  {describeJob(jobStatus)}
                 </div>
-                {running && (
-                  <progress
-                    style={{ width: 320 }}
-                    {...(pct !== null ? { value: pct, max: 100 } : {})}
-                    aria-label="Sync progress"
-                  />
-                )}
-                {syncStatus && syncStatus.state !== 'idle' && (
-                  <div
-                    role="status"
-                    style={{ fontSize: 13, color: syncStatus.state === 'error' ? '#a00' : running ? '#666' : '#060' }}
-                  >
-                    {describeSync(syncStatus)}
-                  </div>
-                )}
-                {syncMsg && <div style={{ fontSize: 13, color: '#a00' }}>{syncMsg}</div>}
-              </div>
+              )}
 
               <div>
                 <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
-                <a href="/api/admin/notes.csv" style={{ fontSize: 14, marginLeft: 16 }}>⬇ Download notes.csv</a>
               </div>
 
               <div style={{ borderTop: '1px solid #eee', paddingTop: 12 }}>
@@ -655,9 +368,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                 ) : (
                   <div style={{ border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 8, padding: 12, maxWidth: 520 }}>
                     <p style={{ margin: '0 0 8px', fontSize: 13 }}>
-                      This permanently deletes <strong>all films and all ratings</strong>. User accounts and
-                      criteria are kept. Download a backup first (Backup tab) if you might want the data back.
-                      Raters will see "film database hasn't been set up" until you sync again.
+                      This permanently deletes <strong>all films, assignments and ratings</strong>. User accounts are kept.
+                      Download a backup first (Backup tab) if you might want the data back.
+                      Raters will see "film database hasn't been set up" until you import again.
                     </p>
                     <label style={{ fontSize: 13 }}>
                       Type <code>EMPTY</code> to confirm:{' '}
@@ -690,17 +403,13 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
         {/* ── Import from spreadsheet ── */}
         {tab === 'import' && (() => {
-          const running = syncStatus?.state === 'running'
+          const running = jobStatus?.state === 'running'
           const headers = impPreview?.headers || []
           const colLabel = (i) => `${i + 1}. ${(headers[i] || '(no header)').slice(0, 60)}`
           const setCol = (key) => (e) => setImpMap({ ...impMap, [key]: e.target.value === '' ? null : Number(e.target.value) })
-          const toggleExtra = (i) => setImpMap({
-            ...impMap,
-            extra: impMap.extra.includes(i) ? impMap.extra.filter(x => x !== i) : [...impMap.extra, i],
-          })
           const sum = impPlan?.summary
           const needChoice = sum && sum.existing > 0 && !impOnExisting
-          const canImport = !!sum && sum.new + sum.existing > 0 && !needChoice && !impBusy && !running && COLLECTION_RE.test(impCollection.trim())
+          const canImport = !!sum && sum.new + sum.existing > 0 && !needChoice && !impBusy && !running
           const select = (key, optional) => (
             <select value={impMap[key] ?? ''} onChange={setCol(key)}>
               <option value="">{optional ? '— none —' : '— choose a column —'}</option>
@@ -710,11 +419,11 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760 }}>
               <p style={{ margin: 0, fontSize: 13, color: '#555' }}>
-                Add films from a spreadsheet exported as <strong>CSV</strong> instead of syncing from the Internet Archive.
+                Add films from a spreadsheet exported as <strong>CSV</strong>.
                 Only rows with an <strong>archive.org</strong> link are imported; other rows (YouTube links, free text, blanks) are skipped.
               </p>
 
-              {running && <div role="status" style={{ fontSize: 13, color: '#666' }}>{describeSync(syncStatus)}</div>}
+              {running && <div role="status" style={{ fontSize: 13, color: '#666' }}>{describeJob(jobStatus)}</div>}
 
               <div>
                 <input type="file" accept=".csv,text/csv" onChange={handleImportFile} disabled={impBusy} />
@@ -730,54 +439,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       <label>Archive.org link <span style={{ color: '#a00' }}>*</span></label>{select('link', false)}
                       <label>Title</label>{select('title', true)}
                       <label>Description</label>{select('description', true)}
-                      <label>Collection <span style={{ color: '#a00' }}>*</span></label>
-                      <input
-                        value={impCollection}
-                        onChange={e => setImpCollection(e.target.value)}
-                        list="known-collections"
-                        style={{ fontFamily: 'monospace' }}
-                        aria-label="archive.org collection name"
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      <datalist id="known-collections">
-                        {(colInfo?.collections || []).map(c => <option key={c.name} value={c.name} />)}
-                      </datalist>
-                    </div>
-                    <div style={{ marginTop: 6, fontSize: 12, color: '#555' }}>
-                      <strong>Enter the name of an archive.org collection</strong> — it must match the collection's name on the
-                      Internet Archive exactly (the last part of its web address, e.g.{' '}
-                      <code>archive.org/details/<u>2026-public-domain-day-film-contest</u></code>). The films you import are filed
-                      under this name, and raters only see films in the <em>active</em> collection.
-                    </div>
-                    {!COLLECTION_RE.test(impCollection.trim()) && (
-                      <div style={{ marginTop: 4, fontSize: 12, color: '#a00' }}>
-                        Use letters, digits, “.”, “_” or “-” only (no spaces), starting with a letter or digit.
-                      </div>
-                    )}
-                    {COLLECTION_RE.test(impCollection.trim()) && impCollection.trim() !== colInfo?.collection && (
-                      <div style={{ marginTop: 6, padding: '8px 10px', border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, fontSize: 13 }}>
-                        This is not the active collection (<code>{colInfo?.collection}</code>), so raters won’t see these films
-                        until it is made active.
-                        <label style={{ display: 'block', marginTop: 4 }}>
-                          <input type="checkbox" checked={impActivate} onChange={e => setImpActivate(e.target.checked)} />
-                          {' '}Also make <code>{impCollection.trim()}</code> the active collection after importing
-                        </label>
-                      </div>
-                    )}
-                    <div style={{ marginTop: 10, fontSize: 13 }}>
-                      <div style={{ color: '#555', marginBottom: 4 }}>
-                        Also keep these columns (admin-only, never shown to raters; leave empty to keep none):
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
-                        {headers.map((_, i) => (
-                          i !== impMap.link && i !== impMap.title && i !== impMap.description && (
-                            <label key={i} style={{ whiteSpace: 'nowrap' }}>
-                              <input type="checkbox" checked={impMap.extra.includes(i)} onChange={() => toggleExtra(i)} /> {colLabel(i)}
-                            </label>
-                          )
-                        ))}
-                      </div>
                     </div>
                   </div>
 
@@ -799,19 +460,15 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                     <div style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: 12, fontSize: 14 }}>
                       <div>
                         Of <strong>{sum.rows}</strong> rows: <strong>{sum.new}</strong> new film{sum.new === 1 ? '' : 's'}
-                        {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in this collection</>}
+                        {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in the database</>}
                         , <strong>{sum.skipped}</strong> skipped.
                       </div>
-                      <div style={{ fontSize: 12, color: '#555', marginTop: 2 }}>
-                        Films will be filed under the collection <code>{impPlan.collection}</code>.
-                      </div>
-
                       {impPlan.samples.length > 0 && (
                         <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
                           {impPlan.samples.map(f => (
                             <li key={f.row}>
                               <strong>{f.title || <em>(title will be looked up)</em>}</strong> — {f.identifier}
-                              {f.exists && <span style={{ color: '#a60' }}> (already in this collection)</span>}
+                              {f.exists && <span style={{ color: '#a60' }}> (already in the database)</span>}
                             </li>
                           ))}
                         </ul>
@@ -829,7 +486,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
                       {sum.existing > 0 && (
                         <fieldset style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6 }}>
-                          <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the collection <code>{impPlan.collection}</code> — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
+                          <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the database — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
                           <label style={{ display: 'block', fontSize: 13 }}>
                             <input type="radio" name="on-existing" checked={impOnExisting === 'skip'} onChange={() => setImpOnExisting('skip')} />
                             {' '}Skip them (keep what is stored)
@@ -864,135 +521,12 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                   {impResult.result.updated > 0 && `, ${impResult.result.updated} updated`}
                   {impResult.result.skipped_existing > 0 && `, ${impResult.result.skipped_existing} existing left as they were`}
                   {`, ${impResult.result.skipped_invalid} skipped (no archive.org link).`}
-                  {` Collection: ${impResult.result.collection}${impResult.result.activated ? ' (now the active collection)' : ''}.`}
                   {impResult.result.title_lookup_started && ' Looking up titles in the background — progress shows above and under Actions.'}
                 </div>
               )}
             </div>
           )
         })()}
-
-        {/* ── Criteria ── */}
-        {tab === 'criteria' && (
-          <div>
-            {criteriaError && <div style={{ color: '#a00', marginBottom: 8 }}>{criteriaError}</div>}
-            {criteriaMsg && (
-              <div style={{ marginBottom: 8, fontSize: 13, color: criteriaMsg.startsWith('Error') ? '#a00' : '#060' }}>
-                {criteriaMsg}
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <button onClick={loadCriteriaAdmin} disabled={criteriaLoading} style={{ fontSize: 12 }}>
-                {criteriaLoading ? 'Loading…' : '↻ Refresh'}
-              </button>
-              <button onClick={() => { setCriteriaMsg(''); setEditingCriterion(blankCriterion()) }}>
-                + New criterion
-              </button>
-            </div>
-
-            {/* Inline editor */}
-            {editingCriterion && (
-              <div style={{ marginBottom: 16, padding: 14, border: '1px solid #aac', borderRadius: 8, background: '#f5f8ff' }}>
-                <div style={{ fontWeight: 600, marginBottom: 10 }}>
-                  {editingCriterion.id ? `Edit criterion #${editingCriterion.id}` : 'New criterion'}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '8px 12px', alignItems: 'center', maxWidth: 480 }}>
-                  <label style={{ fontSize: 13 }}>Key</label>
-                  <input
-                    value={editingCriterion.key}
-                    onChange={e => setEditingCriterion({ ...editingCriterion, key: e.target.value })}
-                    placeholder="snake_case identifier"
-                    disabled={!!editingCriterion.id}
-                    style={{ fontFamily: 'monospace', fontSize: 13 }}
-                  />
-                  <label style={{ fontSize: 13 }}>Label</label>
-                  <input
-                    value={editingCriterion.label}
-                    onChange={e => setEditingCriterion({ ...editingCriterion, label: e.target.value })}
-                    placeholder="Display name"
-                  />
-                  <label style={{ fontSize: 13 }}>Min score</label>
-                  <input
-                    type="number"
-                    value={editingCriterion.min_score}
-                    onChange={e => setEditingCriterion({ ...editingCriterion, min_score: e.target.value })}
-                    style={{ width: 80 }}
-                  />
-                  <label style={{ fontSize: 13 }}>Max score</label>
-                  <input
-                    type="number"
-                    value={editingCriterion.max_score}
-                    onChange={e => setEditingCriterion({ ...editingCriterion, max_score: e.target.value })}
-                    style={{ width: 80 }}
-                  />
-                  <label style={{ fontSize: 13 }}>Sort order</label>
-                  <input
-                    type="number"
-                    value={editingCriterion.sort_order}
-                    onChange={e => setEditingCriterion({ ...editingCriterion, sort_order: e.target.value })}
-                    style={{ width: 80 }}
-                  />
-                  <label style={{ fontSize: 13 }}>Active</label>
-                  <label style={{ fontSize: 13 }}>
-                    <input
-                      type="checkbox"
-                      checked={!!editingCriterion.active}
-                      onChange={e => setEditingCriterion({ ...editingCriterion, active: e.target.checked })}
-                      style={{ marginRight: 6 }}
-                    />
-                    Shown to raters
-                  </label>
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                  <button onClick={saveCriterion}>Save</button>
-                  <button onClick={() => { setEditingCriterion(null); setCriteriaMsg('') }}>Cancel</button>
-                </div>
-              </div>
-            )}
-
-            {/* Criteria table */}
-            {criteria && (
-              criteria.length === 0
-                ? <p style={{ color: '#666' }}>(no criteria)</p>
-                : (
-                  <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
-                    <thead>
-                      <tr>
-                        <th>id</th>
-                        <th>key</th>
-                        <th>label</th>
-                        <th>range</th>
-                        <th>sort</th>
-                        <th>active</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {criteria.map(c => (
-                        <tr key={c.id} style={{ opacity: c.active ? 1 : 0.5 }}>
-                          <td>{c.id}</td>
-                          <td style={{ fontFamily: 'monospace' }}>{c.key}</td>
-                          <td>{c.label}</td>
-                          <td>{c.min_score}–{c.max_score}</td>
-                          <td>{c.sort_order}</td>
-                          <td>{c.active ? '✓' : '—'}</td>
-                          <td>
-                            <button
-                              style={{ fontSize: 12 }}
-                              onClick={() => { setCriteriaMsg(''); setEditingCriterion({ ...c, active: !!c.active }) }}
-                            >
-                              Edit
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )
-            )}
-          </div>
-        )}
 
         {/* ── DB Browser ── */}
         {tab === 'db' && (
@@ -1082,8 +616,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                     <tr>
                       <th>id</th>
                       <th>email</th>
-                      <th>ia_username</th>
-                      <th>github_username</th>
                       <th>roles</th>
                       <th>created_at</th>
                     </tr>
@@ -1093,8 +625,6 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       <tr key={u.id}>
                         <td>{u.id}</td>
                         <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
-                        <td>{u.ia_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
-                        <td>{u.github_username ?? <span style={{ color: '#aaa' }}>—</span>}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <label style={{ marginRight: 12 }} title={u.id === meId ? "You can't remove your own admin role" : undefined}>
                             <input
@@ -1104,6 +634,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                               onChange={(e) => setRole(u, 'admin', e.target.checked)}
                               aria-label={`Admin role for ${u.email}`}
                             /> Admin
+                          </label>
+                          <label style={{ marginRight: 12 }}>
+                            <input
+                              type="checkbox"
+                              checked={!!u.is_reviewer}
+                              onChange={(e) => setRole(u, 'reviewer', e.target.checked)}
+                              aria-label={`Reviewer role for ${u.email}`}
+                            /> Reviewer
                           </label>
                           <label>
                             <input
@@ -1133,7 +671,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             <div>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Download backup</div>
               <p style={{ margin: '0 0 8px', fontSize: 13, color: '#555' }}>
-                Exports all tables (users, films, ratings, criteria, etc.) as a single
+                Exports all tables (users, films, assignments, ratings, etc.) as a single
                 versioned JSON file. The filename includes the UTC timestamp.
               </p>
               <button onClick={downloadBackup}>⬇ Download backup</button>
@@ -1203,34 +741,22 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 }
 
 // ---------------------------------------------------------------------------
-// OAuth sign-in helpers
-// ---------------------------------------------------------------------------
-
-// Server redirects to /?auth_error=<code>; map codes to messages here so the
-// URL can never inject arbitrary text into the page.
-const OAUTH_ERRORS = {
-  github_denied: 'GitHub sign-in was cancelled.',
-  github_state: 'GitHub sign-in expired or was invalid. Please try again.',
-  github_failed: 'Could not sign in with GitHub. Please try again.',
-}
-
-// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
+// What the rating screen shows when /api/films/next has no film. These codes are not errors.
+const NOTICE_CODES = ['no_role', 'no_films', 'no_assignments', 'all_rated']
+
 export default function App() {
   const [me, setMe] = useState(null)
-  const [authScheme, setAuthScheme] = useState('ia') // default matches server default
-  const [oauthProviders, setOauthProviders] = useState([]) // e.g. ['github']
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [meLoaded, setMeLoaded] = useState(false)
 
   const [film, setFilm] = useState(null)
-  const [noteOpen, setNoteOpen] = useState(false) // judges' "add a note" popup
-  const [criteria, setCriteria] = useState([])
-  const [scores, setScores] = useState({}) // key -> string (user input)
+  const [categories, setCategories] = useState([])
+  const [scores, setScores] = useState({}) // key -> number
+  const [comment, setComment] = useState('')
 
-  // Shown instead of a film when there is nothing to rate (e.g. DB not synced yet).
+  // Shown instead of a film when there is nothing to rate.
   const [notice, setNotice] = useState(null) // { code, text }
 
   const [loading, setLoading] = useState(false)
@@ -1256,43 +782,21 @@ export default function App() {
     const { ok, data } = await apiJson('/api/me')
     if (ok) setMe(data)
     else setMe(null)
-  }
-
-  async function login(isRegister) {
-    setError('')
-    const path = isRegister ? '/api/auth/register' : '/api/auth/login'
-    const body = authScheme === 'ia'
-      ? { username: email, password }
-      : { email, password }
-    const { ok, data } = await apiJson(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    })
-    if (ok) {
-      await loadMe()
-    } else {
-      setError(data?.error || 'Authentication failed')
-    }
+    setMeLoaded(true)
   }
 
   async function logout() {
     await apiJson('/api/auth/logout', { method: 'POST' })
     setMe(null)
     setFilm(null)
-    setCriteria([])
+    setCategories([])
     setScores({})
+    setComment('')
   }
 
-  async function loadCriteria() {
-    const { ok, data } = await apiJson('/api/criteria')
-    if (ok) {
-      const arr = Array.isArray(data) ? data : []
-      arr.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      setCriteria(arr)
-    } else {
-      setCriteria([])
-    }
+  async function loadCategories() {
+    const { ok, data } = await apiJson('/api/categories')
+    setCategories(ok && Array.isArray(data) ? data : [])
   }
 
   async function loadNextFilm() {
@@ -1303,10 +807,10 @@ export default function App() {
     if (ok) {
       setFilm(data)
       setScores({})
+      setComment('')
     } else {
       setFilm(null)
-      if (data?.code === 'no_films' || data?.code === 'all_rated') {
-        // Not errors: either nobody has synced the film list yet, or this user is done.
+      if (NOTICE_CODES.includes(data?.code)) {
         setNotice({ code: data.code, text: data.error })
       } else {
         setError(data?.error || 'Could not load the next film')
@@ -1317,16 +821,10 @@ export default function App() {
   async function submit() {
     if (!film?.identifier) return
     setSubmitError('')
-    const payloadScores = {}
-    for (const c of criteria) {
-      const v = scores[c.key]
-      payloadScores[c.key] = Number.parseInt(String(v), 10)
-    }
-
-    const { ok, data } = await apiJson(`/api/films/${film.identifier}/ratings`, {
+    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(film.identifier)}/ratings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scores: payloadScores })
+      body: JSON.stringify({ scores, comment })
     })
 
     if (!ok) {
@@ -1338,96 +836,26 @@ export default function App() {
     await loadNextFilm()
   }
 
-  useEffect(() => {
-    apiJson('/api/config').then(({ ok, data }) => {
-      setAuthScheme(ok ? (data?.auth_scheme ?? 'ia') : 'ia')
-      setOauthProviders(ok && Array.isArray(data?.oauth_providers) ? data.oauth_providers : [])
-    })
-    // The OAuth callback redirects back here as /?auth_error=<code> on failure.
-    const params = new URLSearchParams(window.location.search)
-    const authError = params.get('auth_error')
-    if (authError) {
-      setError(OAUTH_ERRORS[authError] || 'Sign-in failed')
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-    loadMe()
-  }, [])
+  useEffect(() => { loadMe() }, [])
 
   useEffect(() => {
     if (me) {
       setLoading(true)
-      Promise.all([loadCriteria(), loadNextFilm()]).finally(() => setLoading(false))
+      Promise.all([loadCategories(), loadNextFilm()]).finally(() => setLoading(false))
     }
   }, [me])
 
-  const validation = useMemo(() => {
-    const perKey = {}
-    let allOk = !!film?.identifier && criteria.length > 0
-
-    for (const c of criteria) {
-      const raw = scores[c.key]
-      const present = raw !== undefined && String(raw).trim() !== ''
-      const isInt = present && isIntString(raw)
-      const n = isInt ? Number.parseInt(String(raw), 10) : null
-      const inRange = isInt && n >= c.min && n <= c.max
-      const ok = present && inRange
-
-      perKey[c.key] = {
-        ok,
-        hint: !present ? 'Required' : !isInt ? 'Must be an integer' : !inRange ? `Must be ${c.min}–${c.max}` : ''
-      }
-      if (!ok) allOk = false
-    }
-
-    return { allOk, perKey }
-  }, [criteria, scores, film])
-
-  const archiveUrl = archiveDetailsUrl(film?.identifier)
+  const allChosen = !!film?.identifier && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
 
   if (!me) {
-    const isIA = authScheme === 'ia'
     return (
       <div style={{ padding: 20, maxWidth: 520 }}>
         <h2>IA Film Rater</h2>
-        <p style={{ marginTop: 0 }}>
-          {isIA
-            ? 'Log in with your archive.org account to start rating films.'
-            : 'Login or create an account to start rating films.'}
-        </p>
-
-        {error ? <div style={{ margin: '12px 0', color: '#a00' }}>{error}</div> : null}
-
-        <div style={{ display: 'grid', gap: 8 }}>
-          <input
-            placeholder={isIA ? 'archive.org username' : 'email'}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete={isIA ? 'username' : 'email'}
-          />
-          <input
-            type="password"
-            placeholder="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={() => login(false)}>Login</button>
-            {!isIA && <button onClick={() => login(true)}>Register</button>}
-          </div>
-          {oauthProviders.includes('github') && (
-            <>
-              <div style={{ textAlign: 'center', color: '#888', fontSize: 13 }}>or</div>
-              {/* Full-page navigation: the server redirects to GitHub and back. */}
-              <button
-                type="button"
-                onClick={() => { window.location.href = '/api/auth/github/login' }}
-              >
-                Continue with GitHub
-              </button>
-            </>
-          )}
-        </div>
+        {meLoaded ? (
+          <p style={{ marginTop: 0 }}>
+            Sign-in is by invitation. Open the personal sign-in link an administrator sent you.
+          </p>
+        ) : null}
       </div>
     )
   }
@@ -1438,48 +866,18 @@ export default function App() {
         .grid-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .grid-table th { text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; padding: 10px 8px; }
         .grid-table td { border-bottom: 1px solid #eee; padding: 10px 8px; vertical-align: middle; }
-        .grid-table .col-crit { width: 40%; }
-        .grid-table .col-range { width: 15%; }
-        .grid-table .col-score { width: 20%; }
-        .grid-table .col-quick { width: 25%; }
-        .score-input { width: 5em; text-align: center; padding: 6px 8px; }
-        .row-invalid { background: #fff5f5; }
-        .hint { font-size: 12px; color: #a00; margin-top: 4px; }
         .quick { display: flex; flex-wrap: wrap; gap: 6px; }
         .quick button { padding: 4px 8px; }
+        .quick button.chosen { background: #1a56c4; color: #fff; border-color: #1a56c4; }
         .btn-primary { padding: 10px 14px; }
         .btn-primary[disabled] { opacity: 0.5; cursor: not-allowed; }
         .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .film-description {
-  margin: 12px 0;
-  padding: 12px 14px;
-  background: #fafafa;
-  border: 1px solid #e5e5e5;
-  border-radius: 8px;
-  color: #333;
-  white-space: pre-wrap;
-}
-
-.film-panel { margin-top: 14px; }
+        .film-panel { margin-top: 14px; }
         .film-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 14px; color: #444; }
         .film-desc { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
-        .notes-section { margin-top: 28px; padding-top: 14px; border-top: 2px solid #ddd; }
-        .notes-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        .notes-table th { text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; padding: 8px; }
-        .notes-table td { border-bottom: 1px solid #eee; padding: 8px; vertical-align: top; }
-        .notes-table .col-who { width: 18%; word-break: break-word; }
-        .notes-table .col-when { width: 20%; white-space: nowrap; }
-        .notes-table .note-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
-        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
-        .modal { background: #fff; border-radius: 10px; padding: 18px; width: 100%; max-width: 520px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         .player { width: 100%; max-width: 900px; aspect-ratio: 16/9; border: 0; margin: 12px 0 16px; }
         @media (max-width: 768px) {
           .grid-table, .grid-table thead, .grid-table tbody, .grid-table th, .grid-table td, .grid-table tr { display: block; }
-          .notes-table, .notes-table thead, .notes-table tbody, .notes-table th, .notes-table td, .notes-table tr { display: block; width: auto; }
-          .notes-table thead { display: none; }
-          .notes-table tr { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; padding: 8px; }
-          .notes-table td { border: 0; padding: 4px 0; }
-          .notes-table td::before { content: attr(data-label) ': '; font-weight: 600; }
           .grid-table thead { display: none; }
           .grid-table tr { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; padding: 10px; }
           .grid-table td { border: 0; padding: 6px 0; }
@@ -1503,117 +901,79 @@ export default function App() {
       {notice ? (
         <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, maxWidth: 620 }}>
           {notice.text}
-          {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>As an admin, use Admin → Actions → Sync Collection.</div> : null}
+          {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>As an admin, use Admin → Import.</div> : null}
         </div>
       ) : null}
 
       {film ? (
         <div className="film-panel">
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 6 }}>
-            <h3 style={{ margin: 0 }}>{film.title || film.identifier}</h3>
-            {me?.is_judge ? (
-              <button
-                className="btn-primary"
-                onClick={() => setNoteOpen(true)}
-                style={{ marginLeft: 'auto', fontSize: 16, padding: '10px 22px' }}
-              >
-                Add note
-              </button>
-            ) : null}
-          </div>
-          <div className="film-meta">
-            <div><strong>Identifier:</strong> {film.identifier}</div>
-            {archiveUrl ? (
-              <div>
-                <a href={archiveUrl} target="_blank" rel="noreferrer">View on archive.org</a>
-              </div>
-            ) : null}
-          </div>
+          <h3 style={{ margin: '0 0 6px' }}>
+            <a href={film.archiveUrl} target="_blank" rel="noreferrer">{film.title}</a>
+            {film.creator ? <span style={{ fontWeight: 400 }}> by {film.creator}</span> : null}
+          </h3>
 
           {film.description ? (
             <div className="film-desc">{linkifyText(film.description)}</div>
           ) : null}
-
+          {film.publicDomainWorks ? (
+            <div className="film-desc"><strong>Public domain works used</strong>{'\n'}{linkifyText(film.publicDomainWorks)}</div>
+          ) : null}
+          {film.aiDisclosure ? (
+            <div className="film-desc"><strong>AI disclosure</strong>{'\n'}{linkifyText(film.aiDisclosure)}</div>
+          ) : null}
 
           {film.embedUrl ? (
-            <iframe className="player" src={film.embedUrl} allowFullScreen title={film.title || film.identifier} />
+            <iframe className="player" src={film.embedUrl} allowFullScreen title={film.title} />
           ) : null}
 
           <table className="grid-table">
-            <thead>
-              <tr>
-                <th scope="col" className="col-crit">Criterion</th>
-                <th scope="col" className="col-range">Range</th>
-                <th scope="col" className="col-score">Score</th>
-                <th scope="col" className="col-quick">Quick</th>
-              </tr>
-            </thead>
             <tbody>
-              {criteria.map((c) => {
-                const v = scores[c.key] ?? ''
-                const vInfo = validation.perKey[c.key] || { ok: true, hint: '' }
-                const rangeSize = (c.max - c.min)
-                const showQuick = rangeSize >= 1 && rangeSize <= 6
-                const buttons = []
-                if (showQuick) {
-                  for (let n = c.min; n <= c.max; n++) buttons.push(n)
-                }
-
-                return (
-                  <tr key={c.key} className={vInfo.ok ? '' : 'row-invalid'}>
-                    <td>
-                      <div>{c.label}</div>
-                    </td>
-                    <td>{c.min}–{c.max}</td>
-                    <td>
-                      <input
-                        className="score-input"
-                        type="number"
-                        min={c.min}
-                        max={c.max}
-                        value={v}
-                        aria-label={`Score for ${c.label}`}
-                        onChange={(e) => setScores({ ...scores, [c.key]: e.target.value })}
-                      />
-                      {!vInfo.ok && vInfo.hint ? <div className="hint">{vInfo.hint}</div> : null}
-                    </td>
-                    <td>
-                      {showQuick ? (
-                        <div className="quick">
-                          {buttons.map((n) => (
-                            <button
-                              key={n}
-                              type="button"
-                              onClick={() => setScores({ ...scores, [c.key]: String(n) })}
-                              aria-label={`Set ${c.label} score to ${n}`}
-                            >
-                              {n}
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <span style={{ color: '#777' }}>—</span>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+              {categories.map((c) => (
+                <tr key={c.key}>
+                  <td>
+                    <div><strong>{c.label}</strong></div>
+                    <div style={{ fontSize: 13, color: '#555' }}>{c.description}</div>
+                  </td>
+                  <td>
+                    <div className="quick" role="group" aria-label={`Score for ${c.label}`}>
+                      {Array.from({ length: c.max - c.min + 1 }, (_, i) => c.min + i).map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          className={scores[c.key] === n ? 'chosen' : ''}
+                          aria-pressed={scores[c.key] === n}
+                          onClick={() => setScores((prev) => ({ ...prev, [c.key]: n }))}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
 
+          <label style={{ display: 'block', marginTop: 14 }}>
+            <strong>Comments on Film</strong> <span style={{ fontSize: 12, color: '#555' }}>(May be used in presentation)</span>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value.slice(0, 1000))}
+              rows={5}
+              style={{ display: 'block', width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8, marginTop: 4 }}
+            />
+            <span style={{ fontSize: 12, color: '#666' }}>{comment.length} / 1000</span>
+          </label>
+
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-            <button className="btn-primary" onClick={submit} disabled={!validation.allOk}>
+            <button className="btn-primary" onClick={submit} disabled={!allChosen}>
               Submit & Next
             </button>
           </div>
 
           {submitError ? <div style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
-
-          {me?.is_judge ? <NotesSection identifier={film.identifier} apiJson={apiJson} open={noteOpen} onClose={() => setNoteOpen(false)} /> : null}
         </div>
-      ) : notice || error || loading ? null : (
-        <p style={{ marginTop: 14 }}>No films left.</p>
-      )}
+      ) : null}
     </div>
   )
 }
