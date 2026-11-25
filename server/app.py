@@ -33,24 +33,19 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from server.config import load_settings, _DEV_SECRET
-from server.db import Database
+from server.db import Database, LegacyDatabaseError
 from server.logging_config import configure_logging
 
-from server.repositories.criteria_repo import CriteriaRepository
+from server.repositories.assignment_repo import AssignmentRepository
 from server.repositories.film_repo import FilmRepository
-from server.repositories.note_repo import NoteRepository
 from server.repositories.rating_repo import RatingRepository
 from server.repositories.session_repo import SessionRepository
-from server.repositories.settings_repo import AppSettingsRepository
 from server.repositories.user_repo import UserRepository
 
-from server.services.auth_service import AuthService
-from server.services.github_auth_service import GitHubAuthService
 from server.services.ia_service import InternetArchiveService
 from server.services.import_service import ImportService
-from server.services.note_service import NoteService
+from server.services.job_service import JobService
 from server.services.rating_service import RatingService
-from server.services.sync_service import SyncService
 from server.services.summary_service import SummaryService
 
 # Blueprints
@@ -78,8 +73,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     All configuration and dependency construction happens here (NOT at import time)
     so pytest and other importers behave predictably.
 
-    Pass a Settings instance to override defaults (useful for tests and the CLI
-    --auth-scheme flag).
+    Pass a Settings instance to override defaults (useful for tests).
 
     `dev=True` is for the local development entrypoint only (`python -m server.app`):
     sessions get a random per-process secret when SESSION_SECRET is unset, and the
@@ -127,43 +121,21 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=settings.trusted_proxy_hops, x_proto=settings.trusted_proxy_hops)
 
     # --- Database + repos ---
+    # Raises LegacyDatabaseError (so the server won't boot) if the file is from the old app.
     db = Database(settings.db_path)
-    # Startup schema sanity check (helps debug local DB mismatches)
-    try:
-        cols = [r['name'] for r in db.fetchall('PRAGMA table_info(users)')]
-        app.logger.info('Detected users columns: %s', cols)
-        if 'is_admin' not in cols:
-            app.logger.warning('users.is_admin column missing (migration should have added it)')
-    except Exception:
-        app.logger.exception('Failed to introspect users schema')
     users = UserRepository(db)
-    app_settings = AppSettingsRepository(db, settings.collection)
-    # Pass the *getter* so a collection change in the admin panel takes effect everywhere at once.
-    films = FilmRepository(db, app_settings.get_collection)
-    criteria = CriteriaRepository(db)
+    films = FilmRepository(db)
+    assignments = AssignmentRepository(db)
     ratings = RatingRepository(db)
-    notes = NoteRepository(db)
     sessions = SessionRepository(db)
 
     # --- Services ---
-    ia = InternetArchiveService(app_settings.get_collection)
-    auth = AuthService(users)
-    github_auth = (
-        GitHubAuthService(
-            users,
-            settings.github_client_id,
-            settings.github_client_secret,
-            settings.github_redirect_uri,
-        )
-        if settings.github_enabled
-        else None
-    )
-    rating = RatingService(films, criteria, ratings)
-    # Film data is only ever synced on demand (admin button); never at startup.
-    sync = SyncService(ia, films)
-    importer = ImportService(films, ia, sync)
-    note_service = NoteService(films, notes)
-    summary = SummaryService(criteria, films, ratings, app_settings.get_collection)
+    ia = InternetArchiveService()
+    jobs = JobService()
+    # Film data only ever arrives through the admin's spreadsheet import; never at startup.
+    importer = ImportService(films, ia, jobs)
+    rating = RatingService(users, films, assignments, ratings)
+    summary = SummaryService(ratings)
 
     # Expose for tests / routes
     app.settings = settings
@@ -171,21 +143,16 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     app.repos = {
         "users": users,
         "films": films,
-        "criteria": criteria,
+        "assignments": assignments,
         "ratings": ratings,
-        "settings": app_settings,
-        "notes": notes,
         "sessions": sessions,
     }
     app.services = {
         "ia": ia,
-        "auth": auth,
-        "github_auth": github_auth,  # None unless GITHUB_CLIENT_ID/SECRET are set
-        "rating": rating,
-        "sync": sync,
+        "jobs": jobs,
         "import": importer,
+        "rating": rating,
         "summary": summary,
-        "notes": note_service,
     }
 
     # --- Request logging + request id ---
@@ -340,16 +307,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run `npm install && npm run build` in client/ before starting the server",
     )
-    parser.add_argument(
-        "--auth-scheme",
-        choices=["ia", "local"],
-        default=None,
-        help=(
-            "Authentication scheme: 'ia' delegates login to archive.org (default); "
-            "'local' uses local email/password accounts. "
-            "Overrides the AUTH_SCHEME env var."
-        ),
-    )
     dbg = parser.add_mutually_exclusive_group()
     dbg.add_argument("--debug", action="store_true", help="Enable debug mode")
     dbg.add_argument("--no-debug", action="store_true", help="Disable debug mode")
@@ -376,12 +333,10 @@ def main(argv: list[str] | None = None) -> int:
         repo_root = Path(__file__).resolve().parents[1]
         _build_client(repo_root)
 
-    settings = load_settings()
-    if args.auth_scheme is not None:
-        settings = dataclasses.replace(settings, auth_scheme=args.auth_scheme)
-    print(f"Auth scheme: {settings.auth_scheme}")
-
-    app = create_app(settings=settings, dev=True)
+    try:
+        app = create_app(settings=load_settings(), dev=True)
+    except LegacyDatabaseError as exc:
+        raise SystemExit(str(exc))
     app.run(host=host, port=chosen_port, debug=debug)
     return 0
 

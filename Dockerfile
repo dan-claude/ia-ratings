@@ -21,7 +21,7 @@ COPY server/requirements.txt server/requirements.txt
 RUN pip install --no-cache-dir -r server/requirements.txt
 
 COPY server/ server/
-# Admin CLIs (print_db.py, sync.py) for use via `railway ssh`; stdlib + server code only.
+# Admin CLI (print_db.py) for use via `railway ssh`; stdlib + server code only.
 COPY tools/ tools/
 COPY --from=client-builder /client/dist client/dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -35,6 +35,6 @@ ENV PYTHONPATH=/app \
 ENTRYPOINT ["docker-entrypoint.sh"]
 # Production WSGI server. One worker process on purpose: SQLite and the in-memory
 # login rate limiter both expect a single process; threads give concurrency.
-# --timeout 0: never kill a worker for a slow request (admin sync can take minutes).
+# --timeout 0: never kill a worker for a slow request (a title lookup after an import can take minutes).
 # Access logging is left off because the app already logs every request.
 CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} \"server.app:create_app()\""]

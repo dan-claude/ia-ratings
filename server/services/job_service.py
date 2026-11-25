@@ -1,4 +1,4 @@
-"""Runs long admin jobs (the Internet Archive sync, CSV-import title lookups)
+"""Runs long admin jobs (the title lookup after a CSV import)
 in a background thread, one at a time.
 
 A job can take minutes, so the admin API starts it and returns immediately;
@@ -18,10 +18,8 @@ def _now() -> float:
     return time.time()
 
 
-class SyncService:
-    def __init__(self, ia, films):
-        self.ia = ia
-        self.films = films
+class JobService:
+    def __init__(self):
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._status = self._blank_status()
@@ -30,11 +28,11 @@ class SyncService:
     def _blank_status() -> dict:
         return {
             "state": "idle",        # idle | running | done | error
-            "kind": None,           # sync | titles — which job this status is about
-            "phase": None,          # listing | descriptions | titles (while running)
+            "kind": None,           # which job this status is about (currently only "titles")
+            "phase": None,          # titles (while running)
             "done": 0,
             "total": None,
-            "synced": None,         # items processed by the last finished job (films synced / titles found)
+            "processed": None,      # items processed by the last finished job (titles found)
             "error": None,
             "started_at": None,     # unix seconds
             "finished_at": None,
@@ -47,14 +45,6 @@ class SyncService:
     def is_running(self) -> bool:
         with self._lock:
             return self._status["state"] == "running"
-
-    def start(self) -> bool:
-        """Start an Internet Archive collection sync. False if a job is already running."""
-        return self.start_job(
-            "sync",
-            lambda progress: self.ia.sync_collection(self.films, progress=progress),
-            first_phase="listing",
-        )
 
     def start_job(
         self,
@@ -76,7 +66,7 @@ class SyncService:
             return True
 
     def wait(self, timeout: Optional[float] = None) -> None:
-        """Block until the current sync finishes (used by tests)."""
+        """Block until the current job finishes (used by tests)."""
         t = self._thread
         if t is not None:
             t.join(timeout)
@@ -89,7 +79,7 @@ class SyncService:
 
     def _run(self, fn) -> None:
         try:
-            synced = fn(self._progress)
+            processed = fn(self._progress)
         except Exception as exc:  # noqa: BLE001 — surface any failure to the admin UI
             logger.exception("job.failed")
             with self._lock:
@@ -98,4 +88,4 @@ class SyncService:
                 )
             return
         with self._lock:
-            self._status.update(state="done", phase=None, synced=synced, finished_at=_now())
+            self._status.update(state="done", phase=None, processed=processed, finished_at=_now())

@@ -6,7 +6,6 @@ def app(tmp_path, monkeypatch):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
     monkeypatch.setenv("SESSION_SECRET", "test-secret")
-    monkeypatch.setenv("AUTH_SCHEME", "local")
 
     import server.app as app_module
     importlib.reload(app_module)

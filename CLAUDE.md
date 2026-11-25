@@ -14,14 +14,16 @@ When an API route changes, also update `API_CLIENT_SERVER.md` (the binding API c
 
 
 
-React + Flask + SQLite app for rating public-domain films from the Internet Archive collection `2026-public-domain-day-film-contest`.
+React + Flask + SQLite app for rating the public-domain films submitted to the contest (spreadsheet import; the films are played from archive.org).
+
+> **Branch `major-changes` (in progress, not on `main`).** The app is being rebuilt in steps (plan: `CHANGES_DRAFT.md` in the main checkout, untracked and never committed). **Step 1 (clean baseline) is done:** one fresh schema, three roles, hard-coded categories, assignments, and the old features removed. Still to come: login by magic link (step 2; until then nobody can sign in except via the test helpers), spreadsheet columns for creator / public-domain works / AI disclosure / eligibility (3), the distribute-films button and progress views (4), the new rating screen (5), rankings and the judges' pool (6), the judge export and final screen (7), dark mode (8). Production still runs the old app from `main`; a reset procedure must be agreed before this is deployed (an old database is refused at startup).
 
 ## Architecture
 
 - **Client:** `client/src/App.jsx` — single-file React app, Vite, no component library
 - **Server:** Flask app-factory (`server/app.py`), organized as routes → services → repositories
 - **DB:** SQLite at `server/app.db` (path overridable via `DB_PATH` env var)
-- **Auth:** Cookie-based sessions; two schemes (see below); roles (`admin`, `judge`) are columns on `users` (`is_admin`, `is_judge`)
+- **Auth:** Cookie-based, server-side sessions (see below); roles (`admin`, `reviewer`, `judge`) are columns on `users` (`is_admin`, `is_reviewer`, `is_judge`)
 
 ### Server layout
 
@@ -30,34 +32,27 @@ server/
   app.py              # app factory + CLI entrypoint
   config.py           # Settings dataclass (reads env vars)
   db.py               # thin SQLite wrapper + schema migrations
+  categories.py       # the three rating categories (hard-coded), score range, comment limit
+  auth_session.py     # server-side login sessions
   routes/             # Flask blueprints (auth, films, admin, user)
-  services/           # business logic (AuthService, RatingService, SummaryService, InternetArchiveService)
-  repositories/       # DB access per entity (users, films, criteria, ratings)
+  services/           # business logic (RatingService, SummaryService, ImportService, JobService, InternetArchiveService)
+  repositories/       # DB access per entity (users, films, assignments, ratings, sessions)
   models/             # data model classes
 ```
 
-## Auth schemes
+## Auth and roles
 
-Controlled by the `AUTH_SCHEME` env var (or `--auth-scheme` CLI flag). Default: `ia`.
+**Login is by magic link only** (planned, step 2): an admin invites a person by email address and passes them a personal link; the app sends no email. The old logins (archive.org username/password, local email/password, GitHub OAuth) and the `AUTH_SCHEME` / `GITHUB_*` settings have been **removed**. `users.password_hash` is nullable and unused (reserved in case password registration is added later).
 
-| Scheme | Login flow | Register |
-|--------|-----------|----------|
-| `ia` | Username + password proxied to `archive.org/services/xauthn/`; account auto-created on first login with synthesised email `{username}@users.archive.org`, `ia_username` set, and `password_hash='IA_AUTH'` | Not supported (400) |
-| `local` | Email + password stored locally (werkzeug `generate_password_hash`) | Supported via `/api/auth/register` |
+**Roles.** A user can hold any combination of `admin`, `reviewer` and `judge` (checkboxes in the admin panel → Users; `PUT /api/admin/users/<id>/roles` with `{"roles": [...]}`, which sets the list exactly; an admin can't remove their own admin role). Roles are independent: admin does not imply the others. Only reviewers and judges rate films (`RatingService._can_rate`; admin alone does not), and a user with no role sees no films. `/api/me` returns `is_admin`, `is_reviewer`, `is_judge` and `roles`. Role names ↔ columns live in `ROLE_COLUMNS` in `server/repositories/user_repo.py`; to add a role add a column (schema change) and an entry there. Emails are stored lower-case.
 
-**GitHub OAuth** is an optional extra on top of either scheme: it is enabled when both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set, and `GET /api/config` then lists `"github"` in `oauth_providers` so the client shows "Continue with GitHub". Flow (`server/routes/auth.py` + `server/services/github_auth_service.py`): `GET /api/auth/github/login` stores a random single-use `state` in the session and redirects to GitHub → `GET /api/auth/github/callback` checks the state, exchanges the code, reads the public profile (no scopes requested), find-or-creates the user keyed on `users.github_id` (synthetic email `{id}+{login}@users.noreply.github.com`, `password_hash='GITHUB_AUTH'`), rotates the session and redirects to `/` (failures redirect to `/?auth_error=<code>`). Accounts from different login methods are never merged. Setup instructions: `docs/GITHUB_LOGIN.md`.
+**Ratings and assignments.** The three categories (`aesthetic`, `sound`, `appeal`, each 1–10, with descriptions and 1/5/10 anchor labels) are constants in `server/categories.py`; `GET /api/categories` serves them. A person only sees films **assigned** to them (`assignments`, status `assigned` → `seen` → `rated`); `GET /api/films/next` shows a film they opened but didn't submit first, else a random unopened one. A rating (3 scores + optional comment ≤ 1000 chars) is **final**: one row per person per film, created on submit together with the move to `rated`; a second submit is 409. A person's score for a film is the sum of their category scores (3–30); a film's score will be the average of its reviewers' scores (step 6).
 
-**Roles.** A user can hold any combination of `admin` and `judge` (checkboxes in the admin panel → Users; `PUT /api/admin/users/<id>/roles` with `{"roles": [...]}`, which sets the list exactly; an admin can't remove their own admin role). Roles are independent: admin does not imply judge. `/api/me` returns `is_admin`, `is_judge` and `roles`. Role names ↔ columns live in `ROLE_COLUMNS` in `server/repositories/user_repo.py`; to add a role add a column (migration) and an entry there. **Judges** can read and add free-text notes on films (`GET/POST /api/films/<id>/notes`, judge-only; non-judges get 403, so notes are invisible to everyone else, admins included). Notes live in `film_notes` (many per film, attached to `films.id`, so they survive re-syncs but are deleted by "empty database"); the client shows them at the bottom of the film page in a Who / When / Note table with an "Add note" popup. Author shown = `ia_username`, else `github_username`, else email. Max 5000 characters.
-
-Login body is `{username, password}` in `ia` mode and `{email, password}` in `local` mode. `/api/auth/login` and `/api/auth/register` are rate-limited (10/min, 50/hour per client address; see `TRUSTED_PROXY_HOPS`).
-
-**IA accounts are keyed on archive.org's own name, never on what was typed.** `AuthService.login_via_ia` takes the canonical account name from the xauthn response (`values.itemname`, else `values.screenname`; lower-cased, leading `@` stripped), so `Alice`, `alice` and the account's email address are one user. `ia_username` is looked up case-insensitively. If the response has no name and an email was typed the login is refused; if no name and a username was typed, the lower-cased username is used. Older accounts keyed on a typed email are adopted (renamed to the canonical name) the first time that person logs in with that email. The login logs the *key names* of archive.org's response (`ia.login.response keys=[...]`, never values) so the field names can be checked in production logs. The app still handles users' archive.org passwords in `ia` mode (they are forwarded to archive.org and not stored or logged).
-
-**Sessions.** A login creates a row in `user_sessions` (migration v9; only the SHA-256 of a random session id is stored) and puts `user_id` + `sid` in the signed cookie. A request is logged in only if that server-side session exists and is under 8 hours old (`server/auth_session.py`: `start_session` / `end_session` / `current_user_id`; every route's auth check goes through `current_user_id`). So logout really revokes a copied cookie, and a backup **restore deletes every session** (it replaces `users`, so ids could point at different people) except the restoring admin's own when their account (same id and email) survives. Roles are read from the database on every request, never from the cookie. Cookies: `HttpOnly`, `SameSite=Lax`, `Secure` except in the local dev entrypoint. `user_sessions` is deliberately *not* in `_RESTORE_ORDER`, and is hidden from the DB browser, schema view and backups (`_HIDDEN_TABLES` in `routes/admin.py`).
+**Sessions.** A login creates a row in `user_sessions` (migration v9; only the SHA-256 of a random session id is stored) and puts `user_id` + `sid` in the signed cookie. A request is logged in only if that server-side session exists and is under 8 hours old (`server/auth_session.py`: `start_session` / `end_session` / `current_user_id`; every route's auth check goes through `current_user_id`). So logout really revokes a copied cookie, and a backup **restore deletes every session and magic link** (it replaces `users`, so ids could point at different people) except the restoring admin's own session when their account (same id and email) survives. Roles are read from the database on every request, never from the cookie. Cookies: `HttpOnly`, `SameSite=Lax`, `Secure` except in the local dev entrypoint. `user_sessions` and `login_links` are deliberately *not* in `_RESTORE_ORDER`, and are hidden from the DB browser, schema view and backups (`_HIDDEN_TABLES` in `routes/admin.py`).
 
 **Request size limits.** `MAX_CONTENT_LENGTH` is 1 MB (`server/app.py`: `MAX_BODY_BYTES`); bigger bodies get 413 `{"error": "Request body is too large"}` before any parsing, even on `/api/auth/login`. The admin CSV import routes allow 16 MB and restore 64 MB (`_LARGE_BODY_LIMITS`, set per request in a `before_request`).
 
-**CSV exports** (`ratings.csv`, `notes.csv`) pass every text cell through `csv_safe` (`server/services/csv_utils.py`): cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` so spreadsheet apps don't run them as formulas (film titles and notes come from outside the app).
+**CSV exports** (`ratings.csv`) pass every text cell through `csv_safe` (`server/services/csv_utils.py`): cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` so spreadsheet apps don't run them as formulas (film titles and comments come from outside the app).
 
 ## Environment variables
 
@@ -65,13 +60,10 @@ Login body is `{username, password}` in `ia` mode and `{email, password}` in `lo
 |----------|---------|-------------|
 | `DB_PATH` | `server/app.db` | Path to SQLite database file |
 | `SESSION_SECRET` | *(none)* | Flask session signing key — **required**: `create_app()` raises `RuntimeError` (so gunicorn won't boot) if it is unset or equals the public dev default. Only the local dev entrypoint (`python -m server.app`, `create_app(dev=True)`) may omit it: it uses a random per-process secret, so sessions reset on restart |
-| `TRUSTED_PROXY_HOPS` | `0` | Number of reverse proxies in front of the app; that many hops of `X-Forwarded-For`/`-Proto` are trusted (Werkzeug `ProxyFix`) so the login rate limit is per real client. The Dockerfile sets `1` for Railway. Leave `0` with no proxy, or the header could be spoofed to dodge the limit |
-| `AUTH_SCHEME` | `ia` | Auth scheme: `ia` or `local` |
+| `TRUSTED_PROXY_HOPS` | `0` | Number of reverse proxies in front of the app; that many hops of `X-Forwarded-For`/`-Proto` are trusted (Werkzeug `ProxyFix`) so the sign-in rate limit is per real client. The Dockerfile sets `1` for Railway. Leave `0` with no proxy, or the header could be spoofed to dodge the limit |
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | *(unset)* | GitHub OAuth app credentials; GitHub login is enabled only when both are set (see `docs/GITHUB_LOGIN.md`). Secret — set only in Railway variables / local shell |
-| `GITHUB_REDIRECT_URI` | *(unset)* | Optional; sent to GitHub only if set (normally the callback URL registered on the OAuth app is used) |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `127.0.0.1` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app`. Local only by default; `--debug` is refused on a non-local host (the Werkzeug debugger runs arbitrary code) |
 | `VITE_LOG_LEVEL` | `info` | Client console log level (`client/src/logger.ts`) |
@@ -85,7 +77,7 @@ Login body is `{username, password}` in `ia` mode and `{email, password}` in `lo
 python -m venv .venv
 source .venv/bin/activate
 pip install -r server/requirements.txt
-make dev          # or: PYTHONPATH=. python -m server.app --auth-scheme local
+make dev          # or: PYTHONPATH=. python -m server.app
                   # binds 127.0.0.1 only; no SESSION_SECRET needed locally (random per run)
 ```
 
@@ -110,7 +102,7 @@ pip install -r server/requirements-dev.txt
 make test         # or: PYTHONPATH=. pytest -q
 ```
 
-Tests run with `AUTH_SCHEME=local` (set in `conftest.py`).
+There is no password login, so tests create users with `server/tests/helpers.py` (`make_user(app, email, roles)` returns a logged-in test client and the user id; `seed_film`, `assign`).
 
 Each test gets its own temp DB (`tmp_path/test.db`); `server/tests/test_isolation.py` guards this.
 
@@ -127,11 +119,10 @@ Deploys come from Railway's **GitHub integration**: the Railway service is conne
 - **Config file:** `railway.toml` — Dockerfile builder, healthcheck at `/api/health`, restart on failure
 
 Railway service variables:
-- `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` — optional, enable GitHub login (`docs/GITHUB_LOGIN.md`)
 - `SESSION_SECRET` — **required**; a missing one now stops the app booting (deploy fails its health check and Railway keeps the previous deployment). Random secret: `python3 -c "import secrets; print(secrets.token_hex(32))"`, keep private
 - `TRUSTED_PROXY_HOPS` — set to `1` by the Dockerfile; don't override
+- **Resetting for the new app:** an old-style database is refused at startup. Agree the procedure with the owner first (download a Backup in the old admin panel; delete `/data/app.db`, `-wal` and `-shm` via `railway ssh` as the `app` user; deploy; create the first admin from the command line; import the spreadsheet).
 - `DB_PATH` — `/data/app.db`
-- `AUTH_SCHEME` — `ia`
 - `PORT` is provided by Railway; don't set it
 
 If Railway's service settings offer a "wait for CI" option, enable it so a failing test run blocks the deploy.
@@ -154,7 +145,7 @@ Multi-stage build to avoid Python version conflicts:
 
 **The container runs as an unprivileged user (`app`, uid 10001).** It has to *start* as root so `docker-entrypoint.sh` can `chown` the Railway volume (mounted at `/data`, `DB_PATH=/data/app.db`) and then drop privileges with `setpriv`; if chown or setpriv isn't possible it logs a warning and keeps running as root rather than failing the deploy. Don't add `USER app` to the Dockerfile (the chown would stop working) or set `RAILWAY_RUN_UID`. The client is built with `npm ci` from the committed lockfile.
 
-`tools/` is copied into the image so `print_db.py` and `sync.py` can be run in production via `railway ssh` (they pick up `DB_PATH=/data/app.db` from the service variables).
+`tools/` is copied into the image so `print_db.py` can be run in production via `railway ssh` (they pick up `DB_PATH=/data/app.db` from the service variables).
 
 Production runs under **gunicorn** (pinned in `server/requirements.txt`), not Flask's dev server:
 
@@ -163,8 +154,8 @@ gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "serve
 ```
 
 - **Keep `--workers 1`.** SQLite writes and the Flask-Limiter `memory://` store assume a single process; more workers would give each its own rate-limit counters and more lock contention. Scale with `--threads`.
-- **`--timeout 0`** stops gunicorn killing a worker during long requests; a sync can take minutes (it now runs in a background thread, so the request itself returns at once).
-- `python -m server.app` (with its `--auth-scheme`, port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
+- **`--timeout 0`** stops gunicorn killing a worker during long requests; the title lookup after an import can take minutes (it runs in a background thread, so the request itself returns at once).
+- `python -m server.app` (with its port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
 
 ### Redeploy and production shell
 
@@ -178,38 +169,35 @@ railway login && railway link      # pick the ia-ratings project and the web ser
 railway ssh
 # inside the container (cwd /app, DB_PATH already set):
 python tools/print_db.py --table users
-python tools/print_db.py --make-admin NAME@users.archive.org
+python tools/print_db.py --make-admin NAME@example.com
 ```
 
 The `railway ssh` shell is root, but the server runs as `app`. Run anything that **writes** the database as `app` too, or SQLite's `-wal`/`-shm` files end up root-owned and the server can't write until the next restart re-chowns them:
 
 ```bash
-setpriv --reuid=app --regid=app --init-groups python tools/print_db.py --make-admin NAME@users.archive.org
+setpriv --reuid=app --regid=app --init-groups python tools/print_db.py --make-admin NAME@example.com
 ```
 
 ## Database
 
-Schema and migrations live in `server/db.py` and are applied on every startup (`CREATE TABLE IF NOT EXISTS` plus column-existence checks). Tables: `users`, `films`, `criteria`, `ratings`, `rating_scores`, `film_notes`, `app_settings`, `user_sessions`, `schema_migrations`. Migrations recorded in `schema_migrations`:
+**One clean baseline schema** (`server/db.py`, `SCHEMA_VERSION = 1`); the old migrations v1–v9 were deleted. A new database file gets the schema at startup. An **old-style database is refused**: `Database()` raises `LegacyDatabaseError` (the app won't boot; `python -m server.app` prints the message) when the file has `criteria` / `film_notes` / `app_settings`, no `schema_migrations`, a schema version other than the current one, or an old `users` layout. The message says to delete the file (and `-wal` / `-shm`). To change the schema later, bump `SCHEMA_VERSION` and add an upgrade step for the previous version.
 
-| Version | Change |
-|---------|--------|
-| 1 | `users.is_admin` |
-| 2 | `ratings.updated_at` |
-| 3 | `films.description` |
-| 4 | `users.ia_username` + partial unique index `idx_users_ia_username` |
-| 5 | `users.github_id` + `users.github_username` + partial unique index `idx_users_github_id` |
-| 6 | New table `app_settings(key PRIMARY KEY, value, updated_at)` — holds the admin-chosen film `collection` |
-| 7 | `films` is unique per `(ia_identifier, collection)` instead of per `ia_identifier` (table rebuilt in place, ids and ratings preserved; all-or-nothing). The same archive.org item can be in several collections, each with its own row and ratings |
-| 8 | `users.is_judge` + new table `film_notes(id, film_id, user_id, body, created_at)` (judges' notes; in backup/restore order) |
-| 9 | New table `user_sessions(sid_hash PRIMARY KEY, user_id, created_at)` — server-side login sessions (hashed ids; excluded from backup/restore on purpose). Deploying it logs everyone out once, because old cookies carry no session id |
+Tables:
 
-The **active film collection** is a runtime admin setting (`app_settings` row `collection`, read through `AppSettingsRepository.get_collection`; falls back to `Settings.collection`, the built-in default). `FilmRepository`, `InternetArchiveService` and `SummaryService` take that getter, so a change applies immediately everywhere: raters only see films whose `collection` matches, and sync/import tag films with it. `tools/sync.py` defaults to the collection stored in the target DB. `app_settings` is in `_RESTORE_ORDER`, so backups/restores carry it.
+| Table | Holds |
+|-------|-------|
+| `schema_migrations` | `version` rows (just `1` for now) |
+| `users` | `email` (unique, lower-case), nullable `password_hash` (unused), `is_admin`, `is_reviewer`, `is_judge`, `created_at` |
+| `login_links` | Magic links: `token_hash` (SHA-256 only), `user_id`, `created_at`, `expires_at`, `revoked_at`; a partial unique index allows one non-revoked link per user. Routes arrive in step 2 |
+| `user_sessions` | Server-side login sessions (SHA-256 of the id) |
+| `films` | `ia_identifier` (unique), `title`, `creator`, `description`, `public_domain_works`, `ai_disclosure`, `in_judges_pool`, `updated_at` |
+| `assignments` | Primary key `(user_id, film_id)`; `status` `assigned`/`seen`/`rated` (CHECK), `assigned_at`, `seen_at`, `rated_at` |
+| `ratings` | One row per `(user_id, film_id)`, created on submit; `comment` (CHECK ≤ 1000 chars), `created_at` |
+| `rating_scores` | `(rating_id, category)` → `score` (CHECK 1–10); `category` is a key from `server/categories.py` |
 
-Films can come from two places: the archive.org sync, or a CSV import (`server/services/import_service.py`; admin panel → Import). Because films are unique per `(ia_identifier, collection)`, "already exists" in an import means already in the *target* collection, and `FilmRepository.get_by_identifier`, sync upserts, title lookups and `update` imports are all scoped to a collection (the active one unless stated). The import request carries a `collection` (default: the active one; validated by `AppSettingsRepository.validate_collection`) that the films are filed under, and optional `activate_collection` to make it the active collection — the Import tab asks the admin for it and says it must match an archive.org collection name. The importer accepts **only** `archive.org/details|embed|download/<id>` links (exact host `archive.org`/`www.archive.org`) — rows without an archive.org source are skipped and reported. The column mapping is by column *index*; optional extra columns go to `films.metadata_json` (admin-only, never returned by `/api/films/*`). Missing titles can be looked up from archive.org by a background job (`SyncService.start_job("titles", …)`); one background job (sync or title lookup) runs at a time, and `import`/`sync`/`empty` return 409 while one runs.
+There are **no seed rows**, no collections and no criteria table. When adding a table, add it to `_RESTORE_ORDER` in `routes/admin.py` (and to `_DEPENDENT_TABLES` if it points at users/films) so backups restore it, unless it is internal like `user_sessions`/`login_links` (then add it to `_HIDDEN_TABLES`). Backups use `BACKUP_FORMAT_VERSION = 2` and refuse a different `schema_version`.
 
-Film data is **never synced automatically** (not at startup): a fresh database has zero films until an admin runs a sync (admin panel → Actions, or `tools/sync.py`). With zero films, `GET /api/films/next` answers 404 `code: "no_films"` and the client shows "the film database hasn't been set up yet". The background sync lives in `server/services/sync_service.py`; its status is in-process memory, which is why production keeps `--workers 1`.
-
-Seed criteria (`INSERT OR IGNORE`): `originality`, `use_of_archive_materials`. When adding a migration, add a row here and, if it creates a new table, add that table to `_RESTORE_ORDER` in `routes/admin.py` so backups restore it.
+Films come **only** from the admin's CSV import (`server/services/import_service.py`; admin panel → Import); there is no archive.org sync and no collection setting. The importer accepts **only** `archive.org/details|embed|download/<id>` links (exact host `archive.org`/`www.archive.org`); rows without one are skipped and reported; a film is identified by its identifier alone. For now the column mapping covers link / title / description (by column *index*); step 3 adds creator, public-domain works, AI disclosure and an eligibility column. Missing titles can be looked up from archive.org by a background job (`JobService.start_job("titles", …)`, status at `GET /api/admin/jobs/status`); one background job runs at a time, and `import`/`empty` return 409 while one runs. Film data is **never loaded automatically** (not at startup): with zero films, `GET /api/films/next` answers 404 `code: "no_films"`. The job status is in-process memory, which is why production keeps `--workers 1`.
 
 ## Key API endpoints
 
@@ -219,41 +207,31 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check (used by Railway) |
-| GET | `/api/config` | Returns `{"auth_scheme": "ia"\|"local", "oauth_providers": ["github"]?}` |
-| POST | `/api/auth/login` | Login |
-| POST | `/api/auth/register` | Register (local auth only) |
-| GET | `/api/auth/github/login` | Start GitHub OAuth (302 to GitHub; 404 if not configured) |
-| GET | `/api/auth/github/callback` | GitHub OAuth return (302 to `/`, or `/?auth_error=<code>`) |
 | POST | `/api/auth/logout` | Logout |
-| GET | `/api/me` | Current user info |
-| GET | `/api/criteria` | Rating criteria list |
-| GET | `/api/films/next` | Random unrated film for current user |
-| GET | `/api/films/<id>` | One film by IA identifier |
-| POST | `/api/films/<id>/ratings` | Submit scores (`{"scores": {"key": int}}`) |
-| GET | `/api/films/<id>/notes` | Notes on a film, oldest first (**judge only**) |
-| POST | `/api/films/<id>/notes` | Add a note `{"text": str}` → 201 (**judge only**) |
+
+### Logged-in users
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/me` | Current user info and roles |
+| GET | `/api/categories` | The three fixed rating categories |
+| GET | `/api/films/next` | The person's next assigned film (opened-but-unfinished first, else random); 404 with `code` `no_role`/`no_films`/`no_assignments`/`all_rated` |
+| GET | `/api/films/<id>` | One of the person's own films by IA identifier |
+| POST | `/api/films/<id>/ratings` | Submit final scores and comment (`{"scores": {"aesthetic": int, "sound": int, "appeal": int}, "comment": str}`); 409 if already submitted |
 
 ### Admin only (`is_admin=1` required)
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/admin/sync` | Start an Internet Archive sync in the background (202; 409 if one is running) |
-| GET | `/api/admin/sync/status` | Sync progress: `state` idle/running/done/error, `phase`, `done`/`total`, `film_count` |
-| GET | `/api/admin/settings` | Active film collection, the built-in default, and every collection that has films (with counts) |
-| PUT | `/api/admin/settings/collection` | Set the active collection (`{"collection": "slug"}`; validated; 409 while a background job runs) |
+| GET | `/api/admin/jobs/status` | Background job progress (title lookup): `state` idle/running/done/error, `done`/`total`, `film_count` |
 | POST | `/api/admin/import/preview` | Read a CSV (`{"csv_text"}`): headers, row count, sample rows, suggested column mapping. Saves nothing |
 | POST | `/api/admin/import` | Import films from a CSV with a column `mapping`; `dry_run` reports only; real import needs `on_existing` `"skip"`/`"update"`; optional `lookup_titles`; only archive.org item links are imported |
-| POST | `/api/admin/db/empty` | **Destructive.** Delete all films + ratings (keeps users/criteria); body `{"confirm": "EMPTY"}`; 409 while syncing |
-| GET | `/api/admin/ratings.csv` | Export all ratings |
-| GET | `/api/admin/notes.csv` | Export judges' notes for the active collection (admin; formula-like cells are prefixed with `'`) |
-| GET | `/api/admin/criteria` | List all criteria (incl. inactive) |
-| POST | `/api/admin/criteria` | Create criterion |
-| PUT | `/api/admin/criteria/<id>` | Update criterion |
+| POST | `/api/admin/db/empty` | **Destructive.** Delete all films, assignments and ratings (keeps users); body `{"confirm": "EMPTY"}`; 409 while a job runs |
+| GET | `/api/admin/ratings.csv` | Export all submitted ratings (scores, total, comment) |
 | GET | `/api/admin/db/tables` | Table row counts |
 | GET | `/api/admin/db/schema` | CREATE TABLE statements |
 | GET | `/api/admin/db/<table>` | Dump table rows (`order_by`, `limit`, `offset` params) |
 | GET | `/api/admin/db/backup` | Download full DB as versioned JSON |
 | POST | `/api/admin/db/restore` | Restore DB from a backup JSON |
-| PUT | `/api/admin/users/<id>/roles` | Set a user's roles exactly (`{"roles": ["admin","judge"]}`) |
+| PUT | `/api/admin/users/<id>/roles` | Set a user's roles exactly (`{"roles": ["admin","reviewer","judge"]}`) |
 | POST | `/api/admin/users/<id>/make-admin` | Promote user to admin |
 | POST | `/api/admin/users/<id>/revoke-admin` | Revoke admin from user |
 
@@ -264,16 +242,10 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 ```bash
 python tools/print_db.py --table users
 python tools/print_db.py --table films --limit 10 --order-by "id DESC"
-python tools/print_db.py --make-admin user@example.com   # local DB only
-python tools/print_db.py --make-admin name@users.archive.org   # IA-auth user
+python tools/print_db.py --make-admin user@example.com   # the user must already exist
 ```
 
-`tools/sync.py` — sync the IA collection into a DB from the command line (async description fetches via `aiohttp`, threaded fallback):
-
-```bash
-python tools/sync.py                    # only fetch descriptions that are missing
-python tools/sync.py --workers 20 --force --db server/app.db
-```
+(Step 2 adds `--invite EMAIL --admin`, which creates the first admin and prints a magic link; until then a fresh database has no way to get an admin.)
 
 
 > Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin UI/API, or `railway ssh` + `tools/print_db.py` (see Deployment) for the production database.
@@ -285,4 +257,3 @@ python tools/sync.py --workers 20 --force --db server/app.db
 | `README.md` | Human-facing overview, local setup, config |
 | `API_CLIENT_SERVER.md` | Binding API contract — update with any route change |
 | `CHANGELOG.md` | Version history |
-| `docs/GITHUB_LOGIN.md` | Step-by-step GitHub OAuth app setup (dev + production) |

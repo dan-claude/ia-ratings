@@ -1,144 +1,86 @@
 import sqlite3
+from typing import Optional
+
 from ..db import Database
+
+
+class AlreadyRated(Exception):
+    """The person has already submitted this film (ratings are final)."""
+
 
 class RatingRepository:
     def __init__(self, db: Database):
         self.db = db
 
-    def upsert_rating(self, user_id: int, film_id: int) -> int:
-        """Create or update a rating row and return its id.
+    def submit(self, user_id: int, film_id: int, scores: dict[str, int], comment: str) -> int:
+        """Record a person's final rating for a film and mark their assignment `rated`.
 
-        Note: This method commits within its own transaction. For application-
-        level atomicity when also writing scores, prefer upsert_rating_with_scores().
+        The rating row, its scores and the status change are one transaction, so a
+        crash can't leave half of it. Returns the rating id.
+        Raises LookupError if the film isn't assigned to the person and AlreadyRated
+        if they have already submitted it.
         """
         conn = self.db.connect()
         try:
-            self._upsert_rating_row(conn, user_id, film_id)
-            row = conn.execute(
-                "SELECT id FROM ratings WHERE user_id=? AND film_id=?",
-                (user_id, film_id),
-            ).fetchone()
-            conn.commit()
-            return int(row["id"])
-        finally:
-            conn.close()
-
-    def upsert_scores_bulk(self, rating_id: int, scores: list[tuple[int,int]]) -> None:
-        """Upsert a set of criterion scores for a rating.
-
-        Note: This method commits within its own transaction. For application-
-        level atomicity when also creating/updating the rating row, prefer
-        upsert_rating_with_scores().
-        """
-        conn = self.db.connect()
-        try:
-            self._upsert_scores_bulk(conn, rating_id, scores)
-            conn.commit()
-        finally:
-            conn.close()
-
-    def upsert_rating_with_scores(
-        self,
-        user_id: int,
-        film_id: int,
-        scores: list[tuple[int,int]],
-    ) -> int:
-        """Atomically upsert a rating and all of its scores in one transaction.
-
-        This is the primary method the service layer should use. It guarantees
-        that the rating row and its per-criterion scores are written together.
-
-        Returns:
-            rating_id: the id of the rating row.
-        """
-        conn = self.db.connect()
-        try:
-            # IMMEDIATE: acquire a write lock up front to reduce mid-transaction lock errors.
+            # IMMEDIATE: take the write lock first so two submits for one film can't interleave.
             conn.execute("BEGIN IMMEDIATE")
-            self._upsert_rating_row(conn, user_id, film_id)
-            row = conn.execute(
-                "SELECT id FROM ratings WHERE user_id=? AND film_id=?",
-                (user_id, film_id),
-            ).fetchone()
-            rating_id = int(row["id"])
-            self._upsert_scores_bulk(conn, rating_id, scores)
-            conn.commit()
-            return rating_id
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def _upsert_rating_row(self, conn: sqlite3.Connection, user_id: int, film_id: int) -> None:
-        """Internal: upsert rating row using an existing connection."""
-        conn.execute(
-                """
-                INSERT INTO ratings (user_id, film_id, updated_at)
-                VALUES (?, ?, datetime('now'))
-                ON CONFLICT(user_id, film_id) DO UPDATE SET updated_at=datetime('now')
-                """,
-                (user_id, film_id),
-            )
-
-    def _upsert_scores_bulk(self, conn: sqlite3.Connection, rating_id: int, scores: list[tuple[int,int]]) -> None:
-        """Internal: upsert score rows using an existing connection."""
-        for criteria_id, score in scores:
-            conn.execute(
-                    """
-                    INSERT INTO rating_scores (rating_id, criteria_id, score)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(rating_id, criteria_id) DO UPDATE SET score=excluded.score
-                    """,
-                    (rating_id, criteria_id, score),
+            try:
+                a = conn.execute(
+                    "SELECT status FROM assignments WHERE user_id = ? AND film_id = ?",
+                    (user_id, film_id),
+                ).fetchone()
+                if a is None:
+                    raise LookupError("This film is not assigned to you")
+                if a["status"] == "rated":
+                    raise AlreadyRated()
+                cur = conn.execute(
+                    "INSERT INTO ratings (user_id, film_id, comment) VALUES (?, ?, ?)",
+                    (user_id, film_id, comment),
                 )
-
-    def list_active_criteria_for_export(self) -> list[sqlite3.Row]:
-        conn = self.db.connect()
-        try:
-            return conn.execute(
-                "SELECT id, key, sort_order FROM criteria WHERE active=1 ORDER BY sort_order"
-            ).fetchall()
+                rating_id = int(cur.lastrowid)
+                conn.executemany(
+                    "INSERT INTO rating_scores (rating_id, category, score) VALUES (?, ?, ?)",
+                    [(rating_id, key, n) for key, n in scores.items()],
+                )
+                conn.execute(
+                    "UPDATE assignments SET status = 'rated', rated_at = datetime('now'), "
+                    "seen_at = COALESCE(seen_at, datetime('now')) WHERE user_id = ? AND film_id = ?",
+                    (user_id, film_id),
+                )
+                conn.commit()
+                return rating_id
+            except sqlite3.IntegrityError as exc:  # a rating row already exists
+                conn.rollback()
+                raise AlreadyRated() from exc
+            except BaseException:
+                conn.rollback()
+                raise
         finally:
             conn.close()
 
-    def list_ratings_for_export(self, collection: str) -> list[sqlite3.Row]:
-        conn = self.db.connect()
-        try:
-            return conn.execute(
-                """
-                SELECT r.id as rating_id, r.created_at, u.email as user_email,
-                       f.ia_identifier as identifier, f.title as title
-                FROM ratings r
-                JOIN users u ON u.id = r.user_id
-                JOIN films f ON f.id = r.film_id
-                WHERE f.collection=?
-                ORDER BY r.created_at DESC
-                """,
-                (collection,),
-            ).fetchall()
-        finally:
-            conn.close()
-
-    def get_score(self, rating_id: int, criteria_id: int) -> int | None:
+    def get_for_user_film(self, user_id: int, film_id: int) -> Optional[dict]:
+        """The person's submitted rating of a film: {"scores": {key: n}, "comment": str}, or None."""
         row = self.db.fetchone(
-            "SELECT score FROM rating_scores WHERE rating_id=? AND criteria_id=?",
-            (rating_id, criteria_id),
+            "SELECT id, comment FROM ratings WHERE user_id = ? AND film_id = ?", (user_id, film_id)
         )
-        return None if not row else int(row["score"])
+        if not row:
+            return None
+        scores = self.db.fetchall("SELECT category, score FROM rating_scores WHERE rating_id = ?", (row["id"],))
+        return {"scores": {r["category"]: int(r["score"]) for r in scores}, "comment": row["comment"]}
 
-    def count_ratings_for_film(self, film_id: int) -> int:
-        row = self.db.fetchone("SELECT COUNT(*) as n FROM ratings WHERE film_id=?", (film_id,))
-        return int(row["n"]) if row else 0
-
-    def avg_score_for_film_criterion(self, film_id: int, criteria_id: int) -> float | None:
-        row = self.db.fetchone(
+    def list_for_export(self) -> list[dict]:
+        """Every submitted rating, newest first: who, which film, scores by category, comment."""
+        rows = self.db.fetchall(
             """
-            SELECT AVG(rs.score) as avgScore
+            SELECT r.id AS rating_id, r.created_at, r.comment, u.email AS user_email,
+                   f.ia_identifier AS identifier, f.title AS title
             FROM ratings r
-            JOIN rating_scores rs ON rs.rating_id = r.id
-            WHERE r.film_id = ? AND rs.criteria_id = ?
-            """,
-            (film_id, criteria_id),
+            JOIN users u ON u.id = r.user_id
+            JOIN films f ON f.id = r.film_id
+            ORDER BY r.created_at DESC, r.id DESC
+            """
         )
-        return None if (not row or row["avgScore"] is None) else float(row["avgScore"])
+        scores: dict[int, dict[str, int]] = {}
+        for s in self.db.fetchall("SELECT rating_id, category, score FROM rating_scores"):
+            scores.setdefault(int(s["rating_id"]), {})[s["category"]] = int(s["score"])
+        return [{**{k: r[k] for k in r.keys()}, "scores": scores.get(int(r["rating_id"]), {})} for r in rows]

@@ -1,10 +1,10 @@
 import json
 import re
-import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
 from ..auth_session import current_user_id
+from ..db import SCHEMA_VERSION
 from ..repositories.user_repo import ROLE_COLUMNS
 from ..services import import_service
 
@@ -38,8 +38,8 @@ def _db_conn():
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
-# Internal tables that must never be dumped, browsed or backed up (live login sessions).
-_HIDDEN_TABLES = {"user_sessions"}
+# Internal tables that must never be dumped, browsed or backed up (live logins and magic links).
+_HIDDEN_TABLES = {"user_sessions", "login_links"}
 
 
 def _list_tables(conn):
@@ -123,7 +123,7 @@ def db_table(table: str):
                 "FROM films"
             )
         elif table == "users":
-            base = "SELECT id, email, ia_username, github_username, is_admin, is_judge, created_at FROM users"
+            base = "SELECT id, email, is_admin, is_reviewer, is_judge, created_at FROM users"
         else:
             base = f"SELECT * FROM {table}"
 
@@ -201,16 +201,19 @@ def set_roles(user_id: int):
 # Tables in dependency order for restore (parents before children).
 _RESTORE_ORDER = [
     "schema_migrations",
-    "app_settings",
     "users",
-    "criteria",
     "films",
+    "assignments",
     "ratings",
     "rating_scores",
-    "film_notes",
 ]
 
-BACKUP_FORMAT_VERSION = 1
+# Tables that point at users and/or films: restoring either of those without also
+# restoring these would leave rows attached to the wrong people or films.
+_DEPENDENT_TABLES = ("assignments", "ratings", "rating_scores")
+
+# 2 = the layout after the "major changes" rewrite; backups of the old app (1) can't be restored.
+BACKUP_FORMAT_VERSION = 2
 
 
 @admin_bp.get("/api/admin/db/backup")
@@ -272,6 +275,9 @@ def db_restore():
     if backup.get("format_version") != BACKUP_FORMAT_VERSION:
         return jsonify({"error": f"Unsupported format_version: {backup.get('format_version')}"}), 400
 
+    if backup.get("schema_version") != SCHEMA_VERSION:
+        return jsonify({"error": f"Unsupported schema_version: {backup.get('schema_version')}"}), 400
+
     tables_data = backup.get("tables")
     if not isinstance(tables_data, dict):
         return jsonify({"error": "Invalid backup: 'tables' must be an object"}), 400
@@ -291,10 +297,13 @@ def db_restore():
         try:
             with conn:  # single atomic transaction — rolls back on any exception
                 conn.execute("DELETE FROM user_sessions")
-                # Notes point at film ids. A backup that replaces films but has no notes
-                # (e.g. made before notes existed) would leave them attached to the wrong films.
-                if tables_data.get("films") is not None and tables_data.get("film_notes") is None:
-                    conn.execute("DELETE FROM film_notes")
+                conn.execute("DELETE FROM login_links")  # they point at user ids, which the restore replaces
+                # A backup that replaces users or films but lacks a dependent table would leave
+                # that table's rows attached to the wrong people or films.
+                if tables_data.get("films") is not None or tables_data.get("users") is not None:
+                    for dep in _DEPENDENT_TABLES:
+                        if tables_data.get(dep) is None:
+                            conn.execute(f"DELETE FROM {dep}")
                 for table in _RESTORE_ORDER:
                     rows = tables_data.get(table)
                     if rows is None:
@@ -351,115 +360,30 @@ def db_restore():
 
 
 # ---------------------------------------------------------------------------
-# Criteria management
+# Films: background jobs, emptying the database, spreadsheet import
 # ---------------------------------------------------------------------------
 
-@admin_bp.get("/api/admin/criteria")
-def list_criteria():
-    """List all criteria (including inactive)."""
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    criteria = current_app.repos["criteria"]
-    rows = criteria.list_all()
-    return jsonify([dict(r) for r in rows])
-
-
-@admin_bp.post("/api/admin/criteria")
-def create_criterion():
-    """Create a new criterion."""
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    data = request.get_json(silent=True) or {}
-    key       = (data.get("key") or "").strip()
-    label     = (data.get("label") or "").strip()
-    min_score = data.get("min_score", 1)
-    max_score = data.get("max_score", 5)
-    sort_order = data.get("sort_order", 0)
-    active    = int(bool(data.get("active", True)))
-
-    if not key:
-        return jsonify({"error": "key is required"}), 400
-    if not label:
-        return jsonify({"error": "label is required"}), 400
-    if not isinstance(min_score, int) or not isinstance(max_score, int):
-        return jsonify({"error": "min_score and max_score must be integers"}), 400
-    if min_score >= max_score:
-        return jsonify({"error": "min_score must be less than max_score"}), 400
-
-    try:
-        current_app.repos["criteria"].insert(key, label, min_score, max_score, sort_order, active)
-    except sqlite3.IntegrityError:
-        return jsonify({"error": f"A criterion with key '{key}' already exists"}), 409
-    except Exception:
-        current_app.logger.exception("Failed to create criterion")
-        return jsonify({"error": "Failed to create criterion"}), 500
-    return jsonify({"ok": True}), 201
-
-
-@admin_bp.put("/api/admin/criteria/<int:cid>")
-def update_criterion(cid: int):
-    """Update an existing criterion."""
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    criteria = current_app.repos["criteria"]
-    row = criteria.get_by_id(cid)
-    if not row:
-        return jsonify({"error": f"Criterion not found: {cid}"}), 404
-
-    data = request.get_json(silent=True) or {}
-    label      = (data.get("label") or row["label"]).strip()
-    min_score  = data.get("min_score",  row["min_score"])
-    max_score  = data.get("max_score",  row["max_score"])
-    sort_order = data.get("sort_order", row["sort_order"])
-    active     = int(bool(data.get("active", bool(row["active"]))))
-
-    if not label:
-        return jsonify({"error": "label is required"}), 400
-    if min_score >= max_score:
-        return jsonify({"error": "min_score must be less than max_score"}), 400
-
-    criteria.update(cid, label, min_score, max_score, sort_order, active)
-    return jsonify({"ok": True})
-
-
-# ---------------------------------------------------------------------------
-# Film / ratings management
-# ---------------------------------------------------------------------------
-
-def _sync_status_payload() -> dict:
-    payload = current_app.services["sync"].status()
+def _job_status_payload() -> dict:
+    payload = current_app.services["jobs"].status()
     payload["film_count"] = current_app.repos["films"].count()
     return payload
 
 
-@admin_bp.post("/api/admin/sync")
-def sync():
-    """Start an Internet Archive sync in the background; poll /api/admin/sync/status."""
+@admin_bp.get("/api/admin/jobs/status")
+def job_status():
+    """Progress of the background job (currently only the title lookup after an import)."""
     ok, err = _require_admin_user()
     if err:
         return err
-    if not current_app.services["sync"].start():
-        return jsonify({"error": "A sync is already running", "status": _sync_status_payload()}), 409
-    return jsonify({"ok": True, "status": _sync_status_payload()}), 202
-
-
-@admin_bp.get("/api/admin/sync/status")
-def sync_status():
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    return jsonify(_sync_status_payload())
+    return jsonify(_job_status_payload())
 
 
 @admin_bp.post("/api/admin/db/empty")
 def empty_db():
-    """Delete all films and all ratings (users and criteria are kept).
+    """Delete all films, assignments and ratings (users are kept).
 
     DESTRUCTIVE. The body must be {"confirm": "EMPTY"} so a stray request can't
-    wipe the data. Refused while a sync is running.
+    wipe the data. Refused while a background job is running.
     """
     ok, err = _require_admin_user()
     if err:
@@ -467,60 +391,15 @@ def empty_db():
     data = request.get_json(silent=True) or {}
     if data.get("confirm") != "EMPTY":
         return jsonify({"error": 'Send {"confirm": "EMPTY"} to empty the database'}), 400
-    if current_app.services["sync"].is_running():
-        return jsonify({"error": "Wait for the running sync to finish first"}), 409
+    if current_app.services["jobs"].is_running():
+        return jsonify({"error": "Wait for the running background job to finish first"}), 409
     deleted = current_app.repos["films"].delete_all_with_ratings()
     current_app.logger.warning("admin.db.emptied user_id=%s deleted=%s", session.get("user_id"), deleted)
     return jsonify({"ok": True, "deleted": deleted})
 
-# ---------------------------------------------------------------------------
-# Settings: the active film collection
-# ---------------------------------------------------------------------------
-
-def _collection_payload() -> dict:
-    app_settings = current_app.repos["settings"]
-    return {
-        "collection": app_settings.get_collection(),
-        "default_collection": app_settings.default_collection,
-        "collections": app_settings.collections_in_use(),
-    }
-
-
-@admin_bp.get("/api/admin/settings")
-def get_settings():
-    """The active collection, the built-in default, and every collection that has films."""
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    return jsonify(_collection_payload())
-
-
-@admin_bp.put("/api/admin/settings/collection")
-def set_collection():
-    """Change the archive.org collection raters see and sync/import use.
-
-    Films already in the database under another collection are kept but hidden from
-    raters until that collection is selected again. Refused while a sync or title
-    lookup is running (they act on the collection).
-    """
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    data = request.get_json(silent=True) or {}
-    if current_app.services["sync"].is_running():
-        return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
-    try:
-        current_app.repos["settings"].set_collection(data.get("collection") or "")
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    current_app.logger.warning(
-        "admin.collection.changed user_id=%s collection=%s", session.get("user_id"), current_app.repos["settings"].get_collection()
-    )
-    return jsonify({"ok": True, **_collection_payload(), "film_count": current_app.repos["films"].count()})
-
 
 # ---------------------------------------------------------------------------
-# Populate films from a spreadsheet (CSV) instead of syncing from archive.org
+# Populate films from a spreadsheet (CSV)
 # ---------------------------------------------------------------------------
 
 def _parse_import_request(data: dict):
@@ -546,7 +425,6 @@ def import_preview():
         "row_count": len(rows),
         "sample_rows": [[c[:200] for c in cells] for _, cells in rows[:5]],
         "suggested_mapping": import_service.suggest_mapping(headers, rows),
-        "collection": current_app.repos["settings"].get_collection(),
     })
 
 
@@ -559,52 +437,27 @@ def import_films():
     data = request.get_json(silent=True) or {}
     dry_run = bool(data.get("dry_run"))
     on_existing = data.get("on_existing")
-    app_settings = current_app.repos["settings"]
-    active = app_settings.get_collection()
     if not dry_run:
         if on_existing not in ("skip", "update"):
             return jsonify({"error": 'on_existing must be "skip" or "update"'}), 400
-        if current_app.services["sync"].is_running():
-            return jsonify({"error": "Wait for the running sync / title lookup to finish first"}), 409
+        if current_app.services["jobs"].is_running():
+            return jsonify({"error": "Wait for the running background job to finish first"}), 409
     try:
-        # The collection the films are put in; defaults to the active one.
-        collection = app_settings.validate_collection(data["collection"]) if data.get("collection") else active
         headers, rows, mapping = _parse_import_request(data)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     importer = current_app.services["import"]
-    items = importer.build_plan(headers, rows, mapping, collection)
+    items = importer.build_plan(headers, rows, mapping)
     summary = importer.summarize(items)
     skipped = importer.skipped_rows(items)
     if dry_run:
-        return jsonify({
-            "ok": True, "dry_run": True, "summary": summary, "skipped": skipped,
-            "samples": importer.samples(items), "collection": collection, "active_collection": active,
-        })
+        return jsonify({"ok": True, "dry_run": True, "summary": summary, "skipped": skipped, "samples": importer.samples(items)})
     if summary["new"] + summary["existing"] == 0:
         return jsonify({"error": "No rows with an archive.org link to import", "summary": summary, "skipped": skipped}), 400
-    result = importer.run(items, on_existing, bool(data.get("lookup_titles")), collection)
-    # Optionally make the imported collection the one raters see.
-    activated = bool(data.get("activate_collection")) and collection != active
-    if activated:
-        app_settings.set_collection(collection)
-    result = {**result, "collection": collection, "activated": activated}
+    result = importer.run(items, on_existing, bool(data.get("lookup_titles")))
     current_app.logger.info("admin.import user_id=%s result=%s", session.get("user_id"), result)
     return jsonify({"ok": True, "result": result, "summary": summary, "skipped": skipped})
-
-
-@admin_bp.get("/api/admin/notes.csv")
-def notes_csv():
-    """Judges' notes for the active collection as a CSV download (admin only)."""
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    return Response(
-        current_app.services["notes"].export_csv(),
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="notes.csv"'},
-    )
 
 
 @admin_bp.get("/api/admin/ratings.csv")

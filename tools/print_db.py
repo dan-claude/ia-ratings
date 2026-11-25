@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Query the IA Ratings SQLite DB and print results.")
     p.add_argument("--db", default=_default_db_path(), help="Path to SQLite db (default: %(default)s)")
     p.add_argument("--tables", action="store_true", help="List tables and row counts (default if no --table)")
-    p.add_argument("--table", help="Table to dump (e.g. users, films, criteria, ratings, rating_scores)")
+    p.add_argument("--table", help="Table to dump (e.g. users, films, assignments, ratings, rating_scores)")
     p.add_argument("--where", help='Optional SQL WHERE clause (e.g. "user_id=1")')
     p.add_argument("--order-by", dest="order_by", help='Optional SQL ORDER BY clause (e.g. "id DESC")')
     p.add_argument("--limit", type=int, help="Limit rows")
@@ -105,10 +105,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.make_admin or args.revoke_admin:
             email = (args.make_admin or args.revoke_admin).strip().lower()
             is_admin = bool(args.make_admin)
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-            if "is_admin" not in cols:
-                conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0;")
-                conn.commit()
             row = conn.execute("SELECT id, email FROM users WHERE email = ?", (email,)).fetchone()
             if not row:
                 print(f"User not found: {email}", file=sys.stderr)

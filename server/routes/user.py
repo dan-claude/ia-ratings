@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, current_app
 
 from ..auth_session import current_user_id
+from ..models.user import User
 
 user_bp = Blueprint("user", __name__)
 
@@ -10,38 +11,29 @@ def _require_auth():
         return None, (jsonify({"error": "Not logged in"}), 401)
     return uid, None
 
-@user_bp.get("/api/config")
-def config():
-    return jsonify({
-        "auth_scheme": current_app.settings.auth_scheme,
-        "oauth_providers": current_app.settings.oauth_providers,
-    })
-
 
 @user_bp.get("/api/me")
 def me():
     uid, err = _require_auth()
     if err:
         return err
-    svc = current_app.services["auth"]
-    try:
-        me = svc.get_me(uid)
-        return jsonify({"id": me.id, "email": me.email, "created_at": me.created_at, "is_admin": me.is_admin, "is_judge": me.is_judge, "roles": me.roles})
-    except LookupError:
+    row = current_app.repos["users"].get_by_id(uid)
+    if not row:
         return jsonify({"error": "Not logged in"}), 401
+    user = User(
+        id=int(row["id"]), email=str(row["email"]), created_at=str(row["created_at"]),
+        is_admin=bool(row["is_admin"]), is_reviewer=bool(row["is_reviewer"]), is_judge=bool(row["is_judge"]),
+    )
+    return jsonify({
+        "id": user.id, "email": user.email, "created_at": user.created_at,
+        "is_admin": user.is_admin, "is_reviewer": user.is_reviewer, "is_judge": user.is_judge,
+        "roles": user.roles,
+    })
 
-@user_bp.get("/api/criteria")
-def criteria():
+
+@user_bp.get("/api/categories")
+def categories():
     uid, err = _require_auth()
     if err:
         return err
-    rs = current_app.services["rating"]
-    rows = rs.list_active_criteria()
-    return jsonify([{
-        "key": r["key"],
-        "label": r["label"],
-        "min": r["min_score"],
-        "max": r["max_score"],
-        "sortOrder": r["sort_order"],
-        "active": r["active"],
-    } for r in rows])
+    return jsonify(current_app.services["rating"].list_categories())

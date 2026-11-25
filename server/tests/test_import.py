@@ -1,12 +1,11 @@
 """CSV (spreadsheet) import of films. Sample data is invented but shaped like a real submissions sheet."""
-import json
 import threading
 
 import pytest
 
 from server.services import import_service
 from server.services.import_service import parse_archive_url, parse_csv, suggest_mapping, validate_mapping
-from server.tests.helpers import register
+from server.tests.helpers import make_user, assign, seed_film
 
 HEADER = (
     "Timestamp,Your name,Your email,URL/Link to your film at archive.org,Where are you located?,"
@@ -32,13 +31,12 @@ CSV_TEXT = "\n".join([
     '11/15/2026 12:45:14,Ann E,ann@example.com,https://archive.org/details/spirit-and-opportunity,Los Angeles,50,Time lapse plants,ABSOLUTELY NO',
 ])
 
-MAPPING = {"link": 3, "title": None, "description": 6, "extra": []}
+MAPPING = {"link": 3, "title": None, "description": 6}
 
 
-def make_admin(app, client, email="admin@example.com"):
-    register(client, email, "pw")
-    u = app.repos["users"].get_by_email(email)
-    app.repos["users"].set_admin(int(u["id"]), True)
+def make_admin(app, email="admin@example.com"):
+    """A test client logged in as a new admin."""
+    return make_user(app, email, ["admin"])[0]
 
 
 def post(client, path="/api/admin/import", **body):
@@ -102,12 +100,12 @@ def test_parse_csv_errors():
 def test_suggest_mapping_finds_link_by_content_and_description_by_header():
     headers, rows = parse_csv(CSV_TEXT)
     m = suggest_mapping(headers, rows)
-    assert m["link"] == 3 and m["description"] == 6 and m["title"] is None and m["extra"] == []
+    assert m == {"link": 3, "description": 6, "title": None}
 
 
 def test_validate_mapping():
-    assert validate_mapping({"link": 1, "extra": [2, 2]}, 5) == {"link": 1, "title": None, "description": None, "extra": [2]}
-    for bad in (None, {}, {"link": 9}, {"link": "1"}, {"link": True}, {"link": 0, "title": -1}, {"link": 0, "extra": [7]}):
+    assert validate_mapping({"link": 1}, 5) == {"link": 1, "title": None, "description": None}
+    for bad in (None, {}, {"link": 9}, {"link": "1"}, {"link": True}, {"link": 0, "title": -1}):
         with pytest.raises(ValueError):
             validate_mapping(bad, 5)
 
@@ -116,23 +114,23 @@ def test_validate_mapping():
 
 def test_import_endpoints_require_admin(app, client):
     assert post(client, "/api/admin/import/preview", csv_text=CSV_TEXT).status_code == 401
-    register(client, "u@example.com", "pw")
-    assert post(client, "/api/admin/import/preview", csv_text=CSV_TEXT).status_code == 403
-    assert post(client, csv_text=CSV_TEXT, mapping=MAPPING, on_existing="skip").status_code == 403
+    other, _ = make_user(app, "u@example.com", ["reviewer", "judge"])
+    assert post(other, "/api/admin/import/preview", csv_text=CSV_TEXT).status_code == 403
+    assert post(other, csv_text=CSV_TEXT, mapping=MAPPING, on_existing="skip").status_code == 403
 
 
-def test_preview_returns_headers_samples_and_suggestion(app, client):
-    make_admin(app, client)
+def test_preview_returns_headers_samples_and_suggestion(app):
+    client = make_admin(app)
     d = post(client, "/api/admin/import/preview", csv_text=CSV_TEXT).get_json()
     assert d["row_count"] == 6 and len(d["sample_rows"]) == 5
     assert d["headers"][2] == "Your email"
     assert d["suggested_mapping"]["link"] == 3
-    assert d["collection"] == app.settings.collection
+    assert "collection" not in d
     assert post(client, "/api/admin/import/preview", csv_text="").status_code == 400
 
 
-def test_dry_run_classifies_rows_and_writes_nothing(app, client):
-    make_admin(app, client)
+def test_dry_run_classifies_rows_and_writes_nothing(app):
+    client = make_admin(app)
     r = post(client, csv_text=CSV_TEXT, mapping=MAPPING, dry_run=True)
     d = r.get_json()
     assert r.status_code == 200 and d["dry_run"] is True
@@ -143,36 +141,38 @@ def test_dry_run_classifies_rows_and_writes_nothing(app, client):
     assert app.repos["films"].count() == 0
 
 
-def test_import_adds_films_to_the_configured_collection(app, client):
-    make_admin(app, client)
+def test_import_adds_films(app):
+    client = make_admin(app)
     r = post(client, csv_text=CSV_TEXT, mapping=MAPPING, on_existing="skip")
     assert r.status_code == 200
     assert r.get_json()["result"] == {
         "added": 3, "updated": 0, "skipped_existing": 0, "skipped_invalid": 3, "title_lookup_started": False,
-        "collection": app.settings.collection, "activated": False,
     }
 
     row = app.db.fetchone("SELECT * FROM films WHERE ia_identifier='rascayu-videoclip'")
-    assert row["collection"] == app.settings.collection and row["mediatype"] == "movies"
+    assert row["in_judges_pool"] == 0
     assert row["title"] == "rascayu-videoclip"                      # no title column -> identifier
     assert row["description"] == 'A dark synth remix of "You Rascal You".\n\nSecond paragraph.'
     assert app.db.fetchone("SELECT 1 FROM films WHERE ia_identifier LIKE '%youtube%' OR ia_identifier='UfqUGSa_Nf0'") is None
     assert app.repos["films"].count() == 3
 
-    f = client.get("/api/films/next").get_json()          # raters can now rate them
-    assert f["identifier"] in {"rascayu-videoclip", "jcappello-bathala-teeth-2026", "spirit-and-opportunity"}
+    # raters see them once they are assigned
+    rev, rid = make_user(app, "rev@example.com", ["reviewer"])
+    assert rev.get("/api/films/next").get_json()["code"] == "no_assignments"
+    assign(app, rid, app.repos["films"].get_by_identifier("rascayu-videoclip")["id"])
+    assert rev.get("/api/films/next").get_json()["identifier"] == "rascayu-videoclip"
 
 
-def test_title_column_is_used_when_mapped(app, client):
-    make_admin(app, client)
+def test_title_column_is_used_when_mapped(app):
+    client = make_admin(app)
     csv_text = "Film,Link\nMy Film,https://archive.org/details/a1\n,https://archive.org/details/a2\n"
     post(client, csv_text=csv_text, mapping={"link": 1, "title": 0}, on_existing="skip")
     assert app.repos["films"].get_by_identifier("a1")["title"] == "My Film"
     assert app.repos["films"].get_by_identifier("a2")["title"] == "a2"      # blank -> identifier
 
 
-def test_existing_films_skip_or_update_chosen_by_caller(app, client):
-    make_admin(app, client)
+def test_existing_films_skip_or_update_chosen_by_caller(app):
+    client = make_admin(app)
     app.repos["films"].import_rows([{"identifier": "a1", "title": "Old title", "description": "Old desc"}], "skip")
     csv_text = "Title,Description,Link\nNew title,New desc,https://archive.org/details/a1\nB,Desc B,https://archive.org/details/b1\n"
     mp = {"link": 2, "title": 0, "description": 1}
@@ -194,27 +194,16 @@ def test_existing_films_skip_or_update_chosen_by_caller(app, client):
     assert (a1["title"], a1["description"]) == ("New title", "New desc")
 
 
-def test_update_never_blanks_existing_fields(app, client):
-    make_admin(app, client)
+def test_update_never_blanks_existing_fields(app):
+    client = make_admin(app)
     app.repos["films"].import_rows([{"identifier": "a1", "title": "Keep me", "description": "Keep desc"}], "skip")
     post(client, csv_text="Link\nhttps://archive.org/details/a1\n", mapping={"link": 0}, on_existing="update")
     a1 = app.repos["films"].get_by_identifier("a1")
     assert (a1["title"], a1["description"]) == ("Keep me", "Keep desc")
 
 
-def test_extra_columns_stored_admin_side_only(app, client):
-    make_admin(app, client)
-    post(client, csv_text=CSV_TEXT, mapping={**MAPPING, "extra": [7]}, on_existing="skip")
-    meta = json.loads(app.db.fetchone("SELECT metadata_json m FROM films WHERE ia_identifier='rascayu-videoclip'")["m"])
-    assert meta == {"source": "csv_import", "columns": {"AI tools used": "Suno for the music"}}
-    # a film with an empty extra cell has no extras, and nothing leaks to raters
-    f = client.get("/api/films/next").get_json()
-    assert set(f) == {"identifier", "title", "description", "embedUrl"}
-    assert "Suno" not in json.dumps(f)
-
-
 def test_invalid_requests(app, client):
-    make_admin(app, client)
+    client = make_admin(app)
     assert post(client, csv_text=CSV_TEXT, mapping={"link": 99}, on_existing="skip").status_code == 400
     assert post(client, csv_text=CSV_TEXT, mapping={"title": 0}, on_existing="skip").status_code == 400
     assert post(client, csv_text="", mapping=MAPPING, on_existing="skip").status_code == 400
@@ -226,8 +215,8 @@ def test_invalid_requests(app, client):
 
 # ---- title lookup (background) -----------------------------------------------------
 
-def test_title_lookup_runs_in_background_and_never_overwrites_real_titles(app, client, monkeypatch):
-    make_admin(app, client)
+def test_title_lookup_runs_in_background_and_never_overwrites_real_titles(app, monkeypatch):
+    client = make_admin(app)
     app.repos["films"].import_rows([{"identifier": "has-title", "title": "Real title", "description": None}], "skip")
     ia = app.services["ia"]
     monkeypatch.setattr(type(ia), "fetch_title", lambda self, ident: {"a1": "Looked Up", "has-title": "Archive Title"}.get(ident))
@@ -235,25 +224,25 @@ def test_title_lookup_runs_in_background_and_never_overwrites_real_titles(app, c
     csv_text = "Link\nhttps://archive.org/details/a1\nhttps://archive.org/details/a2\nhttps://archive.org/details/has-title\n"
     r = post(client, csv_text=csv_text, mapping={"link": 0}, on_existing="update", lookup_titles=True)
     assert r.get_json()["result"]["title_lookup_started"] is True
-    app.services["sync"].wait(10)
+    app.services["jobs"].wait(10)
 
-    s = client.get("/api/admin/sync/status").get_json()
-    assert s["state"] == "done" and s["kind"] == "titles" and s["synced"] == 1
+    s = client.get("/api/admin/jobs/status").get_json()
+    assert s["state"] == "done" and s["kind"] == "titles" and s["processed"] == 1
     films = app.repos["films"]
     assert films.get_by_identifier("a1")["title"] == "Looked Up"
     assert films.get_by_identifier("a2")["title"] == "a2"                 # not found -> stays identifier
     assert films.get_by_identifier("has-title")["title"] == "Real title"  # never clobbered
 
 
-def test_no_lookup_when_every_row_has_a_title(app, client):
-    make_admin(app, client)
+def test_no_lookup_when_every_row_has_a_title(app):
+    client = make_admin(app)
     r = post(client, csv_text="T,L\nX,https://archive.org/details/a1\n", mapping={"link": 1, "title": 0},
              on_existing="skip", lookup_titles=True)
     assert r.get_json()["result"]["title_lookup_started"] is False
 
 
-def test_title_lookup_reports_progress_and_blocks_concurrent_import(app, client, monkeypatch):
-    make_admin(app, client)
+def test_title_lookup_reports_progress_and_blocks_concurrent_import(app, monkeypatch):
+    client = make_admin(app)
     release, started = threading.Event(), threading.Event()
 
     def slow_titles(self, identifiers, workers=10, progress=None):
@@ -266,19 +255,10 @@ def test_title_lookup_reports_progress_and_blocks_concurrent_import(app, client,
     csv_text = "Link\nhttps://archive.org/details/a1\nhttps://archive.org/details/a2\n"
     post(client, csv_text=csv_text, mapping={"link": 0}, on_existing="skip", lookup_titles=True)
     assert started.wait(10)
-    s = client.get("/api/admin/sync/status").get_json()
+    s = client.get("/api/admin/jobs/status").get_json()
     assert (s["state"], s["kind"], s["phase"], s["done"], s["total"]) == ("running", "titles", "titles", 1, 2)
 
     assert post(client, csv_text=csv_text, mapping={"link": 0}, on_existing="skip").status_code == 409
-    assert client.post("/api/admin/sync").status_code == 409
     assert client.post("/api/admin/db/empty", json={"confirm": "EMPTY"}).status_code == 409
     release.set()
-    app.services["sync"].wait(10)
-
-
-def test_sync_status_reports_kind(app, client, monkeypatch):
-    make_admin(app, client)
-    monkeypatch.setattr(type(app.services["ia"]), "sync_collection", lambda self, f, progress=None, **k: 0)
-    client.post("/api/admin/sync")
-    app.services["sync"].wait(10)
-    assert client.get("/api/admin/sync/status").get_json()["kind"] == "sync"
+    app.services["jobs"].wait(10)

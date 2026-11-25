@@ -1,7 +1,13 @@
-import json
 import sqlite3
 from typing import Optional
 from ..db import Database
+
+# Film fields the spreadsheet import can fill in.
+_IMPORT_FIELDS = ["title", "creator", "description", "public_domain_works", "ai_disclosure"]
+_FILM_COLUMNS = (
+    "id, ia_identifier, title, creator, description, public_domain_works, ai_disclosure, in_judges_pool"
+)
+
 
 class FilmRepository:
     @staticmethod
@@ -64,104 +70,45 @@ class FilmRepository:
             return self._html_to_text(s)
         return self._clean_plain_text(s)
 
-    def __init__(self, db: Database, collection):
-        """collection: a slug, or a zero-arg callable returning the *current* slug
-        (the admin can change it at runtime)."""
+    def __init__(self, db: Database):
         self.db = db
-        self._collection = collection
-
-    @property
-    def collection(self) -> str:
-        c = self._collection
-        return c() if callable(c) else c
-
-    def upsert_many_from_ia(self, docs: list[dict]) -> int:
-        collection = self.collection  # read once: all rows of one sync go to the same collection
-        conn = self.db.connect()
-        try:
-            total = 0
-            for d in docs:
-                ident = d.get("identifier")
-                if not ident:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, NULL, datetime('now'))
-                    ON CONFLICT(ia_identifier, collection) DO UPDATE SET
-                      title=excluded.title,
-                      description=excluded.description,
-                      collection=excluded.collection,
-                      mediatype=excluded.mediatype,
-                      updated_at=datetime('now')
-                    """,
-                    (ident, d.get("title"), self._normalize_description(d.get("description")), collection, "movies"),
-                )
-                total += 1
-            conn.commit()
-            return total
-        finally:
-            conn.close()
 
     def get_by_identifier(self, identifier: str) -> Optional[sqlite3.Row]:
-        """The film with this archive.org identifier in the ACTIVE collection (the same item
-        can be in several collections, each with its own row and ratings)."""
         return self.db.fetchone(
-            "SELECT id, ia_identifier, title, description FROM films WHERE ia_identifier = ? AND collection = ?",
-            (identifier, self.collection),
+            f"SELECT {_FILM_COLUMNS} FROM films WHERE ia_identifier = ?",
+            (identifier,),
         )
 
-    def get_next_unrated_for_user(self, user_id: int) -> Optional[sqlite3.Row]:
-        return self.db.fetchone(
-            """
-            SELECT f.ia_identifier, f.title, f.description
-            FROM films f
-            WHERE f.collection = ?
-              AND NOT EXISTS (
-                SELECT 1 FROM ratings r
-                WHERE r.user_id = ?
-                  AND r.film_id = f.id
-              )
-            ORDER BY RANDOM()
-            LIMIT 1
-            """,
-            (self.collection, user_id),
-        )
+    def get_by_id(self, film_id: int) -> Optional[sqlite3.Row]:
+        return self.db.fetchone(f"SELECT {_FILM_COLUMNS} FROM films WHERE id = ?", (film_id,))
 
     def count(self) -> int:
-        row = self.db.fetchone("SELECT COUNT(1) AS n FROM films WHERE collection = ?", (self.collection,))
+        row = self.db.fetchone("SELECT COUNT(1) AS n FROM films")
         return int(row["n"]) if row else 0
 
-    def delete_all_with_ratings(self) -> dict:
-        """Delete every film plus all ratings, scores and judges' notes (which reference films).
+    def list_all(self) -> list[sqlite3.Row]:
+        return self.db.fetchall(f"SELECT {_FILM_COLUMNS} FROM films ORDER BY id")
 
-        One transaction, so a failure leaves the data untouched. Users and
-        criteria are kept. Returns the number of rows deleted per table.
+    def delete_all_with_ratings(self) -> dict:
+        """Delete every film plus all assignments, ratings and scores (which reference films).
+
+        One transaction, so a failure leaves the data untouched. Users are kept.
+        Returns the number of rows deleted per table.
         """
         conn = self.db.connect()
         try:
             deleted = {}
             with conn:
-                for table in ("rating_scores", "ratings", "film_notes", "films"):  # children first
+                for table in ("rating_scores", "ratings", "assignments", "films"):  # children first
                     deleted[table] = conn.execute(f"DELETE FROM {table}").rowcount
-                # Restart the AUTOINCREMENT counters so a fresh sync starts at id 1.
-                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'film_notes', 'films')")
+                # Restart the AUTOINCREMENT counters so a fresh import starts at id 1.
+                conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('ratings', 'films')")
             return deleted
         finally:
             conn.close()
 
-    def list_all_in_collection(self) -> list[sqlite3.Row]:
-        return self.db.fetchall(
-            "SELECT id, ia_identifier as identifier, title, description FROM films WHERE collection=? ORDER BY id",
-            (self.collection,),
-        )
-
-    def existing_identifiers(self, identifiers: list[str], collection: str | None = None) -> set[str]:
-        """Subset of identifiers that already have a film in `collection` (default: the active one).
-
-        A film that exists only in a different collection does NOT count.
-        """
-        collection = collection or self.collection
+    def existing_identifiers(self, identifiers: list[str]) -> set[str]:
+        """Subset of identifiers that already have a film."""
         found: set[str] = set()
         ids = list(identifiers)
         conn = self.db.connect()
@@ -170,70 +117,59 @@ class FilmRepository:
                 chunk = ids[i:i + 500]
                 q = ",".join("?" * len(chunk))
                 rows = conn.execute(
-                    f"SELECT ia_identifier FROM films WHERE collection = ? AND ia_identifier IN ({q})",
-                    [collection, *chunk],
+                    f"SELECT ia_identifier FROM films WHERE ia_identifier IN ({q})",
+                    chunk,
                 ).fetchall()
                 found.update(r["ia_identifier"] for r in rows)
         finally:
             conn.close()
         return found
 
-    def import_rows(self, rows: list[dict], on_existing: str, collection: str | None = None) -> dict:
+    def import_rows(self, rows: list[dict], on_existing: str) -> dict:
         """Insert (or update) films from a spreadsheet import in one transaction.
 
-        Each row: {identifier, title|None, description|None, metadata|None}.
+        Each row: {identifier, title|None, creator|None, description|None,
+        public_domain_works|None, ai_disclosure|None}.
         on_existing: "skip" leaves films that already exist untouched; "update"
-        overwrites the fields the row provides (a missing title/description/metadata
-        never blanks out what is stored). New films get title = identifier when the
-        row has no title. Films are put in `collection` (default: the active one);
-        "existing" means already in THAT collection (the same item in another
-        collection is a separate film).
+        overwrites the fields the row provides (a missing value never blanks out what
+        is stored). New films get title = identifier when the row has no title.
         Returns {"added", "updated", "skipped_existing"}.
         """
         if on_existing not in ("skip", "update"):
             raise ValueError('on_existing must be "skip" or "update"')
-        collection = collection or self.collection
         counts = {"added": 0, "updated": 0, "skipped_existing": 0}
-        existing = self.existing_identifiers([r["identifier"] for r in rows], collection)
+        existing = self.existing_identifiers([r["identifier"] for r in rows])
         conn = self.db.connect()
         try:
             with conn:
                 for r in rows:
                     ident = r["identifier"]
-                    meta = json.dumps(r["metadata"], ensure_ascii=False) if r.get("metadata") else None
+                    values = [r.get(f) for f in _IMPORT_FIELDS]
                     if ident in existing:
                         if on_existing == "skip":
                             counts["skipped_existing"] += 1
                             continue
+                        sets = ", ".join(f"{f} = COALESCE(?, {f})" for f in _IMPORT_FIELDS)
                         conn.execute(
-                            """
-                            UPDATE films SET
-                              title = COALESCE(?, title),
-                              description = COALESCE(?, description),
-                              metadata_json = COALESCE(?, metadata_json),
-                              updated_at = datetime('now')
-                            WHERE ia_identifier = ? AND collection = ?
-                            """,
-                            (r.get("title"), r.get("description"), meta, ident, collection),
+                            f"UPDATE films SET {sets}, updated_at = datetime('now') WHERE ia_identifier = ?",
+                            [*values, ident],
                         )
                         counts["updated"] += 1
                     else:
+                        values[_IMPORT_FIELDS.index("title")] = r.get("title") or ident
+                        cols = ", ".join(_IMPORT_FIELDS)
+                        marks = ", ".join("?" * len(_IMPORT_FIELDS))
                         conn.execute(
-                            """
-                            INSERT INTO films (ia_identifier, title, description, collection, mediatype, metadata_json, updated_at)
-                            VALUES (?, ?, ?, ?, 'movies', ?, datetime('now'))
-                            """,
-                            (ident, r.get("title") or ident, r.get("description"), collection, meta),
+                            f"INSERT INTO films (ia_identifier, {cols}) VALUES (?, {marks})",
+                            [ident, *values],
                         )
                         counts["added"] += 1
         finally:
             conn.close()
         return counts
 
-    def update_titles(self, titles: dict[str, str], collection: str | None = None) -> int:
-        """Set looked-up titles (for films in `collection`, default the active one), but only
-        where the stored title is blank or just the identifier."""
-        collection = collection or self.collection
+    def update_titles(self, titles: dict[str, str]) -> int:
+        """Set looked-up titles, but only where the stored title is blank or just the identifier."""
         n = 0
         conn = self.db.connect()
         try:
@@ -241,31 +177,10 @@ class FilmRepository:
                 for ident, title in titles.items():
                     n += conn.execute(
                         "UPDATE films SET title = ?, updated_at = datetime('now') "
-                        "WHERE ia_identifier = ? AND collection = ? "
+                        "WHERE ia_identifier = ? "
                         "AND (title IS NULL OR title = '' OR title = ia_identifier)",
-                        (title, ident, collection),
+                        (title, ident),
                     ).rowcount
         finally:
             conn.close()
         return n
-
-    def get_identifiers_without_description(self, identifiers: list[str]) -> set[str]:
-        """Return the subset of identifiers that have no description stored yet.
-
-        Only films in the active collection count; films that aren't in it at all count as "without": on a first
-        sync (e.g. after emptying the database) every film needs its full
-        description fetched.
-        """
-        if not identifiers:
-            return set()
-        conn = self.db.connect()
-        try:
-            placeholders = ",".join("?" * len(identifiers))
-            rows = conn.execute(
-                f"SELECT ia_identifier FROM films WHERE collection = ? AND ia_identifier IN ({placeholders})"
-                f" AND description IS NOT NULL AND description != ''",
-                [self.collection, *identifiers],
-            ).fetchall()
-            return set(identifiers) - {r["ia_identifier"] for r in rows}
-        finally:
-            conn.close()

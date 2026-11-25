@@ -9,7 +9,6 @@ mapping = {
     "link":        <column index>,          # required: an archive.org item URL
     "title":       <column index> | None,   # optional; blank -> looked up / identifier
     "description": <column index> | None,   # optional
-    "extra":       [<column index>, ...],   # optional: kept in films.metadata_json (admin-only)
 }
 Columns are addressed by index (not header text) so duplicate/blank headers work.
 """
@@ -98,7 +97,6 @@ def suggest_mapping(headers: list[str], rows: list[tuple[int, list[str]]]) -> di
         "link": best,
         "title": find(r"\btitle\b", best),
         "description": find(r"description|statement|synopsis|summary", best),
-        "extra": [],
     }
 
 
@@ -117,31 +115,23 @@ def validate_mapping(mapping, ncols: int) -> dict:
             raise ValueError(f"Invalid column for {name}")
         return v
 
-    extra = mapping.get("extra") or []
-    if not isinstance(extra, list) or any(isinstance(x, bool) or not isinstance(x, int) or not 0 <= x < ncols for x in extra):
-        raise ValueError("Invalid extra columns")
     return {
         "link": col("link", required=True),
         "title": col("title"),
         "description": col("description"),
-        "extra": list(dict.fromkeys(extra)),
     }
 
 
 class ImportService:
-    def __init__(self, films, ia, sync):
+    def __init__(self, films, ia, jobs):
         self.films = films
         self.ia = ia
-        self.sync = sync
+        self.jobs = jobs
 
     # -- planning -----------------------------------------------------------
 
-    def build_plan(self, headers, rows, mapping, collection: str | None = None) -> list[dict]:
-        """Classify every row: importable (new/existing) or skipped with a reason.
-
-        "existing" means the film is already in `collection` (the import target;
-        default: the active collection) — the same item in another collection is new.
-        """
+    def build_plan(self, headers, rows, mapping) -> list[dict]:
+        """Classify every row: importable (new/existing) or skipped with a reason."""
         def cell(cells, idx):
             return cells[idx].strip() if idx is not None and idx < len(cells) else ""
 
@@ -164,12 +154,9 @@ class ImportService:
             item["description"] = (
                 self.films._normalize_description(cell(cells, mapping["description"])) or None
             )
-            extras = {headers[i] or f"column {i + 1}": cells[i].strip()
-                      for i in mapping["extra"] if i < len(cells) and cells[i].strip()}
-            item["metadata"] = {"source": "csv_import", "columns": extras} if mapping["extra"] else None
             items.append(item)
 
-        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]], collection)
+        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]])
         for i in items:
             i["exists"] = (not i["skip"]) and i["identifier"] in existing
         return items
@@ -208,19 +195,19 @@ class ImportService:
 
     # -- doing it -----------------------------------------------------------
 
-    def run(self, items: list[dict], on_existing: str, lookup_titles: bool, collection: str | None = None) -> dict:
+    def run(self, items: list[dict], on_existing: str, lookup_titles: bool) -> dict:
         ok = [i for i in items if not i["skip"]]
-        counts = self.films.import_rows(ok, on_existing, collection)
+        counts = self.films.import_rows(ok, on_existing)
         lookup_started = False
         if lookup_titles:
             # Rows that gave no title; update_titles never overwrites a real title.
             ids = [i["identifier"] for i in ok
                    if not i["title"] and not (i["exists"] and on_existing == "skip")]
             if ids:
-                lookup_started = self.sync.start_job(
-                    "titles", lambda progress: self._lookup_titles(ids, progress, collection))
+                lookup_started = self.jobs.start_job(
+                    "titles", lambda progress: self._lookup_titles(ids, progress))
         return {**counts, "skipped_invalid": len(items) - len(ok), "title_lookup_started": lookup_started}
 
-    def _lookup_titles(self, identifiers: list[str], progress, collection: str | None = None) -> int:
+    def _lookup_titles(self, identifiers: list[str], progress) -> int:
         titles = self.ia.fetch_titles(identifiers, progress=progress)
-        return self.films.update_titles(titles, collection)
+        return self.films.update_titles(titles)
