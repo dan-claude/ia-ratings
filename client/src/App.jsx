@@ -1129,6 +1129,9 @@ export default function App() {
 
   const [error, setError] = useState('')
   const [submitError, setSubmitError] = useState('')
+  const [confirmOpen, setConfirmOpen] = useState(false)   // "Are you sure?" before a final submit
+  const [submitting, setSubmitting] = useState(false)     // submit sent, next film not shown yet
+  const [flash, setFlash] = useState('')                  // one-off message above the film
 
   async function apiJson(path, opts = {}) {
     const res = await fetch(path, { credentials: 'include', ...opts })
@@ -1158,6 +1161,7 @@ export default function App() {
     setCategories([])
     setScores({})
     setComment('')
+    setFlash('')
   }
 
   async function loadCategories() {
@@ -1171,9 +1175,12 @@ export default function App() {
     setSubmitError('')
     const { ok, data } = await apiJson('/api/films/next')
     if (ok) {
+      // Film, scores and comment change together, in one render: the old film and its
+      // scores stay on screen until the next film has loaded (no flash of cleared scores).
       setFilm(data)
       setScores({})
       setComment('')
+      window.scrollTo(0, 0)
     } else {
       setFilm(null)
       if (NOTICE_CODES.includes(data?.code)) {
@@ -1184,22 +1191,28 @@ export default function App() {
     }
   }
 
+  // Called after the person confirmed. The scores stay visible (buttons disabled) until the
+  // next film has loaded.
   async function submit() {
-    if (!film?.identifier) return
-    setSubmitError('')
-    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(film.identifier)}/ratings`, {
+    if (!film?.identifier || submitting) return
+    setSubmitError(''); setFlash('')
+    setSubmitting(true)
+    const { ok, status, data } = await apiJson(`/api/films/${encodeURIComponent(film.identifier)}/ratings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scores, comment })
     })
 
-    if (!ok) {
+    if (!ok && status !== 409) {
+      setSubmitting(false); setConfirmOpen(false)
       setSubmitError(data?.error || 'Submit failed')
       return
     }
 
-    // advance
     await loadNextFilm()
+    setConfirmOpen(false)
+    setSubmitting(false)
+    if (status === 409) setFlash('That film had already been submitted (scores can’t be changed). Here is your next film.')
   }
 
   useEffect(() => {
@@ -1231,8 +1244,10 @@ export default function App() {
   }, [me])
 
   const allChosen = !!film?.identifier && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
+  const total = categories.reduce((sum, c) => sum + (scores[c.key] || 0), 0)
 
-  if (window.location.pathname === '/signin' && !me) {
+  // Also when someone is already signed in: opening a new link means they want to switch accounts.
+  if (window.location.pathname === '/signin' && (!me || signinToken)) {
     return (
       <div style={{ padding: 20, maxWidth: 520 }}>
         <h2>IA Film Rater</h2>
@@ -1268,16 +1283,28 @@ export default function App() {
         .grid-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .grid-table th { text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; padding: 10px 8px; }
         .grid-table td { border-bottom: 1px solid #eee; padding: 10px 8px; vertical-align: middle; }
-        .quick { display: flex; flex-wrap: wrap; gap: 6px; }
-        .quick button { padding: 4px 8px; }
-        .quick button.chosen { background: #1a56c4; color: #fff; border-color: #1a56c4; }
         .btn-primary { padding: 10px 14px; }
         .btn-primary[disabled] { opacity: 0.5; cursor: not-allowed; }
         .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .film-panel { margin-top: 14px; }
-        .film-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 14px; color: #444; }
-        .film-desc { margin: 10px 0 8px; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
-        .player { width: 100%; max-width: 900px; aspect-ratio: 16/9; border: 0; margin: 12px 0 16px; }
+        .film-panel { margin-top: 14px; max-width: 900px; }
+        .film-title { margin: 0 0 4px; font-size: 24px; }
+        .film-section { margin: 10px 0; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
+        .film-section h4 { margin: 0 0 4px; font-size: 14px; }
+        .player { width: 100%; aspect-ratio: 16/9; border: 0; margin: 12px 0 16px; }
+        .category { margin: 18px 0; }
+        .category h4 { margin: 0; font-size: 17px; }
+        .category .cat-desc { font-weight: 700; margin: 2px 0 8px; }
+        .scale { display: flex; flex-wrap: wrap; gap: 6px; }
+        .scale button { min-width: 42px; padding: 8px 0; font-size: 16px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; }
+        .scale button.chosen { background: #1a56c4; color: #fff; border-color: #1a56c4; font-weight: 700; }
+        .scale button[disabled] { cursor: not-allowed; opacity: 0.7; }
+        .anchors { font-size: 13px; color: #555; margin-top: 6px; }
+        .total { font-size: 18px; margin: 14px 0 4px; min-height: 28px; }
+        .comment-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
+        .comment-head h4 { margin: 0; font-size: 17px; }
+        .comment-head small { color: #555; }
+        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
+        .modal { background: #fff; border-radius: 10px; padding: 18px; width: 100%; max-width: 440px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         @media (max-width: 768px) {
           .grid-table, .grid-table thead, .grid-table tbody, .grid-table th, .grid-table td, .grid-table tr { display: block; }
           .grid-table thead { display: none; }
@@ -1307,73 +1334,96 @@ export default function App() {
         </div>
       ) : null}
 
+      {flash ? <div role="status" style={{ marginTop: 12, color: '#6b5300' }}>{flash}</div> : null}
+
       {film ? (
         <div className="film-panel">
-          <h3 style={{ margin: '0 0 6px' }}>
+          <h3 className="film-title">
             <a href={film.archiveUrl} target="_blank" rel="noreferrer">{film.title}</a>
             {film.creator ? <span style={{ fontWeight: 400 }}> by {film.creator}</span> : null}
           </h3>
 
           {film.description ? (
-            <div className="film-desc">{linkifyText(film.description)}</div>
+            <div className="film-section">{linkifyText(film.description)}</div>
           ) : null}
           {film.publicDomainWorks ? (
-            <div className="film-desc"><strong>Public domain works used</strong>{'\n'}{linkifyText(film.publicDomainWorks)}</div>
+            <div className="film-section"><h4>List of public domain works used</h4>{linkifyText(film.publicDomainWorks)}</div>
           ) : null}
           {film.aiDisclosure ? (
-            <div className="film-desc"><strong>AI disclosure</strong>{'\n'}{linkifyText(film.aiDisclosure)}</div>
+            <div className="film-section"><h4>AI disclosure</h4>{linkifyText(film.aiDisclosure)}</div>
           ) : null}
 
           {film.embedUrl ? (
             <iframe className="player" src={film.embedUrl} allowFullScreen title={film.title} />
           ) : null}
 
-          <table className="grid-table">
-            <tbody>
-              {categories.map((c) => (
-                <tr key={c.key}>
-                  <td>
-                    <div><strong>{c.label}</strong></div>
-                    <div style={{ fontSize: 13, color: '#555' }}>{c.description}</div>
-                  </td>
-                  <td>
-                    <div className="quick" role="group" aria-label={`Score for ${c.label}`}>
-                      {Array.from({ length: c.max - c.min + 1 }, (_, i) => c.min + i).map((n) => (
-                        <button
-                          key={n}
-                          type="button"
-                          className={scores[c.key] === n ? 'chosen' : ''}
-                          aria-pressed={scores[c.key] === n}
-                          onClick={() => setScores((prev) => ({ ...prev, [c.key]: n }))}
-                        >
-                          {n}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {categories.map((c) => (
+            <div className="category" key={c.key}>
+              <h4>{c.label}</h4>
+              <div className="cat-desc">{c.description}</div>
+              <div className="scale" role="group" aria-label={`Score for ${c.label}`}>
+                {Array.from({ length: c.max - c.min + 1 }, (_, i) => c.min + i).map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={scores[c.key] === n ? 'chosen' : ''}
+                    aria-pressed={scores[c.key] === n}
+                    disabled={submitting}
+                    onClick={() => setScores((prev) => ({ ...prev, [c.key]: n }))}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+              <div className="anchors">
+                {Object.entries(c.anchors || {}).map(([n, label]) => `${label} (${n})`).join(', ')}
+              </div>
+            </div>
+          ))}
 
-          <label style={{ display: 'block', marginTop: 14 }}>
-            <strong>Comments on Film</strong> <span style={{ fontSize: 12, color: '#555' }}>(May be used in presentation)</span>
-            <textarea
-              value={comment}
-              onChange={(e) => setComment(e.target.value.slice(0, 1000))}
-              rows={5}
-              style={{ display: 'block', width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8, marginTop: 4 }}
-            />
-            <span style={{ fontSize: 12, color: '#666' }}>{comment.length} / 1000</span>
-          </label>
+          <div className="total" aria-live="polite">
+            {allChosen
+              ? <>Your score: <strong>{categories.map((c) => scores[c.key]).join(' + ')} = {total}</strong></>
+              : <span style={{ color: '#666', fontSize: 14 }}>Choose a score in every category to see your total.</span>}
+          </div>
+
+          <div className="comment-head">
+            <h4>Comments on Film</h4>
+            <small>(May be used in presentation)</small>
+          </div>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value.slice(0, 1000))}
+            rows={5}
+            disabled={submitting}
+            aria-label="Comments on Film"
+            style={{ display: 'block', width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8, marginTop: 6 }}
+          />
+          <div style={{ fontSize: 12, color: '#666' }}>{comment.length} / 1000</div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-            <button className="btn-primary" onClick={submit} disabled={!allChosen}>
-              Submit & Next
+            <button className="btn-primary" onClick={() => setConfirmOpen(true)} disabled={!allChosen || submitting}>
+              {submitting ? 'Loading next film…' : 'Submit & Next'}
             </button>
           </div>
 
-          {submitError ? <div style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
+          {submitError ? <div role="alert" style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
+        </div>
+      ) : null}
+
+      {confirmOpen ? (
+        <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !submitting) setConfirmOpen(false) }}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <h3 id="confirm-title" style={{ marginTop: 0 }}>Are you sure?</h3>
+            <p style={{ margin: '0 0 6px' }}>Scores cannot be changed after you submit.</p>
+            <p style={{ margin: '0 0 14px' }}><strong>{categories.map((c) => scores[c.key]).join(' + ')} = {total}</strong></p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button onClick={() => setConfirmOpen(false)} disabled={submitting}>Go back</button>
+              <button className="btn-primary" onClick={submit} disabled={submitting} autoFocus>
+                {submitting ? 'Submitting…' : 'Yes, submit'}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

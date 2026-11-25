@@ -5,10 +5,10 @@ Public Domain Day film contest (the films are played from archive.org).
 
 > **Work in progress on the `major-changes` branch.** The app is being rebuilt in
 > steps. Steps 1 (a clean baseline), 2 (invite and sign in by magic link), 3 (spreadsheet import
-> of the new columns) and 4 (distribution and progress views) are done. Step 1 was: a new database schema, the three roles
+> of the new columns), 4 (distribution and progress views) and 5 (the new rating screen) are done. Step 1 was: a new database schema, the three roles
 > (admin / reviewer / judge), hard-coded rating categories, per-person film
 > assignments, and the old archive.org sync, collections, criteria editor, notes and
-> old logins removed. Still to come: the new rating screen, rankings and the
+> old logins removed. Still to come: rankings and the
 > judges' pool, judge exports, and dark mode. Production still runs the old app from `main`.
 
 Reviewers and judges are shown the films assigned to them one at a time (embedded

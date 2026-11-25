@@ -1,3 +1,10 @@
+## Unreleased (branch `major-changes`, step 5: rating screen)
+Not deployed. Client only (no API change).
+- New rating screen layout: film title as a link to the archive.org item with "by <creator>" (the identifier is gone), then description, list of public domain works used, AI disclosure, the film player, and the three categories underneath, each with its name, a bold description and a **1–10 list of buttons only** (no number box, no separate range) with the 1 / 5 / 10 labels. Once all three are chosen the person's total is shown ("10 + 5 + 10 = 25").
+- Comments: one box below the scores headed "Comments on Film" with a smaller "(May be used in presentation)", 1000 characters, optional; no username or timestamp. Submit & Next sits below it and asks "Are you sure? Scores cannot be changed" before sending.
+- The next film no longer flashes empty scores: the old film and scores stay (controls disabled, "Loading next film…") until the next film has loaded; then everything changes together and the page scrolls to the top. If the server says the film was already submitted (409, e.g. from a second tab) the person is moved on with a notice.
+- Opening a sign-in link while already signed in now shows the Sign in button (to switch accounts) instead of the app.
+
 ## Unreleased (branch `major-changes`, step 4: distribution and progress)
 Not deployed.
 - **Distribute films.** `POST /api/admin/distribute` gives every film to 2 different reviewers at random, spread evenly (each reviewer's count within one film of the others). Runs once: 409 `already_distributed` if any assignment exists, plus `no_films` and `too_few_reviewers`. `POST /api/admin/distribute/reset` (body `{"confirm": "RESET"}`) deletes all assignments **and ratings** and empties the judges' pool so it can be run again (deleting ratings too is a decision of mine: a rating without its assignment would block re-distribution).
