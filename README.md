@@ -5,10 +5,10 @@ Public Domain Day film contest (the films are played from archive.org).
 
 > **Work in progress on the `major-changes` branch.** The app is being rebuilt in
 > steps. Steps 1 (a clean baseline), 2 (invite and sign in by magic link), 3 (spreadsheet import
-> of the new columns), 4 (distribution and progress views), 5 (the new rating screen) and 6 (rankings and the judges' pool) and 7 (judge export and final screen) are done. Step 1 was: a new database schema, the three roles
+> of the new columns), 4 (distribution and progress views), 5 (the new rating screen) and 6 (rankings and the judges' pool) 7 (judge export and final screen) and 8 (dark mode) are done. Step 1 was: a new database schema, the three roles
 > (admin / reviewer / judge), hard-coded rating categories, per-person film
 > assignments, and the old archive.org sync, collections, criteria editor, notes and
-> old logins removed. Still to come: dark mode. Production still runs the old app from `main`.
+> old logins removed. All planned steps are implemented; nothing is merged or deployed yet. Production still runs the old app from `main`.
 
 Reviewers and judges are shown the films assigned to them one at a time (embedded
 archive.org player plus the film's details), score it in three categories (Aesthetic,
@@ -25,6 +25,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   them. Each assignment is `assigned`, `seen` or `rated`. A rating (three scores and an
   optional comment of up to 1000 characters) is final.
 - **Judges' results.** After a judge's last film they see their own ranked list (highest total first, with their scores and comments) and can download it as a CSV (*My ranked films* at any time). Reviewers have no export.
+- **Dark mode.** A Moon / Sun button switches between light and dark; the choice is remembered in the browser, and a first visit follows the device setting.
 - **Three roles**, independent checkboxes in the admin panel's Users tab: *admin*
   (manages everything, doesn't rate), *reviewer* and *judge* (both rate their own
   films). A user with no role sees no films.

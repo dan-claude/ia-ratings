@@ -1,3 +1,8 @@
+## Unreleased (branch `major-changes`, step 8: dark mode)
+Not deployed. Client only (no API change).
+- Dark mode with a Moon / Sun toggle (top bar and the sign-in pages). The choice is remembered in the browser (`localStorage`); the first visit follows the device's light/dark setting; the theme is set before the first paint so there is no flash. All colours moved from inline literals to CSS variables in the new `client/src/theme.css`, and native controls follow the theme (`color-scheme`).
+- Fix: opening another person's sign-in link in a browser that was already signed in left the previous person's ranked list / film on screen. The client now resets all per-person state when the signed-in person changes.
+
 ## Unreleased (branch `major-changes`, step 7: judge export and final screen)
 Not deployed.
 - New judge-only routes `GET /api/me/results` and `GET /api/me/results.csv` (403 for anyone without the judge role, admin alone and reviewers included): the judge's own ranked list of the judges' pool films they have rated: rank, title, creator, the three scores, total, comment. Highest total first; equal totals share a rank and are listed alphabetically by title. A film a judge rated earlier as a reviewer is included (they don't rate it twice). Only the caller's own data: no averages or other people's scores. The CSV is `my_ratings.csv`, with formula-like cells prefixed with `'`.

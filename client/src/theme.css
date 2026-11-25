@@ -1,0 +1,92 @@
+/* Colours for light and dark mode. The theme is set by data-theme on <html> (see index.html
+   and ThemeToggle in App.jsx); every colour in the app comes from these variables. */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --text: #222222;
+  --text-2: #444444;
+  --muted: #666666;
+  --muted-2: #555555;
+  --faint: #aaaaaa;
+  --link: #0b57d0;
+  --border: #dddddd;
+  --border-soft: #eeeeee;
+  --border-strong: #cccccc;
+  --surface: #ffffff;
+  --surface-alt: #fafafa;
+  --surface-tab: #f5f5f5;
+  --danger: #aa0000;
+  --danger-bg: #fff6f6;
+  --danger-border: #e0b4b4;
+  --danger-solid: #cc0000;
+  --warn: #aa6600;
+  --warn-bg: #fffaf0;
+  --warn-border: #e0cfa8;
+  --warn-strong-border: #f0a030;
+  --ok: #006600;
+  --ok-bg: #f3faf3;
+  --ok-border: #b9d9b9;
+  --info-bg: #f4f8fc;
+  --info-border: #cfd8e3;
+  --accent: #1a56c4;
+  --on-accent: #ffffff;
+  --selected-bg: #e8f0fe;
+  --badge-bg: #e5ecff;
+  --chip-seen-bg: #fff3cd;
+  --chip-seen-fg: #6b5300;
+  --chip-rated-bg: #d9f2d9;
+  --chip-rated-fg: #14561a;
+  --chip-assigned-bg: #eeeeee;
+  --chip-assigned-fg: #444444;
+  --overlay: rgba(0, 0, 0, 0.4);
+  --shadow: rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #15171a;
+  --text: #e6e6e6;
+  --text-2: #cfcfcf;
+  --muted: #a8a8a8;
+  --muted-2: #b5b5b5;
+  --faint: #7a7a7a;
+  --link: #8ab4f8;
+  --border: #3a3d42;
+  --border-soft: #2b2e33;
+  --border-strong: #4a4d52;
+  --surface: #1f2226;
+  --surface-alt: #1b1e22;
+  --surface-tab: #1b1e22;
+  --danger: #ff8a80;
+  --danger-bg: #3a1f1f;
+  --danger-border: #6e3a3a;
+  --danger-solid: #b3261e;
+  --warn: #e0a24a;
+  --warn-bg: #33291a;
+  --warn-border: #6b5530;
+  --warn-strong-border: #a8741f;
+  --ok: #7ddb8a;
+  --ok-bg: #1d2f20;
+  --ok-border: #3f6b46;
+  --info-bg: #1b2a3a;
+  --info-border: #38506b;
+  --accent: #5b8def;
+  --on-accent: #ffffff;
+  --selected-bg: #263654;
+  --badge-bg: #2a3556;
+  --chip-seen-bg: #4a3d12;
+  --chip-seen-fg: #f1d98a;
+  --chip-rated-bg: #1f4a28;
+  --chip-rated-fg: #a9e7b3;
+  --chip-assigned-bg: #33363b;
+  --chip-assigned-fg: #cfcfcf;
+  --overlay: rgba(0, 0, 0, 0.65);
+  --shadow: rgba(0, 0, 0, 0.6);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+a { color: var(--link); }

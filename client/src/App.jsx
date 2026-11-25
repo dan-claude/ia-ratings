@@ -68,9 +68,9 @@ function describeJob(st) {
 // ---------------------------------------------------------------------------
 
 const STATUS_STYLE = {
-  assigned: { background: '#eee', color: '#444' },
-  seen: { background: '#fff3cd', color: '#6b5300' },
-  rated: { background: '#d9f2d9', color: '#14561a' },
+  assigned: { background: 'var(--border-soft)', color: 'var(--text-2)' },
+  seen: { background: 'var(--chip-seen-bg)', color: 'var(--chip-seen-fg)' },
+  rated: { background: 'var(--chip-rated-bg)', color: 'var(--chip-rated-fg)' },
 }
 
 function StatusChip({ status }) {
@@ -141,7 +141,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
     await load()
   }
 
-  if (!data) return error ? <div style={{ color: '#a00' }}>{error}</div> : <p style={{ color: '#666' }}>Loading…</p>
+  if (!data) return error ? <div style={{ color: 'var(--danger)' }}>{error}</div> : <p style={{ color: 'var(--muted)' }}>Loading…</p>
 
   const o = data.overall
   const raters = data.people.filter((p) => p.roles.includes('reviewer') || p.roles.includes('judge'))
@@ -153,23 +153,23 @@ function ReviewsTab({ apiJson, onDataChanged }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div role="status" style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: '10px 14px', maxWidth: 700 }}>
+      <div role="status" style={{ border: '1px solid var(--info-border)', background: 'var(--info-bg)', borderRadius: 8, padding: '10px 14px', maxWidth: 700 }}>
         <div style={{ fontSize: 15 }}>
           <strong>{o.fully_reviewed}</strong> of <strong>{o.films}</strong> films fully reviewed; <strong>{o.needing_reviews}</strong> still need at least one review.
         </div>
-        <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>
+        <div style={{ fontSize: 12, color: 'var(--muted-2)', marginTop: 4 }}>
           A film is fully reviewed when {o.reviews_per_film} reviewers have submitted. Reviews handed out: {o.assignments.assigned + o.assignments.seen + o.assignments.rated}
           {' '}({o.assignments.assigned} not opened, {o.assignments.seen} opened, {o.assignments.rated} submitted).
         </div>
         <button onClick={load} style={{ fontSize: 12, marginTop: 6 }}>↻ Update</button>
       </div>
 
-      {msg && <div style={{ fontSize: 13, color: msg.startsWith('Error') ? '#a00' : '#060' }}>{msg}</div>}
+      {msg && <div style={{ fontSize: 13, color: msg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{msg}</div>}
 
       {!o.distributed ? (
-        <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 700 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, maxWidth: 700 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Hand out the films</div>
-          <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: 'var(--muted-2)', marginBottom: 8 }}>
             Gives every film to {o.reviews_per_film} different reviewers, chosen at random and spread evenly. It runs once; to run it again you must reset first.
           </div>
           {!confirmDistribute ? (
@@ -183,12 +183,12 @@ function ReviewsTab({ apiJson, onDataChanged }) {
           )}
         </div>
       ) : (
-        <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 700 }}>
+        <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, maxWidth: 700 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Films have been handed out</div>
           {!resetOpen ? (
-            <button onClick={() => { setResetOpen(true); setMsg('') }} style={{ color: '#a00' }}>Reset distribution…</button>
+            <button onClick={() => { setResetOpen(true); setMsg('') }} style={{ color: 'var(--danger)' }}>Reset distribution…</button>
           ) : (
-            <div style={{ border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 8, padding: 12 }}>
+            <div style={{ border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 8, padding: 12 }}>
               <p style={{ margin: '0 0 8px', fontSize: 13 }}>
                 This deletes <strong>every assignment and every rating</strong> ({o.assignments.rated} submitted so far) and empties the judges' pool, so the films can be
                 handed out again. Download a backup first (Backup tab).
@@ -197,7 +197,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
                 <input value={resetText} onChange={(e) => setResetText(e.target.value)} style={{ width: 90 }} autoComplete="off" />
               </label>
               <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button onClick={reset} disabled={resetText !== 'RESET' || busy} style={{ color: '#a00' }}>{busy ? 'Resetting…' : 'Reset distribution'}</button>
+                <button onClick={reset} disabled={resetText !== 'RESET' || busy} style={{ color: 'var(--danger)' }}>{busy ? 'Resetting…' : 'Reset distribution'}</button>
                 <button onClick={() => { setResetOpen(false); setResetText('') }} disabled={busy}>Cancel</button>
               </div>
             </div>
@@ -207,7 +207,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
 
       <div>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>People</div>
-        {raters.length === 0 ? <p style={{ color: '#666', margin: 0 }}>No reviewers or judges yet (Users tab).</p> : (
+        {raters.length === 0 ? <p style={{ color: 'var(--muted)', margin: 0 }}>No reviewers or judges yet (Users tab).</p> : (
           <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
             <thead><tr><th>person</th><th>roles</th><th>not opened</th><th>opened</th><th>submitted</th><th>total</th><th></th></tr></thead>
             <tbody>
@@ -223,7 +223,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
           </table>
         )}
         {person && (
-          <div style={{ marginTop: 10, border: '1px solid #ddd', borderRadius: 8, padding: 10, maxWidth: 700 }}>
+          <div style={{ marginTop: 10, border: '1px solid var(--border)', borderRadius: 8, padding: 10, maxWidth: 700 }}>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>Films for {person.email}</div>
             <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
               {personFilms.map(({ f, a }) => <li key={f.identifier}>{f.title} <StatusChip status={a.status} /></li>)}
@@ -237,7 +237,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
           <span style={{ fontWeight: 600 }}>Films</span>
           <label style={{ fontSize: 13 }}><input type="checkbox" checked={onlyNeeding} onChange={(e) => setOnlyNeeding(e.target.checked)} /> Only films that still need reviews ({o.needing_reviews})</label>
         </div>
-        {films.length === 0 ? <p style={{ color: '#666', margin: 0 }}>{o.films === 0 ? 'No films yet (Import tab).' : 'Every film is fully reviewed.'}</p> : (
+        {films.length === 0 ? <p style={{ color: 'var(--muted)', margin: 0 }}>{o.films === 0 ? 'No films yet (Import tab).' : 'Every film is fully reviewed.'}</p> : (
           <div style={{ overflowX: 'auto' }}>
             <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
               <thead><tr><th>film</th><th>reviews</th><th>reviewers</th><th>add by hand</th></tr></thead>
@@ -246,10 +246,10 @@ function ReviewsTab({ apiJson, onDataChanged }) {
                   const free = raters.filter((p) => !f.assignees.some((a) => a.user_id === p.id))
                   return (
                     <tr key={f.identifier}>
-                      <td>{f.title}{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}</td>
+                      <td>{f.title}{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
                       <td style={{ whiteSpace: 'nowrap' }}>{f.rated} / {o.reviews_per_film}{f.fully_reviewed ? ' ✓' : ''}</td>
                       <td>
-                        {f.assignees.length === 0 ? <span style={{ color: '#aaa' }}>—</span> : f.assignees.map((a) => (
+                        {f.assignees.length === 0 ? <span style={{ color: 'var(--faint)' }}>—</span> : f.assignees.map((a) => (
                           <div key={a.user_id} style={{ whiteSpace: 'nowrap' }}>
                             {a.email} <StatusChip status={a.status} />
                             {a.status !== 'rated' && <button style={{ fontSize: 11, marginLeft: 4 }} title="Take this film off their list" aria-label={`Remove ${f.title} from ${a.email}`} onClick={() => removeAssignment(f, a)}>✕</button>}
@@ -280,7 +280,7 @@ function ReviewsTab({ apiJson, onDataChanged }) {
 // ---------------------------------------------------------------------------
 
 function ScoreCell({ f }) {
-  return f.average === null ? <span style={{ color: '#aaa' }}>—</span> : <>{f.average.toFixed(2)}</>
+  return f.average === null ? <span style={{ color: 'var(--faint)' }}>—</span> : <>{f.average.toFixed(2)}</>
 }
 
 function RankingTable({ films, openId, setOpenId }) {
@@ -293,13 +293,13 @@ function RankingTable({ films, openId, setOpenId }) {
             <Fragment key={f.identifier}>
               <tr>
                 <td>{f.rank ?? '—'}</td>
-                <td>{f.title}{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}{f.in_judges_pool && <span style={{ marginLeft: 6, background: '#e5ecff', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>judges' pool</span>}</td>
+                <td>{f.title}{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}{f.in_judges_pool && <span style={{ marginLeft: 6, background: 'var(--badge-bg)', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>judges' pool</span>}</td>
                 <td><ScoreCell f={f} /></td>
                 <td>{f.reviews}</td>
                 <td>{setOpenId && <button style={{ fontSize: 12 }} onClick={() => setOpenId(openId === f.identifier ? null : f.identifier)}>{openId === f.identifier ? 'Hide details' : 'Details'}</button>}</td>
               </tr>
               {openId === f.identifier && (
-                <tr><td colSpan={5} style={{ whiteSpace: 'pre-wrap', background: '#fafafa', fontSize: 13 }}>
+                <tr><td colSpan={5} style={{ whiteSpace: 'pre-wrap', background: 'var(--surface-alt)', fontSize: 13 }}>
                   <div><strong>Archive.org:</strong> <a href={`https://archive.org/details/${f.identifier}`} target="_blank" rel="noreferrer">{f.identifier}</a></div>
                   {f.description && <div style={{ marginTop: 6 }}><strong>Description</strong>{'\n'}{f.description}</div>}
                   {f.public_domain_works && <div style={{ marginTop: 6 }}><strong>Public domain works used</strong>{'\n'}{f.public_domain_works}</div>}
@@ -371,16 +371,16 @@ function RankingsTab({ apiJson, onDataChanged }) {
     await load(); onDataChanged()
   }
 
-  if (!rank || !pool) return error ? <div style={{ color: '#a00' }}>{error}</div> : <p style={{ color: '#666' }}>Loading…</p>
+  if (!rank || !pool) return error ? <div style={{ color: 'var(--danger)' }}>{error}</div> : <p style={{ color: 'var(--muted)' }}>Loading…</p>
 
   const o = rank.overall
   const blocked = preview?.blocked
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 800 }}>
+      <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, maxWidth: 800 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Judges' pool</div>
-        {msg && <div style={{ fontSize: 13, marginBottom: 8, color: msg.startsWith('Error') ? '#a00' : '#060' }}>{msg}</div>}
+        {msg && <div style={{ fontSize: 13, marginBottom: 8, color: msg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{msg}</div>}
 
         {pool.exists ? (
           <>
@@ -391,21 +391,21 @@ function RankingsTab({ apiJson, onDataChanged }) {
               <thead><tr><th>judge</th><th>films</th><th>not opened</th><th>opened</th><th>submitted</th></tr></thead>
               <tbody>
                 {pool.judges.map((j) => <tr key={j.id}><td style={{ wordBreak: 'break-all' }}>{j.email}</td><td>{j.films}</td><td>{j.assigned}</td><td>{j.seen}</td><td>{j.rated}</td></tr>)}
-                {pool.judges.length === 0 && <tr><td colSpan={5} style={{ color: '#a60' }}>No user has the judge role yet (Users tab).</td></tr>}
+                {pool.judges.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--warn)' }}>No user has the judge role yet (Users tab).</td></tr>}
               </tbody>
             </table>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button onClick={assignAgain}>Give the pool to all judges again</button>
               {!clearing
-                ? <button style={{ color: '#a00' }} onClick={() => setClearing(true)}>Clear the pool…</button>
+                ? <button style={{ color: 'var(--danger)' }} onClick={() => setClearing(true)}>Clear the pool…</button>
                 : <span style={{ fontSize: 13 }}>Clear the pool and the judges' unrated films?{' '}
-                    <button onClick={clearPool} disabled={busy} style={{ color: '#a00' }}>Yes, clear</button>{' '}
+                    <button onClick={clearPool} disabled={busy} style={{ color: 'var(--danger)' }}>Yes, clear</button>{' '}
                     <button onClick={() => setClearing(false)}>Cancel</button></span>}
             </div>
           </>
         ) : (
           <>
-            <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+            <div style={{ fontSize: 13, color: 'var(--muted-2)', marginBottom: 8 }}>
               The top films by the reviewers' average score become the judges' pool. Preview the list first; nothing is applied until you confirm.
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -416,7 +416,7 @@ function RankingsTab({ apiJson, onDataChanged }) {
             </div>
 
             {blocked && (
-              <div role="status" style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
+              <div role="status" style={{ marginTop: 10, border: '1px solid var(--warn-border)', background: 'var(--warn-bg)', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
                 {blocked.error}
                 {blocked.missing && blocked.missing.length > 0 && (
                   <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
@@ -429,7 +429,7 @@ function RankingsTab({ apiJson, onDataChanged }) {
             {preview && !blocked && (
               <div style={{ marginTop: 10 }}>
                 {!preview.valid && (
-                  <div role="alert" style={{ marginBottom: 8, border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
+                  <div role="alert" style={{ marginBottom: 8, border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
                     {preview.tie.message} It can't be confirmed. Valid numbers nearby:{' '}
                     {[preview.tie.nearest_valid_counts.lower, preview.tie.nearest_valid_counts.higher].filter((n) => n !== null).map((n, i) => (
                       <button key={n} style={{ fontSize: 12, marginRight: 6 }} onClick={() => { setCount(String(n)); runPreview(n) }}>{n}</button>
@@ -457,11 +457,11 @@ function RankingsTab({ apiJson, onDataChanged }) {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 600 }}>All films by average score</span>
-          <span style={{ fontSize: 13, color: '#555' }}>{o.fully_reviewed} of {o.films} fully reviewed</span>
+          <span style={{ fontSize: 13, color: 'var(--muted-2)' }}>{o.fully_reviewed} of {o.films} fully reviewed</span>
           <a href="/api/admin/rankings.csv" style={{ fontSize: 13 }}>⬇ Download rankings.csv</a>
           <button onClick={load} style={{ fontSize: 12 }}>↻ Update</button>
         </div>
-        {rank.films.length === 0 ? <p style={{ color: '#666', margin: 0 }}>No films yet.</p> : <RankingTable films={rank.films} openId={openId} setOpenId={setOpenId} />}
+        {rank.films.length === 0 ? <p style={{ color: 'var(--muted)', margin: 0 }}>No films yet.</p> : <RankingTable films={rank.films} openId={openId} setOpenId={setOpenId} />}
       </div>
     </div>
   )
@@ -813,9 +813,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const tabStyle = (t) => ({
     padding: '6px 14px',
     cursor: 'pointer',
-    border: '1px solid #ccc',
-    borderBottom: tab === t ? '1px solid #fff' : '1px solid #ccc',
-    background: tab === t ? '#fff' : '#f5f5f5',
+    border: '1px solid var(--border-strong)',
+    borderBottom: tab === t ? '1px solid var(--surface)' : '1px solid var(--border-strong)',
+    background: tab === t ? 'var(--surface)' : 'var(--surface-tab)',
     marginBottom: -1,
     fontWeight: tab === t ? 600 : 400,
     borderRadius: '6px 6px 0 0',
@@ -824,9 +824,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const cols = rows && rows.length > 0 ? Object.keys(rows[0]) : []
 
   return (
-    <div style={{ marginTop: 12, border: '1px solid #ddd', borderRadius: 10, overflow: 'hidden' }}>
+    <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
+      <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: 'var(--surface-alt)', borderBottom: '1px solid var(--border)' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
         {['actions', 'import', 'users', 'reviews', 'rankings', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
@@ -853,7 +853,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
               </div>
 
               {jobStatus && jobStatus.state !== 'idle' && (
-                <div role="status" style={{ fontSize: 13, color: jobStatus.state === 'error' ? '#a00' : running ? '#666' : '#060' }}>
+                <div role="status" style={{ fontSize: 13, color: jobStatus.state === 'error' ? 'var(--danger)' : running ? 'var(--muted)' : 'var(--ok)' }}>
                   {running && <progress style={{ width: 320, display: 'block', marginBottom: 6 }} {...(jobStatus.total ? { value: jobStatus.done, max: jobStatus.total } : {})} aria-label="Background job progress" />}
                   {describeJob(jobStatus)}
                 </div>
@@ -863,14 +863,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                 <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
               </div>
 
-              <div style={{ borderTop: '1px solid #eee', paddingTop: 12 }}>
+              <div style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 12 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Danger zone</div>
                 {!emptyOpen ? (
-                  <button onClick={() => { setEmptyOpen(true); setEmptyMsg('') }} disabled={running} style={{ color: '#a00' }}>
+                  <button onClick={() => { setEmptyOpen(true); setEmptyMsg('') }} disabled={running} style={{ color: 'var(--danger)' }}>
                     Empty film database…
                   </button>
                 ) : (
-                  <div style={{ border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 8, padding: 12, maxWidth: 520 }}>
+                  <div style={{ border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 8, padding: 12, maxWidth: 520 }}>
                     <p style={{ margin: '0 0 8px', fontSize: 13 }}>
                       This permanently deletes <strong>all films, assignments and ratings</strong>. User accounts are kept.
                       Download a backup first (Backup tab) if you might want the data back.
@@ -889,7 +889,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       <button
                         onClick={emptyDatabase}
                         disabled={emptyConfirmText !== 'EMPTY' || emptying || running}
-                        style={{ color: '#a00' }}
+                        style={{ color: 'var(--danger)' }}
                       >
                         {emptying ? 'Emptying…' : 'Empty database'}
                       </button>
@@ -898,7 +898,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                   </div>
                 )}
                 {emptyMsg && (
-                  <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? '#a00' : '#060' }}>{emptyMsg}</div>
+                  <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{emptyMsg}</div>
                 )}
               </div>
             </div>
@@ -922,34 +922,34 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
           )
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760 }}>
-              <p style={{ margin: 0, fontSize: 13, color: '#555' }}>
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--muted-2)' }}>
                 Add films from a spreadsheet exported as <strong>CSV</strong>.
                 Only rows with an <strong>archive.org</strong> link are imported; other rows (YouTube links, free text, blanks) are skipped. If you map the <strong>Eligible</strong> column, only rows that say <em>yes</em> are imported; <em>no</em>, blank and unclear rows are skipped and listed.
               </p>
 
-              {running && <div role="status" style={{ fontSize: 13, color: '#666' }}>{describeJob(jobStatus)}</div>}
+              {running && <div role="status" style={{ fontSize: 13, color: 'var(--muted)' }}>{describeJob(jobStatus)}</div>}
 
               <div>
                 <input type="file" accept=".csv,text/csv" onChange={handleImportFile} disabled={impBusy} />
                 {impFile && <span style={{ marginLeft: 8, fontSize: 13 }}>{impFile} — {impPreview.row_count} rows</span>}
               </div>
-              {impMsg && <div style={{ fontSize: 13, color: impMsg.startsWith('Error') ? '#a00' : '#060' }}>{impMsg}</div>}
+              {impMsg && <div style={{ fontSize: 13, color: impMsg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{impMsg}</div>}
 
               {impPreview && (
                 <>
-                  <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12 }}>
+                  <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12 }}>
                     <div style={{ fontWeight: 600, marginBottom: 8 }}>Which column is which?</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 12px', alignItems: 'center', fontSize: 14 }}>
                       {IMPORT_FIELDS.map(([key, label, required]) => (
                         <Fragment key={key}>
-                          <label>{label}{required && <span style={{ color: '#a00' }}> *</span>}</label>{select(key, !required)}
+                          <label>{label}{required && <span style={{ color: 'var(--danger)' }}> *</span>}</label>{select(key, !required)}
                         </Fragment>
                       ))}
                     </div>
                   </div>
 
                   <div style={{ overflowX: 'auto' }}>
-                    <div style={{ fontSize: 13, color: '#555', marginBottom: 4 }}>First rows of your file:</div>
+                    <div style={{ fontSize: 13, color: 'var(--muted-2)', marginBottom: 4 }}>First rows of your file:</div>
                     <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 12 }}>
                       <thead><tr>{headers.map((h, i) => <th key={i}>{colLabel(i)}</th>)}</tr></thead>
                       <tbody>
@@ -963,7 +963,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                   </div>
 
                   {sum && (
-                    <div style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: 12, fontSize: 14 }}>
+                    <div style={{ border: '1px solid var(--info-border)', background: 'var(--info-bg)', borderRadius: 8, padding: 12, fontSize: 14 }}>
                       <div>
                         Of <strong>{sum.rows}</strong> rows: <strong>{sum.new}</strong> new film{sum.new === 1 ? '' : 's'}
                         {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in the database</>}
@@ -974,14 +974,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                           {impPlan.samples.map(f => (
                             <li key={f.row}>
                               <strong>{f.title || <em>(title will be looked up)</em>}</strong>{f.creator && <> by {f.creator}</>} — {f.identifier}
-                              {f.exists && <span style={{ color: '#a60' }}> (already in the database)</span>}
+                              {f.exists && <span style={{ color: 'var(--warn)' }}> (already in the database)</span>}
                             </li>
                           ))}
                         </ul>
                       )}
 
                       {sum.ineligible_in_database > 0 && (
-                        <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, fontSize: 13 }}>
+                        <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid var(--warn-border)', background: 'var(--warn-bg)', borderRadius: 6, fontSize: 13 }}>
                           {sum.ineligible_in_database} film{sum.ineligible_in_database === 1 ? ' is' : 's are'} already in the database but now marked not eligible in this
                           spreadsheet. An import never removes films, so {sum.ineligible_in_database === 1 ? 'it stays' : 'they stay'} in the database
                           (delete the film database and re-import if they must go).
@@ -999,7 +999,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       )}
 
                       {sum.existing > 0 && (
-                        <fieldset style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6 }}>
+                        <fieldset style={{ marginTop: 10, border: '1px solid var(--warn-border)', background: 'var(--warn-bg)', borderRadius: 6 }}>
                           <legend style={{ fontSize: 13 }}>{sum.existing} film{sum.existing === 1 ? ' is' : 's are'} already in the database — what should happen to {sum.existing === 1 ? 'it' : 'them'}?</legend>
                           <label style={{ display: 'block', fontSize: 13 }}>
                             <input type="radio" name="on-existing" checked={impOnExisting === 'skip'} onChange={() => setImpOnExisting('skip')} />
@@ -1023,14 +1023,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                         </button>
                         <button onClick={() => { resetImport(); setImpMsg('') }} disabled={impBusy}>Cancel</button>
                       </div>
-                      {needChoice && <div style={{ fontSize: 12, color: '#a60', marginTop: 6 }}>Choose what to do with the existing films to continue.</div>}
+                      {needChoice && <div style={{ fontSize: 12, color: 'var(--warn)', marginTop: 6 }}>Choose what to do with the existing films to continue.</div>}
                     </div>
                   )}
                 </>
               )}
 
               {impResult && (
-                <div role="status" style={{ border: '1px solid #b9d9b9', background: '#f3faf3', borderRadius: 8, padding: 12, fontSize: 14 }}>
+                <div role="status" style={{ border: '1px solid var(--ok-border)', background: 'var(--ok-bg)', borderRadius: 8, padding: 12, fontSize: 14 }}>
                   Imported from <strong>{impResult.file}</strong>: {impResult.result.added} added
                   {impResult.result.updated > 0 && `, ${impResult.result.updated} updated`}
                   {impResult.result.skipped_existing > 0 && `, ${impResult.result.skipped_existing} existing left as they were`}
@@ -1045,7 +1045,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
         {/* ── DB Browser ── */}
         {tab === 'db' && (
           <div>
-            {dbError && <div style={{ color: '#a00', marginBottom: 8 }}>{dbError}</div>}
+            {dbError && <div style={{ color: 'var(--danger)', marginBottom: 8 }}>{dbError}</div>}
 
             {/* Table list */}
             {tables && (
@@ -1054,9 +1054,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                   <button
                     key={t}
                     onClick={() => { setSelTable(t); setOrderBy(''); setLimit('100'); loadRows(t, { orderBy: '', limit: '100' }) }}
-                    style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? '#e8f0fe' : '' }}
+                    style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? 'var(--selected-bg)' : '' }}
                   >
-                    {t} <span style={{ fontSize: 12, color: '#666' }}>({count})</span>
+                    {t} <span style={{ fontSize: 12, color: 'var(--muted)' }}>({count})</span>
                   </button>
                 ))}
                 <button onClick={loadTables} style={{ marginLeft: 4, fontSize: 12 }}>↻ Refresh</button>
@@ -1087,7 +1087,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             {/* Results table */}
             {rows && (
               rows.length === 0
-                ? <p style={{ color: '#666' }}>(no rows)</p>
+                ? <p style={{ color: 'var(--muted)' }}>(no rows)</p>
                 : (
                   <div style={{ overflowX: 'auto' }}>
                     <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
@@ -1099,26 +1099,26 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                           <tr key={i}>
                             {cols.map(c => (
                               <td key={c} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 400 }}>
-                                {row[c] === null ? <span style={{ color: '#aaa' }}>NULL</span> : String(row[c])}
+                                {row[c] === null ? <span style={{ color: 'var(--faint)' }}>NULL</span> : String(row[c])}
                               </td>
                             ))}
                           </tr>
                         ))}
                       </tbody>
                     </table>
-                    <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>{rows.length} row{rows.length !== 1 ? 's' : ''}</div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{rows.length} row{rows.length !== 1 ? 's' : ''}</div>
                   </div>
                 )
             )}
 
-            {dbLoading && !rows && <p style={{ color: '#666' }}>Loading…</p>}
+            {dbLoading && !rows && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
           </div>
         )}
 
         {/* ── Users ── */}
         {tab === 'users' && (
           <div>
-            <form onSubmit={sendInvite} style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 640 }}>
+            <form onSubmit={sendInvite} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 640 }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Invite a person</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
                 <input
@@ -1136,13 +1136,13 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                 </label>
                 <button className="btn-primary" type="submit" disabled={invBusy || !invEmail.trim()}>{invBusy ? 'Inviting…' : 'Invite'}</button>
               </div>
-              <div style={{ fontSize: 12, color: '#555', marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: 'var(--muted-2)', marginTop: 6 }}>
                 The app sends no email: you get a personal sign-in link to pass on. The person can use it as often as they like until it expires.
               </div>
             </form>
 
             {newLink && (
-              <div role="status" style={{ border: '1px solid #b9d9b9', background: '#f3faf3', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 760 }}>
+              <div role="status" style={{ border: '1px solid var(--ok-border)', background: 'var(--ok-bg)', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 760 }}>
                 <div style={{ fontSize: 13, marginBottom: 6 }}>
                   Sign-in link for <strong>{newLink.email}</strong> (valid until {new Date(newLink.expires_at).toLocaleDateString()}).
                   <strong> Copy it now — it can't be shown again.</strong> If it is lost, create a new link.
@@ -1155,8 +1155,8 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
               </div>
             )}
 
-            {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.startsWith('Error') ? '#a00' : '#060', fontSize: 13 }}>{actionMsg}</div>}
-            {usersError && <div style={{ color: '#a00', marginBottom: 8 }}>{usersError}</div>}
+            {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)', fontSize: 13 }}>{actionMsg}</div>}
+            {usersError && <div style={{ color: 'var(--danger)', marginBottom: 8 }}>{usersError}</div>}
             <button onClick={loadUsers} disabled={usersLoading} style={{ marginBottom: 10, fontSize: 12 }}>
               {usersLoading ? 'Loading…' : '↻ Update'}
             </button>
@@ -1193,7 +1193,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                           })}
                         </td>
                         <td>
-                          <div style={{ color: u.link?.state === 'active' ? '#060' : '#a60', marginBottom: 4 }}>{describeLink(u.link)}</div>
+                          <div style={{ color: u.link?.state === 'active' ? 'var(--ok)' : 'var(--warn)', marginBottom: 4 }}>{describeLink(u.link)}</div>
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                             <input
                               type="date" value={expiryFor(u)} min={dateInDays(1)}
@@ -1202,14 +1202,14 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                             />
                             <button style={{ fontSize: 12 }} onClick={() => issueLink(u)}>New link</button>
                             {u.link && <button style={{ fontSize: 12 }} onClick={() => changeExpiry(u)}>Set expiry</button>}
-                            {u.link && <button style={{ fontSize: 12, color: '#a00' }} onClick={() => cancelLink(u)}>Cancel link</button>}
+                            {u.link && <button style={{ fontSize: 12, color: 'var(--danger)' }} onClick={() => cancelLink(u)}>Cancel link</button>}
                           </div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+                <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
                   {users.length} user{users.length !== 1 ? 's' : ''}. A new or cancelled link also logs that person out everywhere.
                 </div>
               </div>
@@ -1224,31 +1224,31 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             {/* Download */}
             <div>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Download backup</div>
-              <p style={{ margin: '0 0 8px', fontSize: 13, color: '#555' }}>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--muted-2)' }}>
                 Exports all tables (users, films, assignments, ratings, etc.) as a single
                 versioned JSON file. The filename includes the UTC timestamp.
               </p>
               <button onClick={downloadBackup}>⬇ Download backup</button>
               {backupStatus && (
-                <div style={{ marginTop: 8, fontSize: 13, color: backupStatus.startsWith('Error') ? '#a00' : '#060' }}>
+                <div style={{ marginTop: 8, fontSize: 13, color: backupStatus.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>
                   {backupStatus}
                 </div>
               )}
             </div>
 
-            <hr style={{ border: 0, borderTop: '1px solid #eee' }} />
+            <hr style={{ border: 0, borderTop: '1px solid var(--border-soft)' }} />
 
             {/* Restore */}
             <div>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Restore from backup</div>
-              <p style={{ margin: '0 0 8px', fontSize: 13, color: '#555' }}>
+              <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--muted-2)' }}>
                 Select a <code>.json</code> backup file. You'll be asked to confirm before
                 any data is overwritten.
               </p>
               <input type="file" accept=".json,application/json" onChange={handleRestoreFile} />
 
               {restorePending && (
-                <div style={{ marginTop: 12, padding: 12, border: '1px solid #f0a030', borderRadius: 8, background: '#fffbf0' }}>
+                <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--warn-strong-border)', borderRadius: 8, background: 'var(--warn-bg)' }}>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>⚠ Confirm restore</div>
                   <div style={{ fontSize: 13, marginBottom: 8 }}>
                     <div>Exported: <strong>{restorePending.exported_at}</strong></div>
@@ -1260,7 +1260,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       ))}
                     </div>
                   </div>
-                  <p style={{ fontSize: 13, color: '#a00', margin: '0 0 10px' }}>
+                  <p style={{ fontSize: 13, color: 'var(--danger)', margin: '0 0 10px' }}>
                     This will <strong>permanently replace</strong> all existing rows in every
                     table included in the backup. This cannot be undone.
                   </p>
@@ -1268,7 +1268,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                     <button
                       onClick={confirmRestore}
                       disabled={restoring}
-                      style={{ background: '#c00', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 4, cursor: 'pointer' }}
+                      style={{ background: 'var(--danger-solid)', color: 'var(--on-accent)', border: 'none', padding: '6px 14px', borderRadius: 4, cursor: 'pointer' }}
                     >
                       {restoring ? 'Restoring…' : 'Yes, restore now'}
                     </button>
@@ -1280,7 +1280,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
               )}
 
               {restoreStatus && (
-                <div style={{ marginTop: 8, fontSize: 13, color: restoreStatus.startsWith('Error') ? '#a00' : '#060' }}>
+                <div style={{ marginTop: 8, fontSize: 13, color: restoreStatus.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>
                   {restoreStatus}
                 </div>
               )}
@@ -1302,7 +1302,7 @@ function ResultsScreen({ results, categories, onBack }) {
   return (
     <div style={{ marginTop: 14 }}>
       <h3 style={{ margin: '0 0 4px' }}>Your ranked films</h3>
-      <div style={{ fontSize: 14, color: '#444', marginBottom: 10 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 10 }}>
         {results.complete
           ? `You have rated all ${results.pool_size} films. Here is your list, highest total first.`
           : `You have rated ${results.rated} of ${results.pool_size} films so far.`}
@@ -1312,7 +1312,7 @@ function ResultsScreen({ results, categories, onBack }) {
         <a href="/api/me/results.csv" style={{ fontSize: 14 }}>⬇ Download my ratings (CSV)</a>
         {onBack && <button onClick={onBack}>Back to rating</button>}
       </div>
-      {results.films.length === 0 ? <p style={{ color: '#666' }}>You haven't rated any of these films yet.</p> : (
+      {results.films.length === 0 ? <p style={{ color: 'var(--muted)' }}>You haven't rated any of these films yet.</p> : (
         <div style={{ overflowX: 'auto' }}>
           <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 14 }}>
             <thead>
@@ -1326,7 +1326,7 @@ function ResultsScreen({ results, categories, onBack }) {
               {results.films.map((f) => (
                 <tr key={f.identifier}>
                   <td>{f.rank}</td>
-                  <td><a href={f.archiveUrl} target="_blank" rel="noreferrer">{f.title}</a>{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}</td>
+                  <td><a href={f.archiveUrl} target="_blank" rel="noreferrer">{f.title}</a>{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
                   {categories.map((c) => <td key={c.key}>{f.scores[c.key]}</td>)}
                   <td><strong>{f.total}</strong></td>
                   <td style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 360 }}>{f.comment}</td>
@@ -1337,6 +1337,37 @@ function ResultsScreen({ results, categories, onBack }) {
         </div>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Light / dark mode: a Moon (switch to dark) / Sun (switch to light) button. The choice is
+// remembered in this browser; the first visit follows the device setting (see index.html).
+// ---------------------------------------------------------------------------
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'
+}
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(currentTheme)
+  function toggle() {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.setAttribute('data-theme', next)
+    try { localStorage.setItem('theme', next) } catch { /* private mode: the choice just isn't remembered */ }
+    setTheme(next)
+  }
+  const dark = theme === 'dark'
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+      style={{ fontSize: 18, lineHeight: 1, padding: '4px 8px' }}
+    >
+      {dark ? '☀️' : '🌙'}
+    </button>
   )
 }
 
@@ -1507,10 +1538,13 @@ export default function App() {
 
   useEffect(() => {
     if (me) {
+      // A different person (e.g. after opening another sign-in link): drop everything of the last one.
+      setFilm(null); setScores({}); setComment(''); setFlash(''); setSubmitError(''); setNotice(null)
+      setResults(null); setShowResults(false); setConfirmOpen(false)
       setLoading(true)
       Promise.all([loadCategories(), loadNextFilm()]).finally(() => setLoading(false))
     }
-  }, [me])
+  }, [me?.id])
 
   // After a judge's last film, go straight to their ranked list (only once a judges' pool exists).
   useEffect(() => {
@@ -1526,11 +1560,11 @@ export default function App() {
   if (window.location.pathname === '/signin' && (!me || signinToken)) {
     return (
       <div style={{ padding: 20, maxWidth: 520 }}>
-        <h2>IA Film Rater</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><h2>IA Film Rater</h2><ThemeToggle /></div>
         {signinToken ? (
           <>
             <p style={{ marginTop: 0 }}>You've been invited to rate films. Press the button to sign in on this device.</p>
-            {signinError ? <div role="alert" style={{ margin: '12px 0', color: '#a00' }}>{signinError}</div> : null}
+            {signinError ? <div role="alert" style={{ margin: '12px 0', color: 'var(--danger)' }}>{signinError}</div> : null}
             <button className="btn-primary" onClick={signIn} disabled={signinBusy}>{signinBusy ? 'Signing in…' : 'Sign in'}</button>
           </>
         ) : (
@@ -1543,7 +1577,7 @@ export default function App() {
   if (!me) {
     return (
       <div style={{ padding: 20, maxWidth: 520 }}>
-        <h2>IA Film Rater</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><h2>IA Film Rater</h2><ThemeToggle /></div>
         {meLoaded ? (
           <p style={{ marginTop: 0 }}>
             Sign-in is by invitation. Open the personal sign-in link an administrator sent you.
@@ -1557,34 +1591,34 @@ export default function App() {
     <div style={{ padding: 20, maxWidth: 980 }}>
       <style>{`
         .grid-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        .grid-table th { text-align: left; font-weight: 600; border-bottom: 2px solid #ddd; padding: 10px 8px; }
-        .grid-table td { border-bottom: 1px solid #eee; padding: 10px 8px; vertical-align: middle; }
+        .grid-table th { text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); padding: 10px 8px; }
+        .grid-table td { border-bottom: 1px solid var(--border-soft); padding: 10px 8px; vertical-align: middle; }
         .btn-primary { padding: 10px 14px; }
         .btn-primary[disabled] { opacity: 0.5; cursor: not-allowed; }
         .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
         .film-panel { margin-top: 14px; max-width: 900px; }
         .film-title { margin: 0 0 4px; font-size: 24px; }
-        .film-section { margin: 10px 0; padding: 10px 12px; border: 1px solid #eee; border-radius: 10px; background: #fafafa; color: #333; white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
+        .film-section { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-alt); color: var(--text); white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
         .film-section h4 { margin: 0 0 4px; font-size: 14px; }
         .player { width: 100%; aspect-ratio: 16/9; border: 0; margin: 12px 0 16px; }
         .category { margin: 18px 0; }
         .category h4 { margin: 0; font-size: 17px; }
         .category .cat-desc { font-weight: 700; margin: 2px 0 8px; }
         .scale { display: flex; flex-wrap: wrap; gap: 6px; }
-        .scale button { min-width: 42px; padding: 8px 0; font-size: 16px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; }
-        .scale button.chosen { background: #1a56c4; color: #fff; border-color: #1a56c4; font-weight: 700; }
+        .scale button { min-width: 42px; padding: 8px 0; font-size: 16px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+        .scale button.chosen { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 700; }
         .scale button[disabled] { cursor: not-allowed; opacity: 0.7; }
-        .anchors { font-size: 13px; color: #555; margin-top: 6px; }
+        .anchors { font-size: 13px; color: var(--muted-2); margin-top: 6px; }
         .total { font-size: 18px; margin: 14px 0 4px; min-height: 28px; }
         .comment-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
         .comment-head h4 { margin: 0; font-size: 17px; }
-        .comment-head small { color: #555; }
-        .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
-        .modal { background: #fff; border-radius: 10px; padding: 18px; width: 100%; max-width: 440px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
+        .comment-head small { color: var(--muted-2); }
+        .modal-backdrop { position: fixed; inset: 0; background: var(--overlay); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
+        .modal { background: var(--surface); color: var(--text); border-radius: 10px; padding: 18px; width: 100%; max-width: 440px; box-shadow: 0 10px 30px var(--shadow); }
         @media (max-width: 768px) {
           .grid-table, .grid-table thead, .grid-table tbody, .grid-table th, .grid-table td, .grid-table tr { display: block; }
           .grid-table thead { display: none; }
-          .grid-table tr { border: 1px solid #eee; border-radius: 10px; margin-bottom: 10px; padding: 10px; }
+          .grid-table tr { border: 1px solid var(--border-soft); border-radius: 10px; margin-bottom: 10px; padding: 10px; }
           .grid-table td { border: 0; padding: 6px 0; }
         }
       `}</style>
@@ -1592,7 +1626,8 @@ export default function App() {
       <div className="topbar">
         <h2 style={{ margin: 0 }}>IA Film Rater</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 14, color: '#444' }}>{me.email}</span>
+          <ThemeToggle />
+          <span style={{ fontSize: 14, color: 'var(--text-2)' }}>{me.email}</span>
           {me.is_judge && <button onClick={() => (showResults ? setShowResults(false) : openResults())}>{showResults ? 'Back to films' : 'My ranked films'}</button>}
           <button onClick={logout}>Logout</button>
         </div>
@@ -1611,15 +1646,15 @@ export default function App() {
       ) : null}
 
       {loading ? <p>Loading…</p> : null}
-      {error ? <div style={{ marginTop: 12, color: '#a00' }}>{error}</div> : null}
+      {error ? <div style={{ marginTop: 12, color: 'var(--danger)' }}>{error}</div> : null}
       {notice && !(showResults && results) ? (
-        <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, maxWidth: 620 }}>
+        <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid var(--info-border)', background: 'var(--info-bg)', borderRadius: 8, maxWidth: 620 }}>
           {notice.text}
-          {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>As an admin, use Admin → Import.</div> : null}
+          {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted-2)' }}>As an admin, use Admin → Import.</div> : null}
         </div>
       ) : null}
 
-      {flash && !(showResults && results) ? <div role="status" style={{ marginTop: 12, color: '#6b5300' }}>{flash}</div> : null}
+      {flash && !(showResults && results) ? <div role="status" style={{ marginTop: 12, color: 'var(--chip-seen-fg)' }}>{flash}</div> : null}
 
       {film && !(showResults && results) ? (
         <div className="film-panel">
@@ -1669,7 +1704,7 @@ export default function App() {
           <div className="total" aria-live="polite">
             {allChosen
               ? <>Your score: <strong>{categories.map((c) => scores[c.key]).join(' + ')} = {total}</strong></>
-              : <span style={{ color: '#666', fontSize: 14 }}>Choose a score in every category to see your total.</span>}
+              : <span style={{ color: 'var(--muted)', fontSize: 14 }}>Choose a score in every category to see your total.</span>}
           </div>
 
           <div className="comment-head">
@@ -1684,7 +1719,7 @@ export default function App() {
             aria-label="Comments on Film"
             style={{ display: 'block', width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8, marginTop: 6 }}
           />
-          <div style={{ fontSize: 12, color: '#666' }}>{comment.length} / 1000</div>
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>{comment.length} / 1000</div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
             <button className="btn-primary" onClick={() => setConfirmOpen(true)} disabled={!allChosen || submitting}>
@@ -1692,7 +1727,7 @@ export default function App() {
             </button>
           </div>
 
-          {submitError ? <div role="alert" style={{ marginTop: 10, color: '#a00' }}>{submitError}</div> : null}
+          {submitError ? <div role="alert" style={{ marginTop: 10, color: 'var(--danger)' }}>{submitError}</div> : null}
         </div>
       ) : null}
 
