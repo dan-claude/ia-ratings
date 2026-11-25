@@ -4,11 +4,11 @@ A React + Flask + SQLite web app for judging the public-domain films submitted t
 Public Domain Day film contest (the films are played from archive.org).
 
 > **Work in progress on the `major-changes` branch.** The app is being rebuilt in
-> steps. Steps 1 (a clean baseline) and 2 (invite and sign in by magic link) are done. Step 1 was: a new database schema, the three roles
+> steps. Steps 1 (a clean baseline), 2 (invite and sign in by magic link) and 3 (spreadsheet import
+> of the new columns) are done. Step 1 was: a new database schema, the three roles
 > (admin / reviewer / judge), hard-coded rating categories, per-person film
 > assignments, and the old archive.org sync, collections, criteria editor, notes and
-> old logins removed. Still to come: the new spreadsheet
-> columns, distributing films to reviewers, the new rating screen, rankings and the
+> old logins removed. Still to come: distributing films to reviewers, the new rating screen, rankings and the
 > judges' pool, judge exports, and dark mode. Production still runs the old app from `main`.
 
 Reviewers and judges are shown the films assigned to them one at a time (embedded
@@ -121,15 +121,19 @@ If your Flask server is on a different port, change the proxy target in
 ## Importing films from a spreadsheet
 
 Films come only from a spreadsheet: export it as **CSV** (Google Sheets: *File → Download →
-Comma-separated values*), then open the admin panel → **Import**. (Creator, public-domain
-works, AI disclosure and eligibility columns are added to this screen in step 3.)
+Comma-separated values*), then open the admin panel → **Import**.
 
-1. Choose the file. The page guesses which column holds the archive.org link, the title and the
-   description (from the cell contents and header names); change any guess with the dropdowns.
+1. Choose the file. The page guesses which column holds the archive.org link, the title, the
+   creator (the "by" credit), the description, the public-domain works used, the AI disclosure and
+   the **Eligible (yes/no)** flag (from the cell contents and header names); change any guess with
+   the dropdowns. Only an explicit **yes** is imported when the Eligible column is mapped; no, blank
+   and unclear rows are skipped and listed, so nothing ineligible reaches the reviewers.
 2. Check the summary. Only rows whose link is an `archive.org/details/<id>` item are imported;
    rows with YouTube links, free text or no link are skipped and listed with the reason.
 3. If some films are already in the database you must choose: **skip** them or **update** them
-   from the spreadsheet (blank cells never erase stored data).
+   from the spreadsheet (blank cells never erase stored data). This is how you re-import after the
+   spreadsheet changed. An import never removes films: a film already loaded whose row now says
+   "no" stays (the page warns you).
 4. Leave "Look up missing titles" ticked if the sheet has no title column: titles are fetched from
    archive.org in the background (progress is shown); otherwise the identifier is the title.
 

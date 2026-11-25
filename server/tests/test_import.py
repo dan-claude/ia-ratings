@@ -100,12 +100,17 @@ def test_parse_csv_errors():
 def test_suggest_mapping_finds_link_by_content_and_description_by_header():
     headers, rows = parse_csv(CSV_TEXT)
     m = suggest_mapping(headers, rows)
-    assert m == {"link": 3, "description": 6, "title": None}
+    assert m == {"link": 3, "title": None, "creator": 1, "description": 6, "public_domain_works": None,
+                 "ai_disclosure": 7, "eligible": None}
 
 
 def test_validate_mapping():
-    assert validate_mapping({"link": 1}, 5) == {"link": 1, "title": None, "description": None}
-    for bad in (None, {}, {"link": 9}, {"link": "1"}, {"link": True}, {"link": 0, "title": -1}):
+    assert validate_mapping({"link": 1}, 5) == {
+        "link": 1, "title": None, "creator": None, "description": None, "public_domain_works": None,
+        "ai_disclosure": None, "eligible": None}
+    assert validate_mapping({"link": 1, "creator": 0, "eligible": 4}, 5)["eligible"] == 4
+    for bad in (None, {}, {"link": 9}, {"link": "1"}, {"link": True}, {"link": 0, "title": -1},
+                {"link": 0, "creator": 5}, {"link": 0, "eligible": "x"}, {"link": 0, "ai_disclosure": True}):
         with pytest.raises(ValueError):
             validate_mapping(bad, 5)
 
@@ -134,7 +139,7 @@ def test_dry_run_classifies_rows_and_writes_nothing(app):
     r = post(client, csv_text=CSV_TEXT, mapping=MAPPING, dry_run=True)
     d = r.get_json()
     assert r.status_code == 200 and d["dry_run"] is True
-    assert d["summary"] == {"rows": 6, "new": 3, "existing": 0, "skipped": 3}
+    assert d["summary"] == {"rows": 6, "new": 3, "existing": 0, "skipped": 3, "ineligible": 0, "ineligible_in_database": 0}
     reasons = {s["row"]: s["reason"] for s in d["skipped"]}
     assert reasons == {2: "Not an archive.org item link", 5: "Not an archive.org item link", 6: "Duplicate of row 3"}
     assert [s["identifier"] for s in d["samples"]] == ["rascayu-videoclip", "jcappello-bathala-teeth-2026", "spirit-and-opportunity"]
@@ -262,3 +267,137 @@ def test_title_lookup_reports_progress_and_blocks_concurrent_import(app, monkeyp
     assert client.post("/api/admin/db/empty", json={"confirm": "EMPTY"}).status_code == 409
     release.set()
     app.services["jobs"].wait(10)
+
+
+# ---- the real form's columns: creator, description, AI disclosure, public-domain works, eligible ----
+
+FORM_HEADER = (
+    "Timestamp,Your name,Your email,URL/Link to your film at archive.org,Where are you located?,Your age,"
+    "Description of your film / Artist's Statement,"
+    "\"If you used AI tools, please explain\","
+    "Please list out each public domain item used in your film,Eligible (yes/no)"
+)
+
+FORM_CSV = "\n".join([
+    FORM_HEADER,
+    '1,Sam B,sam@example.com,https://archive.org/details/film-a,AR,52,"A dark synth remix.\r\nSecond line.","Suno for the music","Nosferatu (1922)\nHis Girl Friday",yes',
+    '2,Kim C,kim@example.com,https://archive.org/details/film-b,NY,40,Footage and a song,,"Metropolis (1927)",YES',
+    '3,Lee D,lee@example.com,https://archive.org/details/film-c,CA,33,Not allowed,No AI,Things,no',
+    '4,Ann E,ann@example.com,https://archive.org/details/film-d,LA,50,Undecided,No AI,Things,',
+    '5,Bo F,bo@example.com,https://archive.org/details/film-e,LA,50,Odd answer,No AI,Things,maybe',
+    '6,Cy G,cy@example.com,https://archive.org/details/film-a,AR,52,Repeat of A,,,yes',
+])
+FORM_MAP = {"link": 3, "title": None, "creator": 1, "description": 6, "public_domain_works": 8, "ai_disclosure": 7, "eligible": 9}
+
+
+def test_suggest_mapping_finds_every_form_column():
+    headers, rows = parse_csv(FORM_CSV)
+    assert suggest_mapping(headers, rows) == FORM_MAP
+
+
+def test_suggested_columns_are_never_reused():
+    headers, rows = parse_csv(FORM_CSV)
+    m = suggest_mapping(headers, rows)
+    used = [v for v in m.values() if v is not None]
+    assert len(used) == len(set(used))
+
+
+def test_parse_eligible():
+    assert import_service.parse_eligible("Yes") is True and import_service.parse_eligible(" y ") is True
+    assert import_service.parse_eligible("NO") is False and import_service.parse_eligible("no.") is False
+    for v in ("", None, "maybe", "yes and no", "   "):
+        assert import_service.parse_eligible(v) is None
+
+
+def test_dry_run_skips_ineligible_blank_and_unclear_eligible_rows(app):
+    client = make_admin(app)
+    d = post(client, csv_text=FORM_CSV, mapping=FORM_MAP, dry_run=True).get_json()
+    assert d["summary"] == {"rows": 6, "new": 2, "existing": 0, "skipped": 4, "ineligible": 1, "ineligible_in_database": 0}
+    reasons = {s["row"]: s["reason"] for s in d["skipped"]}
+    assert reasons == {
+        4: "Not eligible (Eligible is no)",
+        5: "Eligible is blank or not yes/no",
+        6: "Eligible is blank or not yes/no",
+        7: "Duplicate of row 2",
+    }
+    assert [s["identifier"] for s in d["samples"]] == ["film-a", "film-b"]
+    assert d["samples"][0]["creator"] == "Sam B"
+    assert app.repos["films"].count() == 0
+
+
+def test_import_stores_all_the_film_fields_and_ineligible_films_are_not_loaded(app):
+    client = make_admin(app)
+    r = post(client, csv_text=FORM_CSV, mapping=FORM_MAP, on_existing="skip")
+    assert r.status_code == 200 and r.get_json()["result"]["added"] == 2
+    a = app.repos["films"].get_by_identifier("film-a")
+    assert a["creator"] == "Sam B"
+    assert a["description"] == "A dark synth remix.\nSecond line."
+    assert a["public_domain_works"] == "Nosferatu (1922)\nHis Girl Friday"
+    assert a["ai_disclosure"] == "Suno for the music"
+    assert a["in_judges_pool"] == 0
+    b = app.repos["films"].get_by_identifier("film-b")
+    assert (b["creator"], b["ai_disclosure"], b["public_domain_works"]) == ("Kim C", None, "Metropolis (1927)")  # blank cell -> none
+    for ident in ("film-c", "film-d", "film-e"):
+        assert app.repos["films"].get_by_identifier(ident) is None
+    assert app.repos["films"].count() == 2
+
+
+def test_the_details_reach_the_reviewer(app):
+    client = make_admin(app)
+    post(client, csv_text=FORM_CSV, mapping=FORM_MAP, on_existing="skip")
+    rev, rid = make_user(app, "rev@example.com", ["reviewer"])
+    assign(app, rid, app.repos["films"].get_by_identifier("film-a")["id"])
+    f = rev.get("/api/films/next").get_json()
+    assert (f["creator"], f["aiDisclosure"], f["publicDomainWorks"]) == ("Sam B", "Suno for the music", "Nosferatu (1922)\nHis Girl Friday")
+
+
+def test_without_an_eligible_column_every_row_counts(app):
+    client = make_admin(app)
+    m = {**FORM_MAP, "eligible": None}
+    d = post(client, csv_text=FORM_CSV, mapping=m, dry_run=True).get_json()
+    assert d["summary"]["new"] == 5 and d["summary"]["ineligible"] == 0   # only the duplicate is skipped
+
+
+def test_reimport_updates_or_skips_existing_films_and_blank_cells_never_erase(app):
+    client = make_admin(app)
+    post(client, csv_text=FORM_CSV, mapping=FORM_MAP, on_existing="skip")
+    csv2 = FORM_HEADER + "\n" + "\n".join([
+        '1,Samuel B,s@example.com,https://archive.org/details/film-a,AR,52,,,,yes',     # new creator, blanks elsewhere
+        '2,Kim C,k@example.com,https://archive.org/details/film-b,NY,40,Changed,Now used Suno,,yes',
+        '3,New N,n@example.com,https://archive.org/details/film-f,NY,40,Another,,Rear Window,yes',
+    ])
+    plan = post(client, csv_text=csv2, mapping=FORM_MAP, dry_run=True).get_json()["summary"]
+    assert (plan["new"], plan["existing"]) == (1, 2)
+    assert post(client, csv_text=csv2, mapping=FORM_MAP).status_code == 400      # must choose skip / update
+    r = post(client, csv_text=csv2, mapping=FORM_MAP, on_existing="skip").get_json()["result"]
+    assert (r["added"], r["updated"], r["skipped_existing"]) == (1, 0, 2)
+    assert app.repos["films"].get_by_identifier("film-a")["creator"] == "Sam B"   # skip: untouched
+    r = post(client, csv_text=csv2, mapping=FORM_MAP, on_existing="update").get_json()["result"]
+    assert (r["added"], r["updated"]) == (0, 3)
+    a = app.repos["films"].get_by_identifier("film-a")
+    assert a["creator"] == "Samuel B" and a["description"] == "A dark synth remix.\nSecond line."   # blank cells kept the old text
+    assert a["ai_disclosure"] == "Suno for the music" and a["public_domain_works"].startswith("Nosferatu")
+    b = app.repos["films"].get_by_identifier("film-b")
+    assert (b["description"], b["ai_disclosure"], b["public_domain_works"]) == ("Changed", "Now used Suno", "Metropolis (1927)")
+
+
+def test_a_film_already_loaded_is_never_removed_when_its_row_now_says_no(app):
+    client = make_admin(app)
+    post(client, csv_text=FORM_CSV, mapping=FORM_MAP, on_existing="skip")
+    fid = app.repos["films"].get_by_identifier("film-a")["id"]
+    csv2 = FORM_HEADER + "\n" + '1,Sam B,s@example.com,https://archive.org/details/film-a,AR,52,Changed,,,no'
+    d = post(client, csv_text=csv2, mapping=FORM_MAP, dry_run=True).get_json()
+    assert d["summary"]["ineligible"] == 1 and d["summary"]["ineligible_in_database"] == 1
+    assert post(client, csv_text=csv2, mapping=FORM_MAP, on_existing="update").status_code == 400   # nothing importable
+    assert app.repos["films"].get_by_identifier("film-a")["id"] == fid
+    assert app.repos["films"].get_by_identifier("film-a")["description"] != "Changed"
+
+
+def test_an_eligible_row_after_an_ineligible_duplicate_is_still_imported(app):
+    client = make_admin(app)
+    csv_text = FORM_HEADER + "\n" + "\n".join([
+        '1,A,a@example.com,https://archive.org/details/dup,x,1,first,,,no',
+        '2,B,b@example.com,https://archive.org/details/dup,x,1,second,,,yes',
+    ])
+    d = post(client, csv_text=csv_text, mapping=FORM_MAP, dry_run=True).get_json()
+    assert d["summary"]["new"] == 1 and d["samples"][0]["row"] == 3

@@ -1,3 +1,10 @@
+## Unreleased (branch `major-changes`, step 3: import)
+Not deployed.
+- The CSV import now maps the form's other columns: `creator` (the "by" credit), `public_domain_works`, `ai_disclosure`, plus the existing `link`, `title`, `description`, and a new optional `eligible` (yes/no). They are stored on the film (the columns already existed) and reach reviewers through the film object. `suggested_mapping` guesses all of them from header names (each column used once). **API:** the `mapping` of `POST /api/admin/import` and `suggested_mapping` of the preview gain these keys; dry-run samples gain `creator`; the summary gains `ineligible` and `ineligible_in_database`.
+- Eligibility: with `eligible` mapped only rows saying yes are imported; `no`, blank and unclear cells are skipped and listed with the reason (decided with the owner: nothing ambiguous is guessed). Ineligible films are never loaded. An import never deletes a film: one already loaded whose row now says no stays, and the dry run counts it as `ineligible_in_database` (the Import tab warns). Re-importing works as before (skip, or update with blank cells never erasing stored text).
+- Cell text is normalised (CRLF to LF, non-breaking spaces, trimmed); empty cells store nothing.
+- Import tab: a dropdown per field, "not eligible" count and the new warning, creator shown in the samples.
+
 ## Unreleased (branch `major-changes`, step 2: login by invite)
 Not deployed. **Magic-link login is now the only way in.**
 - New `POST /api/auth/signin` `{"token"}` (rate-limited 10/min, 50/hour per client address; the rate-limit and body-size tests moved here). 401 with one message for unknown, cancelled and expired links. The client route `/signin` shows a **Sign in** button and nothing happens until it is pressed; the secret lives in the URL fragment (`/signin#<secret>`), so it isn't sent to the server on page load, and is removed from the address bar once read. `/signin` is served by an explicit route (the static route at `/` would otherwise 404 it).

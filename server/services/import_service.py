@@ -6,11 +6,21 @@ from archive.org, so a YouTube link, a bare title or free text is skipped (and
 reported) rather than creating a film that can't be shown.
 
 mapping = {
-    "link":        <column index>,          # required: an archive.org item URL
-    "title":       <column index> | None,   # optional; blank -> looked up / identifier
-    "description": <column index> | None,   # optional
+    "link":                <column index>,          # required: an archive.org item URL
+    "title":               <column index> | None,   # optional; blank -> looked up / identifier
+    "creator":             <column index> | None,   # optional: the "by" credit
+    "description":         <column index> | None,   # optional
+    "public_domain_works": <column index> | None,   # optional: list of public-domain works used
+    "ai_disclosure":       <column index> | None,   # optional
+    "eligible":            <column index> | None,   # optional yes/no column
 }
 Columns are addressed by index (not header text) so duplicate/blank headers work.
+
+Eligibility: when an `eligible` column is mapped, only rows saying "yes" are imported.
+"no" rows are skipped as not eligible; blank or unclear cells are skipped too (and
+reported) rather than guessed at. Without an `eligible` column every row counts as
+eligible. A film that is already in the database is never deleted by an import, even
+if its row now says "no" (that is reported as a warning).
 """
 import csv
 import io
@@ -24,6 +34,27 @@ MAX_ROWS = 5000
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 _ARCHIVE_HOSTS = {"archive.org", "www.archive.org"}
 _ITEM_PATHS = {"details", "embed", "download"}
+
+# Mapping fields in display order; "link" is the only required one.
+MAPPING_FIELDS = ["link", "title", "creator", "description", "public_domain_works", "ai_disclosure", "eligible"]
+_YES = {"yes", "y", "true", "1"}
+_NO = {"no", "n", "false", "0"}
+
+
+def parse_eligible(value: Optional[str]) -> Optional[bool]:
+    """True for yes, False for no, None for blank or anything else."""
+    v = (value or "").strip().lower().rstrip(".!")
+    if v in _YES:
+        return True
+    if v in _NO:
+        return False
+    return None
+
+
+def clean_text(value: Optional[str]) -> Optional[str]:
+    """Plain text from a spreadsheet cell: uniform newlines, no non-breaking spaces, trimmed; None if empty."""
+    v = (value or "").replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ").strip()
+    return v or None
 
 
 def parse_archive_url(value: Optional[str]) -> Optional[str]:
@@ -79,25 +110,33 @@ def parse_csv(text: str) -> tuple[list[str], list[tuple[int, list[str]]]]:
 
 
 def suggest_mapping(headers: list[str], rows: list[tuple[int, list[str]]]) -> dict:
-    """Guess a mapping: the link column is the one whose cells most often are archive.org links."""
+    """Guess a mapping. The link column is the one whose cells most often are archive.org links;
+    the others are found from header names, each column used at most once."""
     best, best_n = None, 0
     for i in range(len(headers)):
         n = sum(1 for _, cells in rows if i < len(cells) and parse_archive_url(cells[i]))
         if n > best_n:
             best, best_n = i, n
 
-    def find(pattern: str, skip: Optional[int]) -> Optional[int]:
+    used = {best} if best is not None else set()
+
+    def find(pattern: str) -> Optional[int]:
         rx = re.compile(pattern, re.IGNORECASE)
         for i, h in enumerate(headers):
-            if i != skip and rx.search(h):
+            if i not in used and rx.search(h):
+                used.add(i)
                 return i
         return None
 
-    return {
-        "link": best,
-        "title": find(r"\btitle\b", best),
-        "description": find(r"description|statement|synopsis|summary", best),
-    }
+    # Order matters: the longer, more specific headers claim their column first.
+    mapping = {"link": best}
+    mapping["eligible"] = find(r"\beligib")
+    mapping["public_domain_works"] = find(r"public[ -]domain|items? used")
+    mapping["ai_disclosure"] = find(r"\bAI\b|artificial intelligence")
+    mapping["description"] = find(r"description|statement|synopsis|summary")
+    mapping["creator"] = find(r"your name|creator|film ?maker|director|\bby\b")
+    mapping["title"] = find(r"\btitle\b")
+    return {k: mapping[k] for k in MAPPING_FIELDS}
 
 
 def validate_mapping(mapping, ncols: int) -> dict:
@@ -115,11 +154,7 @@ def validate_mapping(mapping, ncols: int) -> dict:
             raise ValueError(f"Invalid column for {name}")
         return v
 
-    return {
-        "link": col("link", required=True),
-        "title": col("title"),
-        "description": col("description"),
-    }
+    return {name: col(name, required=(name == "link")) for name in MAPPING_FIELDS}
 
 
 class ImportService:
@@ -139,26 +174,38 @@ class ImportService:
         for rownum, cells in rows:
             link = cell(cells, mapping["link"])
             ident = parse_archive_url(link)
-            item = {"row": rownum, "identifier": ident, "skip": None}
+            item = {"row": rownum, "identifier": ident, "skip": None, "ineligible": False}
             if not link:
                 item["skip"] = "No link"
             elif not ident:
                 item["skip"] = "Not an archive.org item link"
-            elif ident in first_row_for:
+            elif mapping.get("eligible") is not None:
+                verdict = parse_eligible(cell(cells, mapping["eligible"]))
+                if verdict is False:
+                    item["skip"], item["ineligible"] = "Not eligible (Eligible is no)", True
+                elif verdict is None:
+                    item["skip"] = "Eligible is blank or not yes/no"
+            if not item["skip"] and ident in first_row_for:
                 item["skip"] = f"Duplicate of row {first_row_for[ident]}"
             if item["skip"]:
                 items.append(item)
                 continue
             first_row_for[ident] = rownum
             item["title"] = cell(cells, mapping["title"]) or None
+            item["creator"] = clean_text(cell(cells, mapping.get("creator")))
             item["description"] = (
-                self.films._normalize_description(cell(cells, mapping["description"])) or None
+                self.films._normalize_description(clean_text(cell(cells, mapping["description"]))) or None
             )
+            item["public_domain_works"] = clean_text(cell(cells, mapping.get("public_domain_works")))
+            item["ai_disclosure"] = clean_text(cell(cells, mapping.get("ai_disclosure")))
             items.append(item)
 
-        existing = self.films.existing_identifiers([i["identifier"] for i in items if not i["skip"]])
+        wanted = [i["identifier"] for i in items if i["identifier"] and (not i["skip"] or i["ineligible"])]
+        existing = self.films.existing_identifiers(wanted)
         for i in items:
             i["exists"] = (not i["skip"]) and i["identifier"] in existing
+            # A "no" row for a film that is already loaded: the import leaves it alone (never deletes).
+            i["ineligible_in_database"] = i["ineligible"] and i["identifier"] in existing
         return items
 
     @staticmethod
@@ -169,6 +216,8 @@ class ImportService:
             "new": sum(1 for i in ok if not i["exists"]),
             "existing": sum(1 for i in ok if i["exists"]),
             "skipped": len(items) - len(ok),
+            "ineligible": sum(1 for i in items if i["ineligible"]),
+            "ineligible_in_database": sum(1 for i in items if i["ineligible_in_database"]),
         }
 
     @staticmethod
@@ -186,6 +235,7 @@ class ImportService:
                 "row": i["row"],
                 "identifier": i["identifier"],
                 "title": i["title"],            # None -> will be looked up / identifier
+                "creator": i["creator"],
                 "description": desc[:200] + ("…" if len(desc) > 200 else ""),
                 "exists": i["exists"],
             })

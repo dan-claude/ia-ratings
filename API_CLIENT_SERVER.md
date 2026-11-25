@@ -4,8 +4,8 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 2: login by
-invite). **Work in progress:** the contract below describes the app after step 2.
+Last verified against the code: 2026-11-25 (`major-changes` branch, step 3: import).
+**Work in progress:** the contract below describes the app after step 3.
 Film distribution and the ranking/judge screens arrive in later steps and will be
 added here as they land.
 
@@ -230,36 +230,45 @@ Request: `{ "csv_text": "<the CSV file's text>" }` (max 2 MB, 5000 data rows; fi
   "headers": ["Timestamp", "…", "URL/Link to your film at archive.org", "…"],
   "row_count": 5,
   "sample_rows": [["11/11/2026 …", "…"]],
-  "suggested_mapping": { "link": 3, "title": null, "description": 6 }
+  "suggested_mapping": { "link": 3, "title": null, "creator": 1, "description": 6,
+                         "public_domain_works": 8, "ai_disclosure": 7, "eligible": 9 }
 }
 ```
 `suggested_mapping` indexes are 0-based positions in `headers`; `link` is the column whose cells
-most often are archive.org item links. 400 `{ "error" }` for an empty/unreadable/oversized file.
-(Creator, public-domain works, AI disclosure and eligibility columns are added to the
-mapping in the import step.)
+most often are archive.org item links; the others are guessed from header names (each column
+at most once; `null` when nothing matched). 400 `{ "error" }` for an empty/unreadable/oversized file.
 
 ### POST /api/admin/import — admin
 Imports films from a CSV using a column mapping.
 ```json
 {
   "csv_text": "…",
-  "mapping": { "link": 3, "title": null, "description": 6 },
+  "mapping": { "link": 3, "title": null, "creator": 1, "description": 6,
+               "public_domain_works": 8, "ai_disclosure": 7, "eligible": 9 },
   "dry_run": false,
   "on_existing": "skip",
   "lookup_titles": true
 }
 ```
-- `mapping.link` (required) — 0-based column of the archive.org link. `title` / `description`
-  optional (`null` = none).
+- `mapping.link` (required) — 0-based column of the archive.org link. The rest are optional
+  (`null` or missing = none): `title`, `creator` (the "by" credit), `description`,
+  `public_domain_works`, `ai_disclosure` (all plain text, stored on the film and shown to
+  reviewers) and `eligible`.
 - **Only archive.org items are imported.** A link must be `archive.org/details/<id>` (also
   `/embed/<id>`, `/download/<id>`; host exactly `archive.org` or `www.archive.org`). Rows with no
   link, a non-archive.org link (e.g. YouTube) or free text are skipped; a repeated item in the file
   is skipped as a duplicate of its first row.
+- **Eligibility.** When `eligible` is mapped, only rows whose cell says **yes** (`yes`, `y`, `true`,
+  `1`, any case) are imported. `no` rows are skipped (`"Not eligible (Eligible is no)"`); blank or
+  unclear cells are skipped too (`"Eligible is blank or not yes/no"`), never guessed. Without an
+  `eligible` mapping every row counts as eligible. An import never deletes films: one already in
+  the database whose row now says no is left in place and counted in `ineligible_in_database`.
 - `dry_run: true` — reports without writing: `{ "ok": true, "dry_run": true, "summary":
-  { "rows", "new", "existing", "skipped" }, "skipped": [{ "row", "reason" }], "samples": [...] }`
+  { "rows", "new", "existing", "skipped", "ineligible", "ineligible_in_database" }, "skipped": [{ "row", "reason" }], "samples": [...] }`
   (`row` is the spreadsheet row number, header = 1; `skipped` lists at most 100).
 - Real import requires `on_existing`: `"skip"` leaves films already in the database untouched,
-  `"update"` overwrites the fields the sheet provides (blank cells never erase stored data).
+  `"update"` overwrites the fields the sheet provides (blank cells never erase stored data;
+  this is how a re-import after the spreadsheet changed works).
   New films get the identifier as title when no title is given. A film is identified by its
   archive.org identifier alone (unique).
 - `lookup_titles: true` — for rows without a title, starts a background job that fetches titles

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
 function linkifyText(text) {
   const urlRegex = /(https?:\/\/[^\s]+)/g
@@ -14,6 +14,21 @@ function linkifyText(text) {
     }
     return <a key={i} href={part} target="_blank" rel="noreferrer">{part}</a>
   })
+}
+
+// The spreadsheet columns an import can use (key, label, required).
+const IMPORT_FIELDS = [
+  ['link', 'Archive.org link', true],
+  ['title', 'Title', false],
+  ['creator', 'Creator (the “by” credit)', false],
+  ['description', 'Description', false],
+  ['public_domain_works', 'Public domain works used', false],
+  ['ai_disclosure', 'AI disclosure', false],
+  ['eligible', 'Eligible (yes/no)', false],
+]
+
+function blankMapping() {
+  return Object.fromEntries(IMPORT_FIELDS.map(([key]) => [key, null]))
 }
 
 // A date input value (YYYY-MM-DD, local) `days` from now.
@@ -61,7 +76,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [impFile, setImpFile] = useState('')          // file name, for display
   const [impCsv, setImpCsv] = useState('')            // CSV text
   const [impPreview, setImpPreview] = useState(null)  // { headers, row_count, sample_rows }
-  const [impMap, setImpMap] = useState({ link: null, title: null, description: null })
+  const [impMap, setImpMap] = useState(blankMapping())
   const [impPlan, setImpPlan] = useState(null)        // dry-run result
   const [impOnExisting, setImpOnExisting] = useState('')  // '' | 'skip' | 'update' — admin must choose if any exist
   const [impLookup, setImpLookup] = useState(true)
@@ -279,7 +294,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
   function resetImport() {
     setImpFile(''); setImpCsv(''); setImpPreview(null); setImpPlan(null)
-    setImpMap({ link: null, title: null, description: null })
+    setImpMap(blankMapping())
     setImpOnExisting('')
   }
 
@@ -499,7 +514,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 760 }}>
               <p style={{ margin: 0, fontSize: 13, color: '#555' }}>
                 Add films from a spreadsheet exported as <strong>CSV</strong>.
-                Only rows with an <strong>archive.org</strong> link are imported; other rows (YouTube links, free text, blanks) are skipped.
+                Only rows with an <strong>archive.org</strong> link are imported; other rows (YouTube links, free text, blanks) are skipped. If you map the <strong>Eligible</strong> column, only rows that say <em>yes</em> are imported; <em>no</em>, blank and unclear rows are skipped and listed.
               </p>
 
               {running && <div role="status" style={{ fontSize: 13, color: '#666' }}>{describeJob(jobStatus)}</div>}
@@ -515,9 +530,11 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                   <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12 }}>
                     <div style={{ fontWeight: 600, marginBottom: 8 }}>Which column is which?</div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '8px 12px', alignItems: 'center', fontSize: 14 }}>
-                      <label>Archive.org link <span style={{ color: '#a00' }}>*</span></label>{select('link', false)}
-                      <label>Title</label>{select('title', true)}
-                      <label>Description</label>{select('description', true)}
+                      {IMPORT_FIELDS.map(([key, label, required]) => (
+                        <Fragment key={key}>
+                          <label>{label}{required && <span style={{ color: '#a00' }}> *</span>}</label>{select(key, !required)}
+                        </Fragment>
+                      ))}
                     </div>
                   </div>
 
@@ -540,17 +557,25 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       <div>
                         Of <strong>{sum.rows}</strong> rows: <strong>{sum.new}</strong> new film{sum.new === 1 ? '' : 's'}
                         {sum.existing > 0 && <>, <strong>{sum.existing}</strong> already in the database</>}
-                        , <strong>{sum.skipped}</strong> skipped.
+                        , <strong>{sum.skipped}</strong> skipped{sum.ineligible > 0 && <> (<strong>{sum.ineligible}</strong> not eligible)</>}.
                       </div>
                       {impPlan.samples.length > 0 && (
                         <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13 }}>
                           {impPlan.samples.map(f => (
                             <li key={f.row}>
-                              <strong>{f.title || <em>(title will be looked up)</em>}</strong> — {f.identifier}
+                              <strong>{f.title || <em>(title will be looked up)</em>}</strong>{f.creator && <> by {f.creator}</>} — {f.identifier}
                               {f.exists && <span style={{ color: '#a60' }}> (already in the database)</span>}
                             </li>
                           ))}
                         </ul>
+                      )}
+
+                      {sum.ineligible_in_database > 0 && (
+                        <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, fontSize: 13 }}>
+                          {sum.ineligible_in_database} film{sum.ineligible_in_database === 1 ? ' is' : 's are'} already in the database but now marked not eligible in this
+                          spreadsheet. An import never removes films, so {sum.ineligible_in_database === 1 ? 'it stays' : 'they stay'} in the database
+                          (delete the film database and re-import if they must go).
+                        </div>
                       )}
 
                       {impPlan.skipped.length > 0 && (
