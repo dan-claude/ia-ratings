@@ -4,8 +4,8 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 3: import).
-**Work in progress:** the contract below describes the app after step 3.
+Last verified against the code: 2026-11-25 (`major-changes` branch, step 4: distribution).
+**Work in progress:** the contract below describes the app after step 4.
 Film distribution and the ranking/judge screens arrive in later steps and will be
 added here as they land.
 
@@ -119,8 +119,7 @@ Keys: `aesthetic`, `sound`, `appeal`. Every score is a whole number `min`–`max
 
 ## Films and ratings
 
-People only ever see films **assigned to them** (assignments are created by the
-admin; the distribution button is added in a later step). Each assignment has a
+People only ever see films **assigned to them** (by the admin's distribution button or by hand). Each assignment has a
 status: `assigned` (handed out, not opened), `seen` (opened) or `rated` (submitted).
 
 Film object:
@@ -281,6 +280,56 @@ Imports films from a CSV using a column mapping.
 Errors: 400 (bad mapping/file, missing or invalid `on_existing`, or no importable rows);
 409 while the background job is running.
 
+### Handing films out, and progress
+
+Every film is given to **2 different reviewers** (users with the `reviewer` role) by one admin
+button. It runs once; a separate reset (with confirmation) clears everything so it can run
+again. Each assignment has a status (`assigned` → `seen` → `rated`, set by the reviewer's own
+actions) that these views read. A film is **fully reviewed** when at least 2 people have
+`rated` it.
+
+#### POST /api/admin/distribute — admin
+No body. Gives every film in the database to 2 different reviewers at random. Each film goes
+to the reviewers who currently have the fewest films (ties broken at random), so everyone's
+share is within one film of everyone else's. 200:
+```json
+{ "ok": true, "films": 300, "reviewers": 25, "assignments": 600, "per_reviewer": { "min": 24, "max": 24 } }
+```
+409 with a `code` (nothing is changed): `already_distributed` (any assignment exists; reset first),
+`no_films`, `too_few_reviewers` (fewer than 2 users hold the reviewer role).
+
+#### POST /api/admin/distribute/reset — admin
+**Destructive.** Deletes **every assignment and every rating and score** (a rating without its
+assignment would block handing the film out again) and empties the judges' pool, in one
+transaction. Users and films are kept. Body must be `{ "confirm": "RESET" }` (else 400).
+200: `{ "ok": true, "deleted": { "rating_scores": 3, "ratings": 1, "assignments": 8, "judges_pool_cleared": 0 } }`
+
+#### GET /api/admin/progress — admin
+```json
+{
+  "overall": { "films": 300, "fully_reviewed": 212, "needing_reviews": 88, "reviews_per_film": 2,
+               "distributed": true, "assignments": { "assigned": 40, "seen": 12, "rated": 548 } },
+  "people": [ { "id": 2, "email": "alice@example.com", "roles": ["reviewer"],
+                "assigned": 3, "seen": 1, "rated": 20, "total": 24 } ],
+  "films": [ { "identifier": "film-a", "title": "A Film", "creator": "Sam B", "in_judges_pool": false,
+               "rated": 1, "fully_reviewed": false,
+               "assignees": [ { "user_id": 2, "email": "alice@example.com", "status": "rated" },
+                              { "user_id": 3, "email": "bob@example.com", "status": "seen" } ] } ]
+}
+```
+`people` lists everyone with the reviewer or judge role, plus anyone who still has films;
+`films` is in database order. A person's films are the `films` entries that list them as an assignee.
+
+#### POST /api/admin/assignments — admin
+Hands one film to one person by hand: `{ "user_id": 3, "identifier": "film-a" }`. The person must
+hold the reviewer or judge role. 201 `{ "ok": true, "added": true }`; 200 with `"added": false` if
+they already had it. Errors: 400 (bad body, or the user holds neither role), 404 (unknown user or film).
+Hand-assigned films count as extra reviews; they don't change the "2 per film" rule.
+
+#### DELETE /api/admin/assignments/<user_id>/<identifier> — admin
+Takes a film off a person's list. 200 `{ "ok": true }`. Errors: 404 (unknown film, or not assigned
+to them), 409 (they have already rated it: ratings are final).
+
 ### POST /api/admin/db/empty — admin
 **Destructive.** Deletes every film and all assignments, ratings and scores (user accounts
 and migrations are kept). The body must contain the confirmation word:
@@ -433,7 +482,9 @@ The client (`client/src/App.jsx`) calls:
 - `/api/me`, `/api/auth/signin`, `/api/auth/logout`
 - `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
 - Admin panel: `/api/admin/jobs/status`, `/api/admin/import/preview`, `/api/admin/import`,
-  `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/users`, `/api/admin/users/<id>/roles`,
+  `/api/admin/db/empty`, `/api/admin/progress`, `/api/admin/distribute`, `/api/admin/distribute/reset`,
+  `/api/admin/assignments` (POST) and `/api/admin/assignments/<user_id>/<identifier>` (DELETE),
+  `/api/admin/ratings.csv`, `/api/admin/users`, `/api/admin/users/<id>/roles`,
   `/api/admin/users/<id>/login-link` (POST, PUT, DELETE),
   `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab
   uses `/api/admin/users`), `/api/admin/db/backup`, `/api/admin/db/restore`

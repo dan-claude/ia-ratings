@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, current_app, Response, session, request
 from ..auth_session import current_user_id
 from ..db import SCHEMA_VERSION
 from ..repositories.user_repo import ROLE_COLUMNS
+from ..services.distribution_service import DistributionError
 from ..services import import_service
 
 admin_bp = Blueprint("admin", __name__)
@@ -449,6 +450,85 @@ def db_restore():
         })
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Handing films out to reviewers, and progress
+# ---------------------------------------------------------------------------
+
+@admin_bp.get("/api/admin/progress")
+def progress():
+    """How far reviewing has got: overall counter, one row per person, one row per film."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(current_app.services["distribution"].progress())
+
+
+@admin_bp.post("/api/admin/distribute")
+def distribute():
+    """Give every film to two different reviewers, chosen at random. Runs once (409 if films
+    have already been handed out; reset first)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        result = current_app.services["distribution"].distribute()
+    except DistributionError as exc:
+        return jsonify({"error": str(exc), "code": exc.code}), 409
+    current_app.logger.warning("admin.distribute user_id=%s result=%s", session.get("user_id"), result)
+    return jsonify({"ok": True, **result})
+
+
+@admin_bp.post("/api/admin/distribute/reset")
+def distribute_reset():
+    """**Destructive.** Delete every assignment and every rating, and clear the judges' pool, so
+    the films can be handed out again. Body `{"confirm": "RESET"}`."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") != "RESET":
+        return jsonify({"error": 'Send {"confirm": "RESET"} to reset the distribution'}), 400
+    deleted = current_app.services["distribution"].reset()
+    current_app.logger.warning("admin.distribute.reset user_id=%s deleted=%s", session.get("user_id"), deleted)
+    return jsonify({"ok": True, "deleted": deleted})
+
+
+@admin_bp.post("/api/admin/assignments")
+def assign_film():
+    """Hand one film to one reviewer or judge by hand: `{"user_id": 3, "identifier": "film-a"}`."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    user_id, identifier = data.get("user_id"), data.get("identifier")
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or not isinstance(identifier, str):
+        return jsonify({"error": "user_id (number) and identifier (text) are required"}), 400
+    try:
+        added = current_app.services["distribution"].assign(user_id, identifier)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify({"ok": True, "added": added}), 201 if added else 200
+
+
+@admin_bp.delete("/api/admin/assignments/<int:user_id>/<identifier>")
+def unassign_film(user_id: int, identifier: str):
+    """Take a film off a person's list (not once they have rated it: ratings are final)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        outcome = current_app.services["distribution"].unassign(user_id, identifier)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    if outcome == "missing":
+        return jsonify({"error": "That film is not assigned to that person"}), 404
+    if outcome == "rated":
+        return jsonify({"error": "They have already rated this film, so it can't be taken away"}), 409
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

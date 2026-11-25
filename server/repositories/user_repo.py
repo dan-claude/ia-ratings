@@ -49,6 +49,14 @@ class UserRepository:
     def list_all(self) -> list[sqlite3.Row]:
         return self.db.fetchall(f"SELECT {_COLUMNS} FROM users ORDER BY id")
 
+    def list_with_role(self, *roles: str) -> list[sqlite3.Row]:
+        """Users holding at least one of `roles`, oldest first."""
+        unknown = [r for r in roles if r not in ROLE_COLUMNS]
+        if unknown:
+            raise ValueError(f"Unknown role: {unknown[0]}")
+        cond = " OR ".join(f"{ROLE_COLUMNS[r]} = 1" for r in roles) or "0"
+        return self.db.fetchall(f"SELECT {_COLUMNS} FROM users WHERE {cond} ORDER BY id")
+
     def set_admin(self, user_id: int, is_admin: bool) -> None:
         conn = self.db.connect()
         try:

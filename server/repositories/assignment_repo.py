@@ -64,3 +64,65 @@ class AssignmentRepository:
                 )
         finally:
             conn.close()
+
+    def count(self) -> int:
+        row = self.db.fetchone("SELECT COUNT(1) AS n FROM assignments")
+        return int(row["n"]) if row else 0
+
+    def add_many(self, pairs: list[tuple[int, int]]) -> int:
+        """Give many (user_id, film_id) pairs in one transaction. Returns how many were new."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                before = conn.total_changes
+                conn.executemany(
+                    "INSERT OR IGNORE INTO assignments (user_id, film_id) VALUES (?, ?)",
+                    [(int(u), int(f)) for u, f in pairs],
+                )
+                return conn.total_changes - before
+        finally:
+            conn.close()
+
+    def remove_unrated(self, user_id: int, film_id: int) -> str:
+        """Take a film off a person's list. Returns "removed", "missing", or "rated" (a submitted
+        rating is final, so its assignment stays)."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                row = conn.execute(
+                    "SELECT status FROM assignments WHERE user_id = ? AND film_id = ?", (int(user_id), int(film_id))
+                ).fetchone()
+                if row is None:
+                    return "missing"
+                if row["status"] == "rated":
+                    return "rated"
+                conn.execute("DELETE FROM assignments WHERE user_id = ? AND film_id = ?", (int(user_id), int(film_id)))
+                return "removed"
+        finally:
+            conn.close()
+
+    def reset_all(self) -> dict:
+        """Start the reviewing round over: delete every assignment AND every rating and score
+        (a rating without its assignment would block handing the film out again), and take all
+        films out of the judges' pool. One transaction. Returns the rows deleted per table."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                deleted = {t: conn.execute(f"DELETE FROM {t}").rowcount for t in ("rating_scores", "ratings", "assignments")}
+                deleted["judges_pool_cleared"] = conn.execute("UPDATE films SET in_judges_pool = 0 WHERE in_judges_pool = 1").rowcount
+                conn.execute("DELETE FROM sqlite_sequence WHERE name = 'ratings'")
+            return deleted
+        finally:
+            conn.close()
+
+    def list_with_people(self) -> list[sqlite3.Row]:
+        """Every assignment with the person's email and the film's identifier (for progress views)."""
+        return self.db.fetchall(
+            """
+            SELECT a.user_id, u.email, a.film_id, f.ia_identifier, a.status
+            FROM assignments a
+            JOIN users u ON u.id = a.user_id
+            JOIN films f ON f.id = a.film_id
+            ORDER BY f.id, u.email
+            """
+        )

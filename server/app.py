@@ -44,6 +44,7 @@ from server.repositories.session_repo import SessionRepository
 from server.repositories.user_repo import UserRepository
 
 from server.services.ia_service import InternetArchiveService
+from server.services.distribution_service import DistributionService
 from server.services.import_service import ImportService
 from server.services.job_service import JobService
 from server.services.login_link_service import LoginLinkService
@@ -140,6 +141,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     rating = RatingService(users, films, assignments, ratings)
     summary = SummaryService(ratings)
     links = LoginLinkService(users, login_links, sessions)
+    distribution = DistributionService(users, films, assignments)
 
     # Expose for tests / routes
     app.settings = settings
@@ -159,6 +161,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         "rating": rating,
         "summary": summary,
         "links": links,
+        "distribution": distribution,
     }
 
     # --- Request logging + request id ---

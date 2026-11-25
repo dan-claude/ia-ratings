@@ -63,6 +63,218 @@ function describeJob(st) {
   return ''
 }
 
+// ---------------------------------------------------------------------------
+// Reviews: handing films out to reviewers, and how far reviewing has got
+// ---------------------------------------------------------------------------
+
+const STATUS_STYLE = {
+  assigned: { background: '#eee', color: '#444' },
+  seen: { background: '#fff3cd', color: '#6b5300' },
+  rated: { background: '#d9f2d9', color: '#14561a' },
+}
+
+function StatusChip({ status }) {
+  return <span style={{ ...STATUS_STYLE[status], borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{status}</span>
+}
+
+function ReviewsTab({ apiJson, onDataChanged }) {
+  const [data, setData] = useState(null)   // { overall, people, films }
+  const [error, setError] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [confirmDistribute, setConfirmDistribute] = useState(false)
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetText, setResetText] = useState('')
+  const [openPerson, setOpenPerson] = useState(null)   // person id whose films are shown
+  const [onlyNeeding, setOnlyNeeding] = useState(false)
+  const [addChoice, setAddChoice] = useState({})       // film identifier -> user id chosen in its "add" select
+
+  async function load() {
+    setError('')
+    const { ok, data: d } = await apiJson('/api/admin/progress')
+    if (ok) setData(d)
+    else setError(d?.error || 'Could not load progress')
+  }
+  useEffect(() => { load() }, [])
+
+  async function distribute() {
+    setBusy(true); setMsg('')
+    const { ok, data: d } = await apiJson('/api/admin/distribute', { method: 'POST' })
+    setBusy(false); setConfirmDistribute(false)
+    if (!ok) { setMsg(`Error: ${d?.error || 'Could not hand out the films'}`); return }
+    setMsg(`Handed out ${d.films} films to ${d.reviewers} reviewers (${d.assignments} reviews; each reviewer has ${d.per_reviewer.min === d.per_reviewer.max ? d.per_reviewer.min : `${d.per_reviewer.min}–${d.per_reviewer.max}`} films).`)
+    await load(); onDataChanged()
+  }
+
+  async function reset() {
+    setBusy(true); setMsg('')
+    const { ok, data: d } = await apiJson('/api/admin/distribute/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'RESET' }),
+    })
+    setBusy(false)
+    if (!ok) { setMsg(`Error: ${d?.error || 'Could not reset'}`); return }
+    setMsg(`Reset: ${d.deleted.assignments} assignments and ${d.deleted.ratings} ratings deleted.`)
+    setResetOpen(false); setResetText(''); setOpenPerson(null)
+    await load(); onDataChanged()
+  }
+
+  async function addAssignment(film) {
+    const uid = Number(addChoice[film.identifier])
+    if (!uid) return
+    setMsg('')
+    const { ok, data: d } = await apiJson('/api/admin/assignments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: uid, identifier: film.identifier }),
+    })
+    if (!ok) { setMsg(`Error: ${d?.error || 'Could not assign'}`); return }
+    setAddChoice({ ...addChoice, [film.identifier]: '' })
+    await load()
+  }
+
+  async function removeAssignment(film, a) {
+    setMsg('')
+    const { ok, data: d } = await apiJson(`/api/admin/assignments/${a.user_id}/${encodeURIComponent(film.identifier)}`, { method: 'DELETE' })
+    if (!ok) { setMsg(`Error: ${d?.error || 'Could not remove'}`); return }
+    await load()
+  }
+
+  if (!data) return error ? <div style={{ color: '#a00' }}>{error}</div> : <p style={{ color: '#666' }}>Loading…</p>
+
+  const o = data.overall
+  const raters = data.people.filter((p) => p.roles.includes('reviewer') || p.roles.includes('judge'))
+  const person = data.people.find((p) => p.id === openPerson)
+  const personFilms = person
+    ? data.films.map((f) => ({ f, a: f.assignees.find((x) => x.user_id === person.id) })).filter((x) => x.a)
+    : []
+  const films = onlyNeeding ? data.films.filter((f) => !f.fully_reviewed) : data.films
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div role="status" style={{ border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, padding: '10px 14px', maxWidth: 700 }}>
+        <div style={{ fontSize: 15 }}>
+          <strong>{o.fully_reviewed}</strong> of <strong>{o.films}</strong> films fully reviewed; <strong>{o.needing_reviews}</strong> still need at least one review.
+        </div>
+        <div style={{ fontSize: 12, color: '#555', marginTop: 4 }}>
+          A film is fully reviewed when {o.reviews_per_film} reviewers have submitted. Reviews handed out: {o.assignments.assigned + o.assignments.seen + o.assignments.rated}
+          {' '}({o.assignments.assigned} not opened, {o.assignments.seen} opened, {o.assignments.rated} submitted).
+        </div>
+        <button onClick={load} style={{ fontSize: 12, marginTop: 6 }}>↻ Update</button>
+      </div>
+
+      {msg && <div style={{ fontSize: 13, color: msg.startsWith('Error') ? '#a00' : '#060' }}>{msg}</div>}
+
+      {!o.distributed ? (
+        <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 700 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Hand out the films</div>
+          <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+            Gives every film to {o.reviews_per_film} different reviewers, chosen at random and spread evenly. It runs once; to run it again you must reset first.
+          </div>
+          {!confirmDistribute ? (
+            <button className="btn-primary" onClick={() => setConfirmDistribute(true)} disabled={o.films === 0}>Distribute films to reviewers…</button>
+          ) : (
+            <div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>Hand out {o.films} films to the {raters.filter((p) => p.roles.includes('reviewer')).length} reviewers now?</div>
+              <button className="btn-primary" onClick={distribute} disabled={busy}>{busy ? 'Working…' : 'Yes, hand them out'}</button>{' '}
+              <button onClick={() => setConfirmDistribute(false)} disabled={busy}>Cancel</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 700 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Films have been handed out</div>
+          {!resetOpen ? (
+            <button onClick={() => { setResetOpen(true); setMsg('') }} style={{ color: '#a00' }}>Reset distribution…</button>
+          ) : (
+            <div style={{ border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 8, padding: 12 }}>
+              <p style={{ margin: '0 0 8px', fontSize: 13 }}>
+                This deletes <strong>every assignment and every rating</strong> ({o.assignments.rated} submitted so far) and empties the judges' pool, so the films can be
+                handed out again. Download a backup first (Backup tab).
+              </p>
+              <label style={{ fontSize: 13 }}>Type <code>RESET</code> to confirm:{' '}
+                <input value={resetText} onChange={(e) => setResetText(e.target.value)} style={{ width: 90 }} autoComplete="off" />
+              </label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={reset} disabled={resetText !== 'RESET' || busy} style={{ color: '#a00' }}>{busy ? 'Resetting…' : 'Reset distribution'}</button>
+                <button onClick={() => { setResetOpen(false); setResetText('') }} disabled={busy}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>People</div>
+        {raters.length === 0 ? <p style={{ color: '#666', margin: 0 }}>No reviewers or judges yet (Users tab).</p> : (
+          <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+            <thead><tr><th>person</th><th>roles</th><th>not opened</th><th>opened</th><th>submitted</th><th>total</th><th></th></tr></thead>
+            <tbody>
+              {data.people.map((p) => (
+                <tr key={p.id}>
+                  <td style={{ wordBreak: 'break-all' }}>{p.email}</td>
+                  <td>{p.roles.join(', ') || '—'}</td>
+                  <td>{p.assigned}</td><td>{p.seen}</td><td>{p.rated}</td><td>{p.total}</td>
+                  <td>{p.total > 0 && <button style={{ fontSize: 12 }} onClick={() => setOpenPerson(openPerson === p.id ? null : p.id)}>{openPerson === p.id ? 'Hide films' : 'Show films'}</button>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {person && (
+          <div style={{ marginTop: 10, border: '1px solid #ddd', borderRadius: 8, padding: 10, maxWidth: 700 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Films for {person.email}</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+              {personFilms.map(({ f, a }) => <li key={f.identifier}>{f.title} <StatusChip status={a.status} /></li>)}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
+          <span style={{ fontWeight: 600 }}>Films</span>
+          <label style={{ fontSize: 13 }}><input type="checkbox" checked={onlyNeeding} onChange={(e) => setOnlyNeeding(e.target.checked)} /> Only films that still need reviews ({o.needing_reviews})</label>
+        </div>
+        {films.length === 0 ? <p style={{ color: '#666', margin: 0 }}>{o.films === 0 ? 'No films yet (Import tab).' : 'Every film is fully reviewed.'}</p> : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+              <thead><tr><th>film</th><th>reviews</th><th>reviewers</th><th>add by hand</th></tr></thead>
+              <tbody>
+                {films.map((f) => {
+                  const free = raters.filter((p) => !f.assignees.some((a) => a.user_id === p.id))
+                  return (
+                    <tr key={f.identifier}>
+                      <td>{f.title}{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{f.rated} / {o.reviews_per_film}{f.fully_reviewed ? ' ✓' : ''}</td>
+                      <td>
+                        {f.assignees.length === 0 ? <span style={{ color: '#aaa' }}>—</span> : f.assignees.map((a) => (
+                          <div key={a.user_id} style={{ whiteSpace: 'nowrap' }}>
+                            {a.email} <StatusChip status={a.status} />
+                            {a.status !== 'rated' && <button style={{ fontSize: 11, marginLeft: 4 }} title="Take this film off their list" aria-label={`Remove ${f.title} from ${a.email}`} onClick={() => removeAssignment(f, a)}>✕</button>}
+                          </div>
+                        ))}
+                      </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <select value={addChoice[f.identifier] || ''} onChange={(e) => setAddChoice({ ...addChoice, [f.identifier]: e.target.value })} aria-label={`Person to give ${f.title} to`} style={{ maxWidth: 170 }}>
+                          <option value="">— person —</option>
+                          {free.map((p) => <option key={p.id} value={p.id}>{p.email} ({p.roles.filter((r) => r !== 'admin').join('/')})</option>)}
+                        </select>{' '}
+                        <button style={{ fontSize: 12 }} disabled={!addChoice[f.identifier]} onClick={() => addAssignment(f)}>Add</button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // onDataChanged: called after an import or when the DB is emptied, so the
 // rating view can reload.
 function AdminPanel({ apiJson, onDataChanged, meId }) {
@@ -424,14 +636,17 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'import', 'users', 'db', 'backup'].map(t => (
+        {['actions', 'import', 'users', 'reviews', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {{ actions: 'Actions', import: 'Import', users: 'Users', db: 'DB Browser', backup: 'Backup' }[t]}
+            {{ actions: 'Actions', import: 'Import', users: 'Users', reviews: 'Reviews', db: 'DB Browser', backup: 'Backup' }[t]}
           </button>
         ))}
       </div>
 
       <div style={{ padding: 14 }}>
+
+        {/* ── Reviews ── */}
+        {tab === 'reviews' && <ReviewsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
 
         {/* ── Actions ── */}
         {tab === 'actions' && (() => {
