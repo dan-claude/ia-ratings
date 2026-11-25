@@ -1295,6 +1295,52 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 }
 
 // ---------------------------------------------------------------------------
+// A judge's own ranked list (shown after their last film, and from "My ranked films")
+// ---------------------------------------------------------------------------
+
+function ResultsScreen({ results, categories, onBack }) {
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h3 style={{ margin: '0 0 4px' }}>Your ranked films</h3>
+      <div style={{ fontSize: 14, color: '#444', marginBottom: 10 }}>
+        {results.complete
+          ? `You have rated all ${results.pool_size} films. Here is your list, highest total first.`
+          : `You have rated ${results.rated} of ${results.pool_size} films so far.`}
+        {' '}These are your own scores and comments; nobody else can see them here.
+      </div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+        <a href="/api/me/results.csv" style={{ fontSize: 14 }}>⬇ Download my ratings (CSV)</a>
+        {onBack && <button onClick={onBack}>Back to rating</button>}
+      </div>
+      {results.films.length === 0 ? <p style={{ color: '#666' }}>You haven't rated any of these films yet.</p> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 14 }}>
+            <thead>
+              <tr>
+                <th>rank</th><th>film</th>
+                {categories.map((c) => <th key={c.key}>{c.label}</th>)}
+                <th>total</th><th>your comment</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.films.map((f) => (
+                <tr key={f.identifier}>
+                  <td>{f.rank}</td>
+                  <td><a href={f.archiveUrl} target="_blank" rel="noreferrer">{f.title}</a>{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}</td>
+                  {categories.map((c) => <td key={c.key}>{f.scores[c.key]}</td>)}
+                  <td><strong>{f.total}</strong></td>
+                  <td style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 360 }}>{f.comment}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
@@ -1327,6 +1373,8 @@ export default function App() {
   const [confirmOpen, setConfirmOpen] = useState(false)   // "Are you sure?" before a final submit
   const [submitting, setSubmitting] = useState(false)     // submit sent, next film not shown yet
   const [flash, setFlash] = useState('')                  // one-off message above the film
+  const [results, setResults] = useState(null)            // a judge's own ranked list
+  const [showResults, setShowResults] = useState(false)
 
   async function apiJson(path, opts = {}) {
     const res = await fetch(path, { credentials: 'include', ...opts })
@@ -1357,6 +1405,19 @@ export default function App() {
     setScores({})
     setComment('')
     setFlash('')
+    setResults(null)
+    setShowResults(false)
+  }
+
+  async function loadResults() {
+    const { ok, data } = await apiJson('/api/me/results')
+    if (ok) { setResults(data); return data }
+    return null
+  }
+
+  async function openResults() {
+    await loadResults()
+    setShowResults(true)
   }
 
   async function loadCategories() {
@@ -1451,6 +1512,13 @@ export default function App() {
     }
   }, [me])
 
+  // After a judge's last film, go straight to their ranked list (only once a judges' pool exists).
+  useEffect(() => {
+    if (notice?.code === 'all_rated' && me?.is_judge) {
+      loadResults().then((d) => { if (d && d.pool_size > 0) setShowResults(true) })
+    }
+  }, [notice?.code, me?.is_judge])
+
   const allChosen = !!film?.identifier && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
   const total = categories.reduce((sum, c) => sum + (scores[c.key] || 0), 0)
 
@@ -1525,6 +1593,7 @@ export default function App() {
         <h2 style={{ margin: 0 }}>IA Film Rater</h2>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{ fontSize: 14, color: '#444' }}>{me.email}</span>
+          {me.is_judge && <button onClick={() => (showResults ? setShowResults(false) : openResults())}>{showResults ? 'Back to films' : 'My ranked films'}</button>}
           <button onClick={logout}>Logout</button>
         </div>
       </div>
@@ -1533,18 +1602,26 @@ export default function App() {
         <AdminPanel apiJson={apiJson} onDataChanged={loadNextFilm} meId={me.id} />
       ) : null}
 
+      {showResults && results ? (
+        <ResultsScreen
+          results={results}
+          categories={categories}
+          onBack={film ? () => setShowResults(false) : null}
+        />
+      ) : null}
+
       {loading ? <p>Loading…</p> : null}
       {error ? <div style={{ marginTop: 12, color: '#a00' }}>{error}</div> : null}
-      {notice ? (
+      {notice && !(showResults && results) ? (
         <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid #cfd8e3', background: '#f4f8fc', borderRadius: 8, maxWidth: 620 }}>
           {notice.text}
           {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: '#555' }}>As an admin, use Admin → Import.</div> : null}
         </div>
       ) : null}
 
-      {flash ? <div role="status" style={{ marginTop: 12, color: '#6b5300' }}>{flash}</div> : null}
+      {flash && !(showResults && results) ? <div role="status" style={{ marginTop: 12, color: '#6b5300' }}>{flash}</div> : null}
 
-      {film ? (
+      {film && !(showResults && results) ? (
         <div className="film-panel">
           <h3 className="film-title">
             <a href={film.archiveUrl} target="_blank" rel="noreferrer">{film.title}</a>

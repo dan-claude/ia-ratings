@@ -68,6 +68,26 @@ class RatingRepository:
         scores = self.db.fetchall("SELECT category, score FROM rating_scores WHERE rating_id = ?", (row["id"],))
         return {"scores": {r["category"]: int(r["score"]) for r in scores}, "comment": row["comment"]}
 
+    def list_for_user_in_pool(self, user_id: int) -> list[dict]:
+        """One person's own submitted ratings of the films in the judges' pool (whichever round
+        they rated them in): film details, scores by category and the comment."""
+        rows = self.db.fetchall(
+            """
+            SELECT r.id AS rating_id, r.comment, f.ia_identifier AS identifier, f.title AS title, f.creator AS creator
+            FROM ratings r
+            JOIN films f ON f.id = r.film_id AND f.in_judges_pool = 1
+            WHERE r.user_id = ?
+            """,
+            (int(user_id),),
+        )
+        scores: dict[int, dict[str, int]] = {}
+        for s in self.db.fetchall(
+            "SELECT s.rating_id, s.category, s.score FROM rating_scores s JOIN ratings r ON r.id = s.rating_id WHERE r.user_id = ?",
+            (int(user_id),),
+        ):
+            scores.setdefault(int(s["rating_id"]), {})[s["category"]] = int(s["score"])
+        return [{**{k: r[k] for k in r.keys()}, "scores": scores.get(int(r["rating_id"]), {})} for r in rows]
+
     def review_totals(self) -> dict[int, tuple[int, int]]:
         """film_id -> (number of reviewers'-round ratings, sum of all their scores).
 

@@ -1,3 +1,5 @@
+import csv
+from io import StringIO
 from typing import Optional
 
 from ..categories import CATEGORIES, CATEGORY_KEYS, MAX_COMMENT_LENGTH, MAX_SCORE, MIN_SCORE
@@ -5,6 +7,7 @@ from ..repositories.assignment_repo import AssignmentRepository
 from ..repositories.film_repo import FilmRepository
 from ..repositories.rating_repo import AlreadyRated, RatingRepository
 from ..repositories.user_repo import UserRepository
+from .csv_utils import csv_safe
 
 
 class NothingToRate(Exception):
@@ -80,6 +83,43 @@ class RatingService:
             self.assignments.mark_seen(user_id, int(film["id"]))
         status = "seen" if a["status"] == "assigned" else a["status"]
         return self._film_payload(film, user_id, status)
+
+    def judge_results(self, user_id: int) -> dict:
+        """A judge's own ranked list of the pool films they have rated (highest total first;
+        equal totals share a rank and are listed alphabetically by title). Only their own scores."""
+        pool_size = self.films.count_in_judges_pool()
+        rows = []
+        for r in self.ratings.list_for_user_in_pool(user_id):
+            scores = [r["scores"].get(k) for k in CATEGORY_KEYS]
+            rows.append({
+                "identifier": r["identifier"],
+                "title": r["title"] or r["identifier"],
+                "creator": r["creator"],
+                "archiveUrl": f"https://archive.org/details/{r['identifier']}",
+                "scores": {k: r["scores"].get(k) for k in CATEGORY_KEYS},
+                "total": sum(s for s in scores if s is not None),
+                "comment": r["comment"],
+            })
+        rows.sort(key=lambda r: (-r["total"], r["title"].lower(), r["identifier"]))
+        prev, rank = None, 0
+        for i, r in enumerate(rows, 1):
+            if r["total"] != prev:
+                rank, prev = i, r["total"]
+            r["rank"] = rank
+        return {"pool_size": pool_size, "rated": len(rows), "complete": pool_size > 0 and len(rows) == pool_size, "films": rows}
+
+    def judge_results_csv(self, user_id: int) -> str:
+        out = StringIO()
+        w = csv.writer(out)
+        w.writerow(["rank", "title", "creator", *CATEGORY_KEYS, "total", "comment"])
+        for r in self.judge_results(user_id)["films"]:
+            w.writerow([r["rank"], csv_safe(r["title"]), csv_safe(r["creator"] or ""),
+                        *[r["scores"][k] for k in CATEGORY_KEYS], r["total"], csv_safe(r["comment"])])
+        return out.getvalue()
+
+    def is_judge(self, user_id: int) -> bool:
+        row = self.users.get_by_id(user_id)
+        return bool(row) and "judge" in UserRepository.roles_of(row)
 
     def submit_rating(self, user_id: int, identifier: str, scores, comment=None) -> int:
         """Record the person's final rating. Returns their total (the sum of the categories).

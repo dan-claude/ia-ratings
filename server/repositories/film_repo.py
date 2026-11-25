@@ -86,6 +86,10 @@ class FilmRepository:
         row = self.db.fetchone("SELECT COUNT(1) AS n FROM films")
         return int(row["n"]) if row else 0
 
+    def count_in_judges_pool(self) -> int:
+        row = self.db.fetchone("SELECT COUNT(1) AS n FROM films WHERE in_judges_pool = 1")
+        return int(row["n"]) if row else 0
+
     def list_all(self) -> list[sqlite3.Row]:
         return self.db.fetchall(f"SELECT {_FILM_COLUMNS} FROM films ORDER BY id")
 

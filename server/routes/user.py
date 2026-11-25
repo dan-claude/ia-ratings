@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, Response, jsonify, current_app
 
 from ..auth_session import current_user_id
 from ..models.user import User
@@ -29,6 +29,37 @@ def me():
         "is_admin": user.is_admin, "is_reviewer": user.is_reviewer, "is_judge": user.is_judge,
         "roles": user.roles,
     })
+
+
+def _require_judge():
+    uid, err = _require_auth()
+    if err:
+        return None, err
+    if not current_app.services["rating"].is_judge(uid):
+        return None, (jsonify({"error": "Forbidden"}), 403)
+    return uid, None
+
+
+@user_bp.get("/api/me/results")
+def my_results():
+    """A judge's own ranked list of the pool films they have rated, with their scores and comments."""
+    uid, err = _require_judge()
+    if err:
+        return err
+    return jsonify(current_app.services["rating"].judge_results(uid))
+
+
+@user_bp.get("/api/me/results.csv")
+def my_results_csv():
+    """The same list as a CSV download (judges only)."""
+    uid, err = _require_judge()
+    if err:
+        return err
+    return Response(
+        current_app.services["rating"].judge_results_csv(uid),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="my_ratings.csv"'},
+    )
 
 
 @user_bp.get("/api/categories")

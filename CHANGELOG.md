@@ -1,3 +1,8 @@
+## Unreleased (branch `major-changes`, step 7: judge export and final screen)
+Not deployed.
+- New judge-only routes `GET /api/me/results` and `GET /api/me/results.csv` (403 for anyone without the judge role, admin alone and reviewers included): the judge's own ranked list of the judges' pool films they have rated: rank, title, creator, the three scores, total, comment. Highest total first; equal totals share a rank and are listed alphabetically by title. A film a judge rated earlier as a reviewer is included (they don't rate it twice). Only the caller's own data: no averages or other people's scores. The CSV is `my_ratings.csv`, with formula-like cells prefixed with `'`.
+- Client: after a judge's last film they are taken to their ranked list (when a pool exists); judges also get a "My ranked films" button in the top bar and a CSV download. Reviewers get neither.
+
 ## Unreleased (branch `major-changes`, step 6: rankings and the judges' pool)
 Not deployed.
 - **Rankings.** `GET /api/admin/rankings` (and `rankings.csv`): every film with its reviewers' average (highest first), rank (ties share a rank) and all its details (title, creator, description, public-domain works, AI disclosure). Averages are exact (`total` and `reviews` integers); the `average` field is a rounded display value. Only reviewers'-round ratings count, so judges can't change the ranking.

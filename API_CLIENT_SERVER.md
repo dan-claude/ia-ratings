@@ -4,8 +4,8 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 6: rankings and the judges' pool).
-**Work in progress:** the contract below describes the app after step 6.
+Last verified against the code: 2026-11-25 (`major-changes` branch, step 7: judge export and final screen).
+**Work in progress:** the contract below describes the app after step 7.
 Film distribution and the ranking/judge screens arrive in later steps and will be
 added here as they land.
 
@@ -190,6 +190,30 @@ Errors:
 - 409 — `"You have already submitted this film. Ratings can't be changed."`
 
 ---
+
+### Judge results (judges only)
+
+A judge's own ranked list of the **judges' pool** films they have rated. Requires the `judge` role
+(401 if not logged in, 403 `{ "error": "Forbidden" }` otherwise; admins and reviewers without the
+judge role are refused). A judge who reviewed a pool film in the reviewing round has that rating
+in their list (they don't rate it again). Only the caller's own scores are returned: nothing about
+other people's ratings or any averages.
+
+#### GET /api/me/results — judge
+```json
+{ "pool_size": 20, "rated": 20, "complete": true,
+  "films": [ { "rank": 1, "identifier": "film-a", "title": "A Film", "creator": "Sam B",
+               "archiveUrl": "https://archive.org/details/film-a",
+               "scores": { "aesthetic": 10, "sound": 9, "appeal": 8 }, "total": 27,
+               "comment": "Lovely work." } ] }
+```
+Highest `total` first; equal totals share a rank (1, 2, 2, 4) and are listed alphabetically by
+title. `complete` is true when the judge has rated every pool film (the client then shows this
+list right after their last submit). With no pool yet, `pool_size` is 0 and `films` is empty.
+
+#### GET /api/me/results.csv — judge
+The same list as a download (`my_ratings.csv`): `rank, title, creator, aesthetic, sound, appeal,
+total, comment` (one row per film; cells starting with `=`, `+`, `-` or `@` are prefixed with `'`).
 
 ## Admin
 
@@ -546,7 +570,7 @@ error nothing is changed.
 
 The client (`client/src/App.jsx`) calls:
 - `/api/me`, `/api/auth/signin`, `/api/auth/logout`
-- `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
+- `/api/me/results` and `/api/me/results.csv` (judges), `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
 - Admin panel: `/api/admin/jobs/status`, `/api/admin/import/preview`, `/api/admin/import`,
   `/api/admin/db/empty`, `/api/admin/progress`, `/api/admin/distribute`, `/api/admin/distribute/reset`,
   `/api/admin/assignments` (POST) and `/api/admin/assignments/<user_id>/<identifier>` (DELETE),
