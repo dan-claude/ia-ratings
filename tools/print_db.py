@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
+# Let `python tools/print_db.py` import the server package (--invite reuses its code).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 def _default_db_path() -> str:
     server_dir = Path(__file__).resolve().parent.parent / "server"
     return os.environ.get("DB_PATH", str(server_dir / "app.db"))
@@ -77,6 +80,45 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
     for r in rows:
         print(fmt(r))
 
+def _invite(db_path: str, email: str, roles: list[str], days: int) -> int:
+    """Create the user if needed (or add roles to an existing one), issue a fresh magic link, print it."""
+    from datetime import datetime, timedelta, timezone
+
+    from server.config import load_settings
+    from server.db import Database
+    from server.repositories.login_link_repo import LoginLinkRepository
+    from server.repositories.session_repo import SessionRepository
+    from server.repositories.user_repo import UserRepository
+    from server.services.login_link_service import LoginLinkService
+
+    users = UserRepository(Database(db_path))
+    db = users.db
+    svc = LoginLinkService(users, LoginLinkRepository(db), SessionRepository(db))
+    expires = (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        row = users.get_by_email(email)
+        if row is None:
+            res = svc.invite(email, roles, expires)
+            link, uid, verb = res["link"], res["user_id"], "Created"
+        else:
+            uid = int(row["id"])
+            merged = list(dict.fromkeys([*UserRepository.roles_of(row), *roles]))
+            users.set_roles(uid, merged)
+            link, verb = svc.reissue(uid, expires), "Updated"
+    except (ValueError, KeyError, LookupError) as exc:
+        print(f"Error: {exc.args[0] if exc.args else exc}", file=sys.stderr)
+        return 2
+    roles_now = UserRepository.roles_of(users.get_by_id(uid))
+    print(f"{verb} {email.strip().lower()} (id={uid}, roles: {', '.join(roles_now) or 'none'}).")
+    base = load_settings().public_url.rstrip("/")
+    if base:
+        print(f"Sign-in link (valid until {link['expires_at']}; shown only now):\n{base}{link['path']}")
+    else:
+        print(f"Sign-in link path (valid until {link['expires_at']}; shown only now): {link['path']}")
+        print("Set PUBLIC_URL (e.g. https://your-site.example) to print the full address; put it in front of that path.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Query the IA Ratings SQLite DB and print results.")
     p.add_argument("--db", default=_default_db_path(), help="Path to SQLite db (default: %(default)s)")
@@ -90,13 +132,23 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--schema", action="store_true", help="Print CREATE TABLE statements for user tables")
     p.add_argument("--make-admin", metavar="EMAIL", help="Set is_admin=1 for the given user email (CLI-only)")
     p.add_argument("--revoke-admin", metavar="EMAIL", help="Set is_admin=0 for the given user email (CLI-only)")
+    p.add_argument("--invite", metavar="EMAIL", help="Create the user (or re-issue their link) and print a magic sign-in link")
+    p.add_argument("--admin", action="store_true", help="With --invite: give the user the admin role")
+    p.add_argument("--roles", default="", help="With --invite: comma-separated roles to give (admin, reviewer, judge)")
+    p.add_argument("--days", type=int, default=30, help="With --invite: days until the link expires (default: %(default)s)")
     args = p.parse_args(argv)
 
     db_path = args.db
-    if not os.path.exists(db_path):
+    if not args.invite and not os.path.exists(db_path):  # --invite may create a fresh database
         print(f"DB not found: {db_path}", file=sys.stderr)
         print("Tip: set DB_PATH to point at your db file, or run the server once to create it.", file=sys.stderr)
         return 2
+
+    if args.invite:
+        roles = [r.strip() for r in args.roles.split(",") if r.strip()]
+        if args.admin and "admin" not in roles:
+            roles.append("admin")
+        return _invite(db_path, args.invite, roles, args.days)
 
     conn = _connect(db_path)
     try:

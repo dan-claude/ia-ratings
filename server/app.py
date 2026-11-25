@@ -38,6 +38,7 @@ from server.logging_config import configure_logging
 
 from server.repositories.assignment_repo import AssignmentRepository
 from server.repositories.film_repo import FilmRepository
+from server.repositories.login_link_repo import LoginLinkRepository
 from server.repositories.rating_repo import RatingRepository
 from server.repositories.session_repo import SessionRepository
 from server.repositories.user_repo import UserRepository
@@ -45,6 +46,7 @@ from server.repositories.user_repo import UserRepository
 from server.services.ia_service import InternetArchiveService
 from server.services.import_service import ImportService
 from server.services.job_service import JobService
+from server.services.login_link_service import LoginLinkService
 from server.services.rating_service import RatingService
 from server.services.summary_service import SummaryService
 
@@ -128,6 +130,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     assignments = AssignmentRepository(db)
     ratings = RatingRepository(db)
     sessions = SessionRepository(db)
+    login_links = LoginLinkRepository(db)
 
     # --- Services ---
     ia = InternetArchiveService()
@@ -136,6 +139,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     importer = ImportService(films, ia, jobs)
     rating = RatingService(users, films, assignments, ratings)
     summary = SummaryService(ratings)
+    links = LoginLinkService(users, login_links, sessions)
 
     # Expose for tests / routes
     app.settings = settings
@@ -146,6 +150,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         "assignments": assignments,
         "ratings": ratings,
         "sessions": sessions,
+        "login_links": login_links,
     }
     app.services = {
         "ia": ia,
@@ -153,6 +158,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         "import": importer,
         "rating": rating,
         "summary": summary,
+        "links": links,
     }
 
     # --- Request logging + request id ---
@@ -222,7 +228,11 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         return jsonify({"ok": True})
 
     # --- SPA routing (React build) ---
+    # The one client-side route: the magic-link page (the secret is in the URL fragment).
+    # Needs its own rule because the static route at "/" answers 404 for unknown paths
+    # before the catch-all below is reached.
     @app.get("/")
+    @app.get("/signin")
     def index():
         if getattr(app, "static_folder", None) and Path(app.static_folder).exists():
             return send_from_directory(app.static_folder, "index.html")

@@ -55,6 +55,21 @@ class SessionRepository:
         finally:
             conn.close()
 
+    def delete_for_user(self, user_id: int, keep_sid: Optional[str] = None) -> None:
+        """End all of a person's logins (optionally keeping one, e.g. the admin's own)."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                if keep_sid:
+                    conn.execute(
+                        "DELETE FROM user_sessions WHERE user_id = ? AND sid_hash != ?",
+                        (int(user_id), _hash(keep_sid)),
+                    )
+                else:
+                    conn.execute("DELETE FROM user_sessions WHERE user_id = ?", (int(user_id),))
+        finally:
+            conn.close()
+
     def delete_all(self) -> None:
         conn = self.db.connect()
         try:

@@ -147,6 +147,98 @@ def db_table(table: str):
 # User admin actions  (mirrors --make-admin / --revoke-admin in print_db.py)
 # ---------------------------------------------------------------------------
 
+@admin_bp.get("/api/admin/users")
+def list_users():
+    """Every user with their roles and the state of their sign-in link (none / active / expired)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return jsonify(current_app.services["links"].list_users())
+
+
+@admin_bp.post("/api/admin/users")
+def invite_user():
+    """Invite a person: create their account (with roles) and their first sign-in link.
+
+    The link is returned once and cannot be shown again (only its hash is stored); the admin
+    passes it on, the app sends no email.
+    """
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    roles = data.get("roles", [])
+    if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+        return jsonify({"error": "roles must be a list of role names"}), 400
+    unknown = [r for r in roles if r not in ROLE_COLUMNS]
+    if unknown:
+        return jsonify({"error": f"Unknown role: {unknown[0]}"}), 400
+    email = data.get("email")
+    if not isinstance(email, str):
+        return jsonify({"error": "email is required"}), 400
+    try:
+        res = current_app.services["links"].invite(email, list(dict.fromkeys(roles)), data.get("expires_at"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except KeyError as exc:
+        return jsonify({"error": exc.args[0]}), 409
+    current_app.logger.info("admin.invite user_id=%s invited=%s", session.get("user_id"), res["user_id"])
+    return jsonify({"ok": True, "user": {"id": res["user_id"], "email": res["email"], "roles": res["roles"]}, "link": res["link"]}), 201
+
+
+@admin_bp.post("/api/admin/users/<int:user_id>/login-link")
+def new_login_link(user_id: int):
+    """A new sign-in link for a user. The old link stops working and the person is logged out
+    everywhere (except the admin's own current login, when it is their own link)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        link = current_app.services["links"].reissue(user_id, data.get("expires_at"), _own_sid(user_id))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    current_app.logger.info("admin.login_link.issued user_id=%s target=%s", session.get("user_id"), user_id)
+    return jsonify({"ok": True, "user_id": user_id, "link": link}), 201
+
+
+@admin_bp.put("/api/admin/users/<int:user_id>/login-link")
+def change_login_link_expiry(user_id: int):
+    """Change the expiry of the user's active link."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        expires_at = current_app.services["links"].change_expiry(user_id, data.get("expires_at"))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify({"ok": True, "user_id": user_id, "expires_at": expires_at})
+
+
+@admin_bp.delete("/api/admin/users/<int:user_id>/login-link")
+def cancel_login_link(user_id: int):
+    """Cancel the user's link and end their current logins."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        current_app.services["links"].cancel(user_id, _own_sid(user_id))
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    current_app.logger.info("admin.login_link.cancelled user_id=%s target=%s", session.get("user_id"), user_id)
+    return jsonify({"ok": True, "user_id": user_id})
+
+
+def _own_sid(target_user_id: int):
+    """The admin's own session id when they act on themselves (so they aren't logged out of the panel)."""
+    return session.get("sid") if current_user_id() == target_user_id else None
+
+
 @admin_bp.post("/api/admin/users/<int:user_id>/make-admin")
 def make_admin(user_id: int):
     ok, err = _require_admin_user()

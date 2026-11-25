@@ -26,6 +26,10 @@ class Settings:
     db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
     session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
 
+    # Public address of the site (e.g. https://ratings.example.org), used by the command-line
+    # tool to print magic links. The admin panel builds links from the address in the browser.
+    public_url: str = _env("PUBLIC_URL", "")
+
     # How many reverse proxies sit in front of the app (Railway: 1). Only then is the
     # X-Forwarded-For header trusted, so the login rate limit sees each client's own
     # address instead of the proxy's. Leave 0 when clients connect directly: otherwise

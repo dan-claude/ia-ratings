@@ -16,6 +16,24 @@ function linkifyText(text) {
   })
 }
 
+// A date input value (YYYY-MM-DD, local) `days` from now.
+function dateInDays(days) {
+  const d = new Date(Date.now() + days * 86400000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+// Sign-in links are built from the address the admin is using; the server only knows the path.
+function fullLinkUrl(link) {
+  return `${window.location.origin}${link.path}`
+}
+
+function describeLink(link) {
+  if (!link) return 'no link'
+  const when = new Date(link.expires_at).toLocaleDateString()
+  return link.state === 'expired' ? `expired ${when}` : `active until ${when}`
+}
+
 // ---------------------------------------------------------------------------
 // AdminPanel
 // ---------------------------------------------------------------------------
@@ -77,6 +95,13 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersError, setUsersError] = useState('')
   const [actionMsg, setActionMsg] = useState('')
+  const [invEmail, setInvEmail] = useState('')
+  const [invRoles, setInvRoles] = useState({ admin: false, reviewer: true, judge: false })
+  const [invExpiry, setInvExpiry] = useState(dateInDays(30))
+  const [invBusy, setInvBusy] = useState(false)
+  const [newLink, setNewLink] = useState(null)      // { email, url, expires_at } — shown once, never stored
+  const [rowExpiry, setRowExpiry] = useState({})    // user id -> date text for that row's link controls
+  const [copied, setCopied] = useState(false)
 
   async function loadTables() {
     setDbLoading(true)
@@ -108,7 +133,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
     setUsersLoading(true)
     setUsersError('')
     setActionMsg('')
-    const { ok, data } = await apiJson('/api/admin/db/users?order_by=id')
+    const { ok, data } = await apiJson('/api/admin/users')
     setUsersLoading(false)
     if (ok) setUsers(data)
     else setUsersError(data?.error || 'Failed to load users')
@@ -129,6 +154,60 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       setActionMsg(data?.error || 'Action failed')
     }
     loadUsers()
+  }
+
+  async function sendInvite(e) {
+    e.preventDefault()
+    setInvBusy(true); setActionMsg(''); setNewLink(null); setCopied(false)
+    const roles = Object.keys(invRoles).filter((r) => invRoles[r])
+    const { ok, data } = await apiJson('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: invEmail, roles, expires_at: invExpiry || null }),
+    })
+    setInvBusy(false)
+    if (!ok) { setActionMsg(`Error: ${data?.error || 'Could not invite that person'}`); return }
+    setNewLink({ email: data.user.email, url: fullLinkUrl(data.link), expires_at: data.link.expires_at })
+    setInvEmail('')
+    loadUsers()
+  }
+
+  function expiryFor(u) { return rowExpiry[u.id] ?? dateInDays(30) }
+
+  async function issueLink(u) {
+    setActionMsg(''); setNewLink(null); setCopied(false)
+    const { ok, data } = await apiJson(`/api/admin/users/${u.id}/login-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expires_at: expiryFor(u) }),
+    })
+    if (!ok) { setActionMsg(`Error: ${data?.error || 'Could not create a link'}`); return }
+    setNewLink({ email: u.email, url: fullLinkUrl(data.link), expires_at: data.link.expires_at })
+    loadUsers()
+  }
+
+  async function cancelLink(u) {
+    setActionMsg(''); setNewLink(null)
+    const { ok, data } = await apiJson(`/api/admin/users/${u.id}/login-link`, { method: 'DELETE' })
+    if (!ok) { setActionMsg(`Error: ${data?.error || 'Could not cancel the link'}`); return }
+    setActionMsg(`Link cancelled for ${u.email}; they are logged out.`)
+    loadUsers()
+  }
+
+  async function changeExpiry(u) {
+    setActionMsg('')
+    const { ok, data } = await apiJson(`/api/admin/users/${u.id}/login-link`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expires_at: expiryFor(u) }),
+    })
+    if (!ok) { setActionMsg(`Error: ${data?.error || 'Could not change the expiry'}`); return }
+    setActionMsg(`Link for ${u.email} now expires ${new Date(data.expires_at).toLocaleDateString()}.`)
+    loadUsers()
+  }
+
+  async function copyLink() {
+    try { await navigator.clipboard.writeText(newLink.url); setCopied(true) } catch { setCopied(false) }
   }
 
   async function downloadBackup() {
@@ -604,7 +683,44 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
         {/* ── Users ── */}
         {tab === 'users' && (
           <div>
-            {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.includes('failed') || actionMsg.includes('error') ? '#a00' : '#060', fontSize: 13 }}>{actionMsg}</div>}
+            <form onSubmit={sendInvite} style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 640 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Invite a person</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                <input
+                  type="email" required placeholder="email address" value={invEmail}
+                  onChange={(e) => setInvEmail(e.target.value)} style={{ width: 240 }} aria-label="Email address to invite"
+                />
+                {['admin', 'reviewer', 'judge'].map((r) => (
+                  <label key={r} style={{ fontSize: 13 }}>
+                    <input type="checkbox" checked={invRoles[r]} onChange={(e) => setInvRoles({ ...invRoles, [r]: e.target.checked })} /> {r[0].toUpperCase() + r.slice(1)}
+                  </label>
+                ))}
+                <label style={{ fontSize: 13 }}>
+                  Link valid until{' '}
+                  <input type="date" required value={invExpiry} min={dateInDays(1)} onChange={(e) => setInvExpiry(e.target.value)} />
+                </label>
+                <button className="btn-primary" type="submit" disabled={invBusy || !invEmail.trim()}>{invBusy ? 'Inviting…' : 'Invite'}</button>
+              </div>
+              <div style={{ fontSize: 12, color: '#555', marginTop: 6 }}>
+                The app sends no email: you get a personal sign-in link to pass on. The person can use it as often as they like until it expires.
+              </div>
+            </form>
+
+            {newLink && (
+              <div role="status" style={{ border: '1px solid #b9d9b9', background: '#f3faf3', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 760 }}>
+                <div style={{ fontSize: 13, marginBottom: 6 }}>
+                  Sign-in link for <strong>{newLink.email}</strong> (valid until {new Date(newLink.expires_at).toLocaleDateString()}).
+                  <strong> Copy it now — it can't be shown again.</strong> If it is lost, create a new link.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input readOnly value={newLink.url} onFocus={(e) => e.target.select()} style={{ flex: 1, fontFamily: 'monospace', fontSize: 12 }} aria-label="Sign-in link" />
+                  <button type="button" onClick={copyLink}>{copied ? 'Copied' : 'Copy'}</button>
+                  <button type="button" onClick={() => setNewLink(null)}>Done</button>
+                </div>
+              </div>
+            )}
+
+            {actionMsg && <div style={{ marginBottom: 8, color: actionMsg.startsWith('Error') ? '#a00' : '#060', fontSize: 13 }}>{actionMsg}</div>}
             {usersError && <div style={{ color: '#a00', marginBottom: 8 }}>{usersError}</div>}
             <button onClick={loadUsers} disabled={usersLoading} style={{ marginBottom: 10, fontSize: 12 }}>
               {usersLoading ? 'Loading…' : '↻ Update'}
@@ -617,7 +733,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                       <th>id</th>
                       <th>email</th>
                       <th>roles</th>
-                      <th>created_at</th>
+                      <th>sign-in link</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -626,38 +742,41 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                         <td>{u.id}</td>
                         <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
                         <td style={{ whiteSpace: 'nowrap' }}>
-                          <label style={{ marginRight: 12 }} title={u.id === meId ? "You can't remove your own admin role" : undefined}>
-                            <input
-                              type="checkbox"
-                              checked={!!u.is_admin}
-                              disabled={u.id === meId && !!u.is_admin}
-                              onChange={(e) => setRole(u, 'admin', e.target.checked)}
-                              aria-label={`Admin role for ${u.email}`}
-                            /> Admin
-                          </label>
-                          <label style={{ marginRight: 12 }}>
-                            <input
-                              type="checkbox"
-                              checked={!!u.is_reviewer}
-                              onChange={(e) => setRole(u, 'reviewer', e.target.checked)}
-                              aria-label={`Reviewer role for ${u.email}`}
-                            /> Reviewer
-                          </label>
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={!!u.is_judge}
-                              onChange={(e) => setRole(u, 'judge', e.target.checked)}
-                              aria-label={`Judge role for ${u.email}`}
-                            /> Judge
-                          </label>
+                          {[['admin', 'is_admin', 'Admin'], ['reviewer', 'is_reviewer', 'Reviewer'], ['judge', 'is_judge', 'Judge']].map(([role, col, label]) => {
+                            const own = role === 'admin' && u.id === meId && !!u[col]
+                            return (
+                              <label key={role} style={{ marginRight: 12 }} title={own ? "You can't remove your own admin role" : undefined}>
+                                <input
+                                  type="checkbox"
+                                  checked={!!u[col]}
+                                  disabled={own}
+                                  onChange={(e) => setRole(u, role, e.target.checked)}
+                                  aria-label={`${label} role for ${u.email}`}
+                                /> {label}
+                              </label>
+                            )
+                          })}
                         </td>
-                        <td style={{ whiteSpace: 'nowrap' }}>{u.created_at}</td>
+                        <td>
+                          <div style={{ color: u.link?.state === 'active' ? '#060' : '#a60', marginBottom: 4 }}>{describeLink(u.link)}</div>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <input
+                              type="date" value={expiryFor(u)} min={dateInDays(1)}
+                              onChange={(e) => setRowExpiry({ ...rowExpiry, [u.id]: e.target.value })}
+                              aria-label={`Expiry date for ${u.email}`}
+                            />
+                            <button style={{ fontSize: 12 }} onClick={() => issueLink(u)}>New link</button>
+                            {u.link && <button style={{ fontSize: 12 }} onClick={() => changeExpiry(u)}>Set expiry</button>}
+                            {u.link && <button style={{ fontSize: 12, color: '#a00' }} onClick={() => cancelLink(u)}>Cancel link</button>}
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>{users.length} user{users.length !== 1 ? 's' : ''}</div>
+                <div style={{ fontSize: 12, color: '#666', marginTop: 6 }}>
+                  {users.length} user{users.length !== 1 ? 's' : ''}. A new or cancelled link also logs that person out everywhere.
+                </div>
               </div>
             )}
           </div>
@@ -751,6 +870,13 @@ export default function App() {
   const [me, setMe] = useState(null)
   const [meLoaded, setMeLoaded] = useState(false)
 
+  // A magic link opens /signin#<secret>. The secret is kept out of the address bar and history
+  // once read, and nothing happens until the person presses "Sign in" (so link previewers
+  // in chat and email apps can't use it up or sign anyone in).
+  const [signinToken, setSigninToken] = useState(() => (window.location.pathname === '/signin' ? window.location.hash.slice(1) : null))
+  const [signinError, setSigninError] = useState('')
+  const [signinBusy, setSigninBusy] = useState(false)
+
   const [film, setFilm] = useState(null)
   const [categories, setCategories] = useState([])
   const [scores, setScores] = useState({}) // key -> number
@@ -836,7 +962,26 @@ export default function App() {
     await loadNextFilm()
   }
 
-  useEffect(() => { loadMe() }, [])
+  useEffect(() => {
+    if (window.location.pathname === '/signin' && window.location.hash) {
+      window.history.replaceState({}, '', '/signin')
+    }
+    loadMe()
+  }, [])
+
+  async function signIn() {
+    setSigninBusy(true); setSigninError('')
+    const { ok, data } = await apiJson('/api/auth/signin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: signinToken }),
+    })
+    setSigninBusy(false)
+    if (!ok) { setSigninError(data?.error || 'Could not sign in. Try again.'); return }
+    window.history.replaceState({}, '', '/')
+    setSigninToken(null)
+    await loadMe()
+  }
 
   useEffect(() => {
     if (me) {
@@ -846,6 +991,23 @@ export default function App() {
   }, [me])
 
   const allChosen = !!film?.identifier && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
+
+  if (window.location.pathname === '/signin' && !me) {
+    return (
+      <div style={{ padding: 20, maxWidth: 520 }}>
+        <h2>IA Film Rater</h2>
+        {signinToken ? (
+          <>
+            <p style={{ marginTop: 0 }}>You've been invited to rate films. Press the button to sign in on this device.</p>
+            {signinError ? <div role="alert" style={{ margin: '12px 0', color: '#a00' }}>{signinError}</div> : null}
+            <button className="btn-primary" onClick={signIn} disabled={signinBusy}>{signinBusy ? 'Signing in…' : 'Sign in'}</button>
+          </>
+        ) : (
+          <p style={{ marginTop: 0 }}>This sign-in link is incomplete. Open the whole link from your invitation again, or ask an administrator for a new one.</p>
+        )}
+      </div>
+    )
+  }
 
   if (!me) {
     return (

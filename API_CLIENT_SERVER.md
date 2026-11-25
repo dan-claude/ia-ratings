@@ -4,10 +4,10 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 1: clean
-baseline). **Work in progress:** the contract below describes the app after step 1.
-Sign-in by magic link, film distribution and the ranking/judge screens arrive in
-later steps and will be added here as they land.
+Last verified against the code: 2026-11-25 (`major-changes` branch, step 2: login by
+invite). **Work in progress:** the contract below describes the app after step 2.
+Film distribution and the ranking/judge screens arrive in later steps and will be
+added here as they land.
 
 ## Conventions (Binding)
 
@@ -52,7 +52,24 @@ Used by the Railway health check.
 
 ---
 
-## Session
+## Sign-in and session
+
+Sign-in is by **magic link** only. An admin invites a person (`POST /api/admin/users`) and
+passes them a link of the form `https://<site>/signin#<secret>`. The secret is in the URL
+fragment (never sent to the server on page load). The `/signin` page shows a **Sign in**
+button, and only pressing it calls `POST /api/auth/signin`. A link can be used repeatedly
+until it expires or is cancelled; a new link cancels the old one.
+
+### POST /api/auth/signin — public
+Rate-limited per client address to **10 per minute and 50 per hour** (over the limit:
+429, Flask-Limiter's default response, which is not the JSON error shape).
+```json
+{ "token": "<the secret from the link>" }
+```
+200 `{ "ok": true }` — a fresh session (8 hours) is started, replacing any existing one.
+
+401 `{ "error": "This sign-in link is not valid any more. Ask an administrator for a new one." }`
+— the same answer for a missing, unknown, cancelled or expired token (expiry is checked on every use).
 
 ### POST /api/auth/logout — public
 Clears the session (and its server-side record).
@@ -76,8 +93,7 @@ Clears the session (and its server-side record).
 `judge`; the `is_*` fields are the same information as booleans.
 `created_at` is SQLite `datetime('now')` format (UTC, space-separated).
 
-(There is no password, GitHub or archive.org login any more, and no
-`/api/config`. How people sign in — the magic link — is added in a later step.)
+(There is no password, GitHub or archive.org login, and no `/api/config`.)
 
 ---
 
@@ -280,6 +296,48 @@ evaluate them. Columns:
 
 ### User management
 
+#### GET /api/admin/users — admin
+Every user, oldest first, with the state of their sign-in link:
+```json
+[{ "id": 2, "email": "rev@example.com", "created_at": "2026-11-25 23:30:52",
+   "is_admin": false, "is_reviewer": true, "is_judge": false, "roles": ["reviewer"],
+   "link": { "state": "active", "expires_at": "2026-12-25T23:59:59Z" } }]
+```
+`link` is `null` when the person has no link; `state` is `active` or `expired`. The link's
+secret is never included.
+
+#### POST /api/admin/users — admin
+Invites a person: creates the account and its first link. The app sends no email.
+```json
+{ "email": "rev@example.com", "roles": ["reviewer"], "expires_at": "2026-12-25" }
+```
+`email` is required (stored lower-case). `roles` (default none) are from `admin`, `reviewer`,
+`judge`. `expires_at` is optional: a date `YYYY-MM-DD` (end of that day, UTC) or an ISO-8601
+date-time; it must be in the future; the default is 30 days from now.
+
+201 — the secret appears **only here**:
+```json
+{ "ok": true, "user": { "id": 2, "email": "rev@example.com", "roles": ["reviewer"] },
+  "link": { "token": "<secret>", "path": "/signin#<secret>", "expires_at": "2026-12-25T23:59:59Z" } }
+```
+The client builds the address as its own origin plus `path`.
+Errors: 400 (invalid email, unknown role, bad `expires_at`), 409 (the email already has an account).
+
+#### POST /api/admin/users/<id>/login-link — admin
+Issues a new link (optional body `{ "expires_at": ... }`, same rules). The previous link stops
+working and the person's current logins end (except the admin's own current one when they
+issue a link for themselves). 201 `{ "ok": true, "user_id": 2, "link": { ...as above } }`.
+Errors: 400 (bad `expires_at`), 404 (unknown user).
+
+#### PUT /api/admin/users/<id>/login-link — admin
+Changes the expiry of the user's active (not cancelled) link; this can revive an expired one.
+Body `{ "expires_at": ... }` (required). 200 `{ "ok": true, "user_id": 2, "expires_at": "…Z" }`.
+Errors: 400 (missing/bad `expires_at`), 404 (unknown user, or no active link).
+
+#### DELETE /api/admin/users/<id>/login-link — admin
+Cancels the user's link and ends their current logins (the admin's own, if it is their own link).
+200 `{ "ok": true, "user_id": 2 }`, also when there was no link. Errors: 404 (unknown user).
+
 #### PUT /api/admin/users/<id>/roles — admin
 Sets the user's roles to **exactly** the list given (a role not listed is removed).
 Known roles: `admin`, `reviewer`, `judge`.
@@ -363,12 +421,13 @@ error nothing is changed.
 ## Client usage (informative)
 
 The client (`client/src/App.jsx`) calls:
-- `/api/me`, `/api/auth/logout`
+- `/api/me`, `/api/auth/signin`, `/api/auth/logout`
 - `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
 - Admin panel: `/api/admin/jobs/status`, `/api/admin/import/preview`, `/api/admin/import`,
-  `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/users/<id>/roles`,
-  `/api/admin/db/tables`, `/api/admin/db/<table>` (including `users?order_by=id`
-  for the Users tab), `/api/admin/db/backup`, `/api/admin/db/restore`
+  `/api/admin/db/empty`, `/api/admin/ratings.csv`, `/api/admin/users`, `/api/admin/users/<id>/roles`,
+  `/api/admin/users/<id>/login-link` (POST, PUT, DELETE),
+  `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab
+  uses `/api/admin/users`), `/api/admin/db/backup`, `/api/admin/db/restore`
 
 The client does not call `/api/films/<identifier>`, `/api/admin/db/schema`,
 `make-admin`/`revoke-admin` or `/api/health`.

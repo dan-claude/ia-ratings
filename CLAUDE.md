@@ -16,7 +16,7 @@ When an API route changes, also update `API_CLIENT_SERVER.md` (the binding API c
 
 React + Flask + SQLite app for rating the public-domain films submitted to the contest (spreadsheet import; the films are played from archive.org).
 
-> **Branch `major-changes` (in progress, not on `main`).** The app is being rebuilt in steps (plan: `CHANGES_DRAFT.md` in the main checkout, untracked and never committed). **Step 1 (clean baseline) is done:** one fresh schema, three roles, hard-coded categories, assignments, and the old features removed. Still to come: login by magic link (step 2; until then nobody can sign in except via the test helpers), spreadsheet columns for creator / public-domain works / AI disclosure / eligibility (3), the distribute-films button and progress views (4), the new rating screen (5), rankings and the judges' pool (6), the judge export and final screen (7), dark mode (8). Production still runs the old app from `main`; a reset procedure must be agreed before this is deployed (an old database is refused at startup).
+> **Branch `major-changes` (in progress, not on `main`).** The app is being rebuilt in steps (plan: `CHANGES_DRAFT.md` in the main checkout, untracked and never committed). **Steps 1 (clean baseline) and 2 (login by invite / magic link) are done.** Still to come: spreadsheet columns for creator / public-domain works / AI disclosure / eligibility (3), the distribute-films button and progress views (4), the new rating screen (5), rankings and the judges' pool (6), the judge export and final screen (7), dark mode (8). Production still runs the old app from `main`; a reset procedure must be agreed before this is deployed (an old database is refused at startup).
 
 ## Architecture
 
@@ -42,7 +42,11 @@ server/
 
 ## Auth and roles
 
-**Login is by magic link only** (planned, step 2): an admin invites a person by email address and passes them a personal link; the app sends no email. The old logins (archive.org username/password, local email/password, GitHub OAuth) and the `AUTH_SCHEME` / `GITHUB_*` settings have been **removed**. `users.password_hash` is nullable and unused (reserved in case password registration is added later).
+**Login is by magic link only.** An admin invites a person by email (Admin → Users → Invite, `POST /api/admin/users` with email, roles and an optional expiry): the account is created and the admin gets a personal link **once** to pass on (the app sends no email). The old logins (archive.org username/password, local email/password, GitHub OAuth) and the `AUTH_SCHEME` / `GITHUB_*` settings have been **removed**. `users.password_hash` is nullable and unused (reserved in case password registration is added later).
+
+Magic-link details (`server/services/login_link_service.py`, `server/repositories/login_link_repo.py`, `login_links` table): the link is `<origin>/signin#<secret>`. The secret is in the URL **fragment** so it never reaches server logs or Referer headers; opening the page signs nobody in: the client (`/signin` is served by an explicit route in `app.py`, because the static route at `/` 404s unknown paths) shows a **Sign in** button, and only pressing it POSTs `{token}` to `POST /api/auth/signin` (10/min and 50/hour per client, see `TRUSTED_PROXY_HOPS`), then removes the secret from the address bar. Only the SHA-256 of the secret is stored. A link is **reusable** until its `expires_at` (chosen by the admin, default 30 days, a date means end of that day UTC; checked on every use) or until cancelled; each user has at most one non-cancelled link (partial unique index). A **new link cancels the old one**, and issuing or cancelling a link **ends that person's sessions** (except the admin's own current one when acting on themselves). Admin routes: `GET /api/admin/users`, `POST /api/admin/users`, `POST|PUT|DELETE /api/admin/users/<id>/login-link`. A lost link can't be recovered: issue a new one. Unknown, cancelled and expired links all get the same 401 message.
+
+**First admin** (nobody can sign in without an invite): `python tools/print_db.py --invite EMAIL --admin [--roles reviewer,judge] [--days 30]` creates the user (or adds roles to an existing one and re-issues their link) and prints the link; set `PUBLIC_URL` so it prints the full address (otherwise just the `/signin#…` path). It creates the database file if missing.
 
 **Roles.** A user can hold any combination of `admin`, `reviewer` and `judge` (checkboxes in the admin panel → Users; `PUT /api/admin/users/<id>/roles` with `{"roles": [...]}`, which sets the list exactly; an admin can't remove their own admin role). Roles are independent: admin does not imply the others. Only reviewers and judges rate films (`RatingService._can_rate`; admin alone does not), and a user with no role sees no films. `/api/me` returns `is_admin`, `is_reviewer`, `is_judge` and `roles`. Role names ↔ columns live in `ROLE_COLUMNS` in `server/repositories/user_repo.py`; to add a role add a column (schema change) and an entry there. Emails are stored lower-case.
 
@@ -64,6 +68,7 @@ server/
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
+| `PUBLIC_URL` | *(unset)* | Site address (e.g. `https://ratings.example.org`) used only by `tools/print_db.py --invite` to print full links; the admin panel builds links from the browser's address |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `127.0.0.1` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app`. Local only by default; `--debug` is refused on a non-local host (the Werkzeug debugger runs arbitrary code) |
 | `VITE_LOG_LEVEL` | `info` | Client console log level (`client/src/logger.ts`) |
@@ -121,7 +126,7 @@ Deploys come from Railway's **GitHub integration**: the Railway service is conne
 Railway service variables:
 - `SESSION_SECRET` — **required**; a missing one now stops the app booting (deploy fails its health check and Railway keeps the previous deployment). Random secret: `python3 -c "import secrets; print(secrets.token_hex(32))"`, keep private
 - `TRUSTED_PROXY_HOPS` — set to `1` by the Dockerfile; don't override
-- **Resetting for the new app:** an old-style database is refused at startup. Agree the procedure with the owner first (download a Backup in the old admin panel; delete `/data/app.db`, `-wal` and `-shm` via `railway ssh` as the `app` user; deploy; create the first admin from the command line; import the spreadsheet).
+- **Resetting for the new app:** an old-style database is refused at startup. Agree the procedure with the owner first (download a Backup in the old admin panel; delete `/data/app.db`, `-wal` and `-shm` via `railway ssh` as the `app` user; deploy; create the first admin with `tools/print_db.py --invite EMAIL --admin` (set `PUBLIC_URL`); import the spreadsheet).
 - `DB_PATH` — `/data/app.db`
 - `PORT` is provided by Railway; don't set it
 
@@ -188,7 +193,7 @@ Tables:
 |-------|-------|
 | `schema_migrations` | `version` rows (just `1` for now) |
 | `users` | `email` (unique, lower-case), nullable `password_hash` (unused), `is_admin`, `is_reviewer`, `is_judge`, `created_at` |
-| `login_links` | Magic links: `token_hash` (SHA-256 only), `user_id`, `created_at`, `expires_at`, `revoked_at`; a partial unique index allows one non-revoked link per user. Routes arrive in step 2 |
+| `login_links` | Magic links: `token_hash` (SHA-256 only), `user_id`, `created_at`, `expires_at`, `revoked_at`; a partial unique index allows one non-revoked link per user |
 | `user_sessions` | Server-side login sessions (SHA-256 of the id) |
 | `films` | `ia_identifier` (unique), `title`, `creator`, `description`, `public_domain_works`, `ai_disclosure`, `in_judges_pool`, `updated_at` |
 | `assignments` | Primary key `(user_id, film_id)`; `status` `assigned`/`seen`/`rated` (CHECK), `assigned_at`, `seen_at`, `rated_at` |
@@ -207,6 +212,7 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check (used by Railway) |
+| POST | `/api/auth/signin` | Sign in with a magic link's secret `{"token"}` (rate-limited; 401 if invalid, cancelled or expired) |
 | POST | `/api/auth/logout` | Logout |
 
 ### Logged-in users
@@ -231,6 +237,11 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | GET | `/api/admin/db/<table>` | Dump table rows (`order_by`, `limit`, `offset` params) |
 | GET | `/api/admin/db/backup` | Download full DB as versioned JSON |
 | POST | `/api/admin/db/restore` | Restore DB from a backup JSON |
+| GET | `/api/admin/users` | Users with roles and sign-in link state (none / active / expired) |
+| POST | `/api/admin/users` | Invite: `{"email", "roles", "expires_at"?}` → 201 with the link (shown once) |
+| POST | `/api/admin/users/<id>/login-link` | New link (cancels the old one, ends the person's logins) |
+| PUT | `/api/admin/users/<id>/login-link` | Change the active link's expiry `{"expires_at"}` |
+| DELETE | `/api/admin/users/<id>/login-link` | Cancel the link and end their logins |
 | PUT | `/api/admin/users/<id>/roles` | Set a user's roles exactly (`{"roles": ["admin","reviewer","judge"]}`) |
 | POST | `/api/admin/users/<id>/make-admin` | Promote user to admin |
 | POST | `/api/admin/users/<id>/revoke-admin` | Revoke admin from user |
@@ -245,7 +256,7 @@ python tools/print_db.py --table films --limit 10 --order-by "id DESC"
 python tools/print_db.py --make-admin user@example.com   # the user must already exist
 ```
 
-(Step 2 adds `--invite EMAIL --admin`, which creates the first admin and prints a magic link; until then a fresh database has no way to get an admin.)
+`--invite EMAIL [--admin] [--roles a,b] [--days N]` — create a user / re-issue their magic link and print it (the way to create the first admin; see Auth and roles).
 
 
 > Note: `railway run` executes locally with Railway env vars injected but **cannot** access the Railway volume (`/data/app.db`). Use the admin UI/API, or `railway ssh` + `tools/print_db.py` (see Deployment) for the production database.

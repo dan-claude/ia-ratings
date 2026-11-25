@@ -4,10 +4,10 @@ A React + Flask + SQLite web app for judging the public-domain films submitted t
 Public Domain Day film contest (the films are played from archive.org).
 
 > **Work in progress on the `major-changes` branch.** The app is being rebuilt in
-> steps. Step 1 (a clean baseline) is done: a new database schema, the three roles
+> steps. Steps 1 (a clean baseline) and 2 (invite and sign in by magic link) are done. Step 1 was: a new database schema, the three roles
 > (admin / reviewer / judge), hard-coded rating categories, per-person film
 > assignments, and the old archive.org sync, collections, criteria editor, notes and
-> old logins removed. Still to come: sign-in by magic link, the new spreadsheet
+> old logins removed. Still to come: the new spreadsheet
 > columns, distributing films to reviewers, the new rating screen, rankings and the
 > judges' pool, judge exports, and dark mode. Production still runs the old app from `main`.
 
@@ -28,12 +28,16 @@ Production runs on Railway (new deployment being set up; URL to follow).
 - **Three roles**, independent checkboxes in the admin panel's Users tab: *admin*
   (manages everything, doesn't rate), *reviewer* and *judge* (both rate their own
   films). A user with no role sees no films.
-- **Sign-in** will be by personal magic link only (step 2); there are no passwords,
-  archive.org logins or GitHub login any more.
+- **Sign-in is by personal magic link only.** An admin invites a person by email address
+  (Users tab → Invite) and passes them the link; the app sends no email. The link opens a
+  page with a **Sign in** button (so chat and email apps that preview links can't use it),
+  works repeatedly until the expiry date the admin chose, and is replaced or cancelled by
+  the admin (which also logs that person out). There are no passwords, archive.org logins
+  or GitHub login.
 - **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
   - *Import* — populate the film database from a CSV spreadsheet (see below)
   - *Actions* — film count and title-lookup progress, download `ratings.csv`, empty the film database (films, assignments and ratings; asks for confirmation)
-  - *Users* — tick Admin / Reviewer / Judge for each user
+  - *Users* — invite people, tick Admin / Reviewer / Judge, create / cancel sign-in links and change their expiry
   - *DB Browser* — table row counts and paged table dumps
   - *Backup* — download the full DB as JSON; restore from a backup file
 - Cookie sessions backed by a server-side record (8-hour lifetime, `HttpOnly`,
@@ -49,7 +53,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
 | Client | React 18 + Vite, single file `client/src/App.jsx`, no UI library |
 | Server | Flask 3 app factory; routes → services → repositories |
 | Database | SQLite (WAL mode), baseline schema created at startup in `server/db.py` |
-| Auth | Flask cookie sessions with a server-side record; magic-link sign-in (step 2) |
+| Auth | Flask cookie sessions with a server-side record; magic-link sign-in |
 | Hosting | Railway (Dockerfile build, deploys from GitHub on push to `main`); GitHub Actions CI |
 
 ## Running locally
@@ -92,9 +96,11 @@ If your Flask server is on a different port, change the proxy target in
 1. Start the server once so it creates the database (`server/app.db` by default). If
    the file is from the old app the server refuses to start; delete it (and its
    `-wal` / `-shm` files) and start again.
-2. Create the first admin. Magic-link sign-in (and the command that creates the
-   first admin and prints a link) arrives in step 2 of the rebuild; until then a fresh
-   database has no way to get a signed-in admin.
+2. Create the first admin (nobody can sign in without an invite). This prints their link:
+   ```bash
+   PUBLIC_URL=http://localhost:5173 python tools/print_db.py --invite you@example.com --admin
+   ```
+   Open the printed link and press **Sign in**.
 3. As an admin, open the admin panel → *Import* and load the spreadsheet. Until you do,
    people see "the film database hasn't been set up yet".
 
@@ -105,6 +111,7 @@ If your Flask server is on a different port, change the proxy target in
 | `DB_PATH` | `server/app.db` | SQLite file location |
 | `SESSION_SECRET` | *(none)* | Session signing key. **Required**: the server refuses to start without it (gunicorn/Railway). Only `python -m server.app` for local development may omit it. |
 | `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app (Railway: `1`, set by the Dockerfile) so the sign-in rate limit is per real client |
+| `PUBLIC_URL` | *(unset)* | Site address, used only by `tools/print_db.py --invite` to print full links |
 | `LOG_LEVEL` | `INFO` | Server log level |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `127.0.0.1` / `5000` | Defaults for `--host` / `--port` (local only by default) |
 | `FLASK_DEBUG` | `0` | `1` enables the Werkzeug debugger (dev only) |
@@ -139,7 +146,7 @@ Each test runs against its own temporary SQLite file; users are created directly
 
 | Tool | What it does |
 |------|--------------|
-| `tools/print_db.py` | Inspect the local DB (`--tables`, `--table`, `--where`, `--order-by`, `--limit`, `--json`, `--schema`) and `--make-admin` / `--revoke-admin EMAIL` |
+| `tools/print_db.py` | Inspect the local DB (`--tables`, `--table`, `--where`, `--order-by`, `--limit`, `--json`, `--schema`), `--make-admin` / `--revoke-admin EMAIL`, and `--invite EMAIL [--admin] [--roles a,b] [--days N]` (create a user / re-issue their link and print it) |
 
 The tool is also in the production image: run them on Railway with `railway ssh`
 (they use the service's `DB_PATH`). Otherwise use the admin panel or the admin API
@@ -154,7 +161,7 @@ The multi-stage `Dockerfile` builds the client with Node 20 and runs the server 
 Python 3.12 under gunicorn (one worker, eight threads); `railway.toml` sets the `/api/health` health check. The production DB
 lives on a Railway volume at `/data/app.db` (`DB_PATH=/data/app.db`). The new schema can't
 reuse the old production database: it must be reset (backup, delete the file, deploy, create the
-first admin, import) using a procedure agreed beforehand; see `CLAUDE.md`.
+first admin with `--invite`, import) using a procedure agreed beforehand; see `CLAUDE.md`.
 See `CLAUDE.md` for the full deployment notes.
 
 ## Documentation map
