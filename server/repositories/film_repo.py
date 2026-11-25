@@ -89,6 +89,16 @@ class FilmRepository:
     def list_all(self) -> list[sqlite3.Row]:
         return self.db.fetchall(f"SELECT {_FILM_COLUMNS} FROM films ORDER BY id")
 
+    def set_judges_pool(self, film_ids: list[int]) -> None:
+        """Make exactly these films the judges' pool."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                conn.execute("UPDATE films SET in_judges_pool = 0 WHERE in_judges_pool = 1")
+                conn.executemany("UPDATE films SET in_judges_pool = 1 WHERE id = ?", [(int(i),) for i in film_ids])
+        finally:
+            conn.close()
+
     def delete_all_with_ratings(self) -> dict:
         """Delete every film plus all assignments, ratings and scores (which reference films).
 

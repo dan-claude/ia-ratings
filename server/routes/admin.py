@@ -7,6 +7,7 @@ from ..auth_session import current_user_id
 from ..db import SCHEMA_VERSION
 from ..repositories.user_repo import ROLE_COLUMNS
 from ..services.distribution_service import DistributionError
+from ..services.ranking_service import PoolError
 from ..services import import_service
 
 admin_bp = Blueprint("admin", __name__)
@@ -529,6 +530,111 @@ def unassign_film(user_id: int, identifier: str):
     if outcome == "rated":
         return jsonify({"error": "They have already rated this film, so it can't be taken away"}), 409
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Rankings and the judges' pool
+# ---------------------------------------------------------------------------
+
+def _pool_error(exc: PoolError):
+    return jsonify({"error": str(exc), "code": exc.code, **exc.extra}), 409
+
+
+@admin_bp.get("/api/admin/rankings")
+def rankings():
+    """Every film with its reviewers' average score (highest first) and all its details."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    films = [{k: v for k, v in r.items() if k != "id"} for r in current_app.services["ranking"].rankings()]
+    return jsonify({"films": films, "overall": current_app.services["distribution"].progress()["overall"]})
+
+
+@admin_bp.get("/api/admin/rankings.csv")
+def rankings_csv():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    return Response(
+        current_app.services["ranking"].rankings_csv(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="rankings.csv"'},
+    )
+
+
+@admin_bp.get("/api/admin/judges-pool")
+def judges_pool():
+    """The current judges' pool (ranked, with averages) and each judge's progress on it."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    status = current_app.services["ranking"].pool_status()
+    status["films"] = [{k: v for k, v in r.items() if k != "id"} for r in status["films"]]
+    return jsonify(status)
+
+
+@admin_bp.get("/api/admin/judges-pool/preview")
+def judges_pool_preview():
+    """The ranked list a pool of `count` films (default 20) would be, with the tie check.
+    Changes nothing. 409 `reviews_missing` until every film has both of its reviews."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    raw = request.args.get("count")
+    try:
+        count = None if raw is None else int(raw)
+        preview = current_app.services["ranking"].preview(count)
+    except PoolError as exc:
+        return _pool_error(exc)
+    except ValueError:
+        return jsonify({"error": "count must be a whole number between 1 and the number of films"}), 400
+    preview["films"] = [{k: v for k, v in r.items() if k != "id"} for r in preview["films"]]
+    return jsonify(preview)
+
+
+@admin_bp.post("/api/admin/judges-pool")
+def confirm_judges_pool():
+    """Confirm the pool: the top `count` films become the judges' pool and every judge is given
+    all of them. Same checks as the preview, plus: no tie at the cut-off, and no pool yet."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        result = current_app.services["ranking"].confirm(data.get("count"))
+    except PoolError as exc:
+        return _pool_error(exc)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    current_app.logger.warning("admin.judges_pool.confirmed user_id=%s result=%s", session.get("user_id"), result)
+    return jsonify({"ok": True, **result}), 201
+
+
+@admin_bp.post("/api/admin/judges-pool/assign")
+def assign_judges_pool():
+    """Give every pool film to every judge again (idempotent; for judges added after the pool was set)."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        return jsonify({"ok": True, **current_app.services["ranking"].assign_pool()})
+    except PoolError as exc:
+        return _pool_error(exc)
+
+
+@admin_bp.delete("/api/admin/judges-pool")
+def clear_judges_pool():
+    """Clear the pool and the judges' unrated pool assignments so it can be chosen again.
+    409 `judges_have_rated` once a judge has rated a pool film."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        result = current_app.services["ranking"].clear_pool()
+    except PoolError as exc:
+        return _pool_error(exc)
+    current_app.logger.warning("admin.judges_pool.cleared user_id=%s", session.get("user_id"))
+    return jsonify({"ok": True, **result})
 
 
 # ---------------------------------------------------------------------------

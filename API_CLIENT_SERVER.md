@@ -4,8 +4,8 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 4: distribution).
-**Work in progress:** the contract below describes the app after step 4.
+Last verified against the code: 2026-11-25 (`major-changes` branch, step 6: rankings and the judges' pool).
+**Work in progress:** the contract below describes the app after step 6.
 Film distribution and the ranking/judge screens arrive in later steps and will be
 added here as they land.
 
@@ -286,7 +286,7 @@ Every film is given to **2 different reviewers** (users with the `reviewer` role
 button. It runs once; a separate reset (with confirmation) clears everything so it can run
 again. Each assignment has a status (`assigned` → `seen` → `rated`, set by the reviewer's own
 actions) that these views read. A film is **fully reviewed** when at least 2 people have
-`rated` it.
+`rated` it in the reviewers' round.
 
 #### POST /api/admin/distribute — admin
 No body. Gives every film in the database to 2 different reviewers at random. Each film goes
@@ -313,8 +313,8 @@ transaction. Users and films are kept. Body must be `{ "confirm": "RESET" }` (el
                 "assigned": 3, "seen": 1, "rated": 20, "total": 24 } ],
   "films": [ { "identifier": "film-a", "title": "A Film", "creator": "Sam B", "in_judges_pool": false,
                "rated": 1, "fully_reviewed": false,
-               "assignees": [ { "user_id": 2, "email": "alice@example.com", "status": "rated" },
-                              { "user_id": 3, "email": "bob@example.com", "status": "seen" } ] } ]
+               "assignees": [ { "user_id": 2, "email": "alice@example.com", "status": "rated", "round": "reviewers" },
+                              { "user_id": 3, "email": "bob@example.com", "status": "seen", "round": "reviewers" } ] } ]
 }
 ```
 `people` lists everyone with the reviewer or judge role, plus anyone who still has films;
@@ -329,6 +329,72 @@ Hand-assigned films count as extra reviews; they don't change the "2 per film" r
 #### DELETE /api/admin/assignments/<user_id>/<identifier> — admin
 Takes a film off a person's list. 200 `{ "ok": true }`. Errors: 404 (unknown film, or not assigned
 to them), 409 (they have already rated it: ratings are final).
+
+### Rankings and the judges' pool
+
+A film's score is the **average** of its reviewers' scores (a person's score is the sum of their
+three categories, so 3–30). Only reviewers'-round ratings count, so judges' ratings never change
+the ranking. Averages are compared **exactly** (as fractions of the integer `total` and `reviews`),
+never as rounded decimals. Equal averages share a rank (1, 2, 2, 4) and are listed alphabetically.
+Judges never see any scores or averages (no judge-facing route returns them).
+
+Assignments carry a `round`: `reviewers` (distribution, hand-assigned) or `judges` (the pool).
+A person has one assignment per film, so a **judge who already reviewed a pool film keeps that
+rating and does not rate it again** (confirming the pool leaves their assignment untouched).
+
+#### GET /api/admin/rankings — admin
+```json
+{ "overall": { "films": 300, "fully_reviewed": 212, "needing_reviews": 88, "...": "as in /progress" },
+  "films": [ { "rank": 1, "identifier": "film-a", "title": "A Film", "creator": "Sam B",
+               "description": "…", "public_domain_works": "…", "ai_disclosure": "…",
+               "in_judges_pool": false, "reviews": 2, "total": 48, "average": 24.0 } ] }
+```
+Every film, highest average first. `average` is `total / reviews` rounded to 2 places, for display
+only. Films nobody has rated come last with `rank`, `average` `null`.
+
+#### GET /api/admin/rankings.csv — admin
+Download `rankings.csv`: `rank, title, creator, average, reviews, total, identifier, description,
+public_domain_works, ai_disclosure, in_judges_pool` (formula-like cells are prefixed with `'`).
+
+#### GET /api/admin/judges-pool/preview?count=N — admin
+The ranked list a pool of `N` films would be (default `min(20, number of films)`). Changes nothing.
+200:
+```json
+{ "count": 20, "valid": true, "tie": null, "pool_exists": false, "total_films": 300,
+  "films": [ { "rank": 1, "identifier": "…", "average": 27.5, "reviews": 2, "...": "as above" } ] }
+```
+**No tie at the cut-off:** the film at rank `N` must score strictly higher than the next one (always
+true when `N` is every film). If not, `valid` is `false` and
+`"tie": { "message": "…", "nearest_valid_counts": { "lower": 19, "higher": 23 } }` (either may be `null`);
+the films listed are still the top `N`.
+Errors: 400 (`count` not a whole number from 1 to the number of films); **409 `reviews_missing`** until
+every film has both of its reviews (D17):
+```json
+{ "error": "212 of 300 films fully reviewed; 88 still need at least one review. …", "code": "reviews_missing",
+  "overall": { "...": "..." }, "missing": [ { "identifier": "f9", "title": "…", "rated": 1, "needed": 2 } ] }
+```
+(also 409 `no_films`).
+
+#### POST /api/admin/judges-pool — admin
+Confirms the pool: `{ "count": 20 }`. Same checks as the preview, plus **409 `tie_at_cutoff`** and
+**409 `pool_already_set`**. On success the top `count` films get `in_judges_pool = true` and **every
+judge** (users with the judge role) is given all of them (`round: judges`).
+201 `{ "ok": true, "count": 20, "judges": 18, "assigned": 360 }` (`assigned` counts new assignments;
+a judge's existing assignment for a pool film is left as it is). There is no way to remove or swap
+single films.
+
+#### GET /api/admin/judges-pool — admin
+`{ "exists": true, "films": [ranked pool films as above], "judges": [ { "id", "email", "films",
+"assigned", "seen", "rated" } ] }`.
+
+#### POST /api/admin/judges-pool/assign — admin
+Gives every pool film to every judge again (idempotent; for judges added after the pool was set).
+200 `{ "ok": true, "judges": 1, "films": 20, "assigned": 20 }`; 409 `no_pool` when there is no pool.
+
+#### DELETE /api/admin/judges-pool — admin
+Clears the pool and the judges' unrated pool assignments, so it can be chosen again. 200
+`{ "ok": true, "removed_assignments": 20 }`; 409 `judges_have_rated` once any judge has rated a pool
+film (use the distribution reset to start over).
 
 ### POST /api/admin/db/empty — admin
 **Destructive.** Deletes every film and all assignments, ratings and scores (user accounts
@@ -484,6 +550,8 @@ The client (`client/src/App.jsx`) calls:
 - Admin panel: `/api/admin/jobs/status`, `/api/admin/import/preview`, `/api/admin/import`,
   `/api/admin/db/empty`, `/api/admin/progress`, `/api/admin/distribute`, `/api/admin/distribute/reset`,
   `/api/admin/assignments` (POST) and `/api/admin/assignments/<user_id>/<identifier>` (DELETE),
+  `/api/admin/rankings`, `/api/admin/rankings.csv`, `/api/admin/judges-pool` (GET, POST, DELETE),
+  `/api/admin/judges-pool/preview`, `/api/admin/judges-pool/assign`,
   `/api/admin/ratings.csv`, `/api/admin/users`, `/api/admin/users/<id>/roles`,
   `/api/admin/users/<id>/login-link` (POST, PUT, DELETE),
   `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab

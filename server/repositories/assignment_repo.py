@@ -13,14 +13,15 @@ class AssignmentRepository:
     def __init__(self, db: Database):
         self.db = db
 
-    def add(self, user_id: int, film_id: int) -> bool:
-        """Give `film_id` to `user_id`. False if they already had it."""
+    def add(self, user_id: int, film_id: int, round: str = "reviewers") -> bool:
+        """Give `film_id` to `user_id`. False if they already had it (their existing assignment,
+        status and rating are left exactly as they are)."""
         conn = self.db.connect()
         try:
             with conn:
                 cur = conn.execute(
-                    "INSERT OR IGNORE INTO assignments (user_id, film_id) VALUES (?, ?)",
-                    (int(user_id), int(film_id)),
+                    "INSERT OR IGNORE INTO assignments (user_id, film_id, round) VALUES (?, ?, ?)",
+                    (int(user_id), int(film_id), round),
                 )
             return cur.rowcount == 1
         finally:
@@ -69,15 +70,15 @@ class AssignmentRepository:
         row = self.db.fetchone("SELECT COUNT(1) AS n FROM assignments")
         return int(row["n"]) if row else 0
 
-    def add_many(self, pairs: list[tuple[int, int]]) -> int:
+    def add_many(self, pairs: list[tuple[int, int]], round: str = "reviewers") -> int:
         """Give many (user_id, film_id) pairs in one transaction. Returns how many were new."""
         conn = self.db.connect()
         try:
             with conn:
                 before = conn.total_changes
                 conn.executemany(
-                    "INSERT OR IGNORE INTO assignments (user_id, film_id) VALUES (?, ?)",
-                    [(int(u), int(f)) for u, f in pairs],
+                    "INSERT OR IGNORE INTO assignments (user_id, film_id, round) VALUES (?, ?, ?)",
+                    [(int(u), int(f), round) for u, f in pairs],
                 )
                 return conn.total_changes - before
         finally:
@@ -101,6 +102,20 @@ class AssignmentRepository:
         finally:
             conn.close()
 
+    def clear_judges_round(self) -> Optional[int]:
+        """Remove the unrated judges'-round assignments (when the judges' pool is cleared).
+        Returns how many were removed, or None (and changes nothing) if a judge has already
+        rated one of them."""
+        conn = self.db.connect()
+        try:
+            with conn:
+                rated = conn.execute("SELECT COUNT(*) AS n FROM assignments WHERE round = 'judges' AND status = 'rated'").fetchone()["n"]
+                if rated:
+                    return None
+                return conn.execute("DELETE FROM assignments WHERE round = 'judges'").rowcount
+        finally:
+            conn.close()
+
     def reset_all(self) -> dict:
         """Start the reviewing round over: delete every assignment AND every rating and score
         (a rating without its assignment would block handing the film out again), and take all
@@ -119,7 +134,7 @@ class AssignmentRepository:
         """Every assignment with the person's email and the film's identifier (for progress views)."""
         return self.db.fetchall(
             """
-            SELECT a.user_id, u.email, a.film_id, f.ia_identifier, a.status
+            SELECT a.user_id, u.email, a.film_id, f.ia_identifier, a.status, a.round
             FROM assignments a
             JOIN users u ON u.id = a.user_id
             JOIN films f ON f.id = a.film_id

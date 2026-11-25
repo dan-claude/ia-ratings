@@ -68,6 +68,24 @@ class RatingRepository:
         scores = self.db.fetchall("SELECT category, score FROM rating_scores WHERE rating_id = ?", (row["id"],))
         return {"scores": {r["category"]: int(r["score"]) for r in scores}, "comment": row["comment"]}
 
+    def review_totals(self) -> dict[int, tuple[int, int]]:
+        """film_id -> (number of reviewers'-round ratings, sum of all their scores).
+
+        Judges'-round ratings are left out, so the reviewers' average is stable once the judges
+        start. A person's score for a film is the sum of their three category scores, so
+        total / count is the film's average score (3-30), kept as two integers for exact comparison.
+        """
+        rows = self.db.fetchall(
+            """
+            SELECT r.film_id AS film_id, COUNT(DISTINCT r.id) AS n, SUM(s.score) AS total
+            FROM ratings r
+            JOIN assignments a ON a.user_id = r.user_id AND a.film_id = r.film_id AND a.round = 'reviewers'
+            JOIN rating_scores s ON s.rating_id = r.id
+            GROUP BY r.film_id
+            """
+        )
+        return {int(r["film_id"]): (int(r["n"]), int(r["total"])) for r in rows}
+
     def list_for_export(self) -> list[dict]:
         """Every submitted rating, newest first: who, which film, scores by category, comment."""
         rows = self.db.fetchall(

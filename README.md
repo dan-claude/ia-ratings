@@ -5,11 +5,11 @@ Public Domain Day film contest (the films are played from archive.org).
 
 > **Work in progress on the `major-changes` branch.** The app is being rebuilt in
 > steps. Steps 1 (a clean baseline), 2 (invite and sign in by magic link), 3 (spreadsheet import
-> of the new columns), 4 (distribution and progress views) and 5 (the new rating screen) are done. Step 1 was: a new database schema, the three roles
+> of the new columns), 4 (distribution and progress views), 5 (the new rating screen) and 6 (rankings and the judges' pool) are done. Step 1 was: a new database schema, the three roles
 > (admin / reviewer / judge), hard-coded rating categories, per-person film
 > assignments, and the old archive.org sync, collections, criteria editor, notes and
-> old logins removed. Still to come: rankings and the
-> judges' pool, judge exports, and dark mode. Production still runs the old app from `main`.
+> old logins removed. Still to come: judge exports and the
+> judges' final screen, and dark mode. Production still runs the old app from `main`.
 
 Reviewers and judges are shown the films assigned to them one at a time (embedded
 archive.org player plus the film's details), score it in three categories (Aesthetic,
@@ -38,6 +38,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   - *Import* — populate the film database from a CSV spreadsheet (see below)
   - *Actions* — film count and title-lookup progress, download `ratings.csv`, empty the film database (films, assignments and ratings; asks for confirmation)
   - *Reviews* — hand the films out to reviewers (every film to 2 different reviewers, at random, once; a typed-confirmation reset starts over), the "N of M films fully reviewed" counter, a per-person table (not opened / opened / submitted, with each person's films) and a per-film table showing who still owes a review, with hand assign / remove
+  - *Rankings* — every film with its average score from highest to lowest (and all its details, downloadable as `rankings.csv`); choose the **judges' pool**: preview the top N films, with a check that the cut-off isn't a tie, blocked until every film has both its reviews; confirming gives every judge all the pool films (judges never see scores)
   - *Users* — invite people, tick Admin / Reviewer / Judge, create / cancel sign-in links and change their expiry
   - *DB Browser* — table row counts and paged table dumps
   - *Backup* — download the full DB as JSON; restore from a backup file

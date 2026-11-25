@@ -82,9 +82,12 @@ class DistributionService:
             raise LookupError("User not found")
         if not film:
             raise LookupError("Film not found")
-        if not set(UserRepository.roles_of(user)) & {"reviewer", "judge"}:
+        roles = set(UserRepository.roles_of(user))
+        if not roles & {"reviewer", "judge"}:
             raise ValueError("Only reviewers and judges can be given films")
-        return self.assignments.add(user_id, int(film["id"]))
+        # A pool film given to a judge belongs to the judges' round; anything else to the reviewers'.
+        round_ = "judges" if film["in_judges_pool"] and "judge" in roles else "reviewers"
+        return self.assignments.add(user_id, int(film["id"]), round_)
 
     def unassign(self, user_id: int, identifier: str) -> str:
         film = self.films.get_by_identifier(identifier)
@@ -105,7 +108,7 @@ class DistributionService:
         for r in rows:
             status = r["status"]
             by_film.setdefault(r["ia_identifier"], []).append(
-                {"user_id": int(r["user_id"]), "email": r["email"], "status": status})
+                {"user_id": int(r["user_id"]), "email": r["email"], "status": status, "round": r["round"]})
             counts = per_user.setdefault(int(r["user_id"]), {"assigned": 0, "seen": 0, "rated": 0})
             counts[status] += 1
             totals[status] += 1
@@ -113,7 +116,8 @@ class DistributionService:
         film_rows = []
         for f in films:
             assignees = by_film.get(f["ia_identifier"], [])
-            rated = sum(1 for a in assignees if a["status"] == "rated")
+            # Fully reviewed counts the reviewers' round only (judges rate later, on top of it).
+            rated = sum(1 for a in assignees if a["status"] == "rated" and a["round"] == "reviewers")
             film_rows.append({
                 "identifier": f["ia_identifier"],
                 "title": f["title"] or f["ia_identifier"],

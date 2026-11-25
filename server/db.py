@@ -71,10 +71,14 @@ CREATE TABLE films (
 );
 
 -- Which films a person has to rate, and how far they are: assigned (handed out),
--- seen (opened in the viewer), rated (scores submitted).
+-- seen (opened in the viewer), rated (scores submitted). `round` says which stage the
+-- assignment belongs to: 'reviewers' (the large pool) or 'judges' (the judges' pool).
+-- A person has one assignment per film: a judge who already reviewed a pool film keeps
+-- that assignment (and rating) as is and does not rate it again.
 CREATE TABLE assignments (
   user_id INTEGER NOT NULL,
   film_id INTEGER NOT NULL,
+  round TEXT NOT NULL DEFAULT 'reviewers' CHECK (round IN ('reviewers', 'judges')),
   status TEXT NOT NULL DEFAULT 'assigned' CHECK (status IN ('assigned', 'seen', 'rated')),
   assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
   seen_at TEXT,

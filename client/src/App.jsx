@@ -275,6 +275,198 @@ function ReviewsTab({ apiJson, onDataChanged }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Rankings and the judges' pool
+// ---------------------------------------------------------------------------
+
+function ScoreCell({ f }) {
+  return f.average === null ? <span style={{ color: '#aaa' }}>—</span> : <>{f.average.toFixed(2)}</>
+}
+
+function RankingTable({ films, openId, setOpenId }) {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+        <thead><tr><th>rank</th><th>film</th><th>average</th><th>reviews</th><th></th></tr></thead>
+        <tbody>
+          {films.map((f) => (
+            <Fragment key={f.identifier}>
+              <tr>
+                <td>{f.rank ?? '—'}</td>
+                <td>{f.title}{f.creator && <span style={{ color: '#666' }}> by {f.creator}</span>}{f.in_judges_pool && <span style={{ marginLeft: 6, background: '#e5ecff', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>judges' pool</span>}</td>
+                <td><ScoreCell f={f} /></td>
+                <td>{f.reviews}</td>
+                <td>{setOpenId && <button style={{ fontSize: 12 }} onClick={() => setOpenId(openId === f.identifier ? null : f.identifier)}>{openId === f.identifier ? 'Hide details' : 'Details'}</button>}</td>
+              </tr>
+              {openId === f.identifier && (
+                <tr><td colSpan={5} style={{ whiteSpace: 'pre-wrap', background: '#fafafa', fontSize: 13 }}>
+                  <div><strong>Archive.org:</strong> <a href={`https://archive.org/details/${f.identifier}`} target="_blank" rel="noreferrer">{f.identifier}</a></div>
+                  {f.description && <div style={{ marginTop: 6 }}><strong>Description</strong>{'\n'}{f.description}</div>}
+                  {f.public_domain_works && <div style={{ marginTop: 6 }}><strong>Public domain works used</strong>{'\n'}{f.public_domain_works}</div>}
+                  {f.ai_disclosure && <div style={{ marginTop: 6 }}><strong>AI disclosure</strong>{'\n'}{f.ai_disclosure}</div>}
+                </td></tr>
+              )}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function RankingsTab({ apiJson, onDataChanged }) {
+  const [rank, setRank] = useState(null)       // { films, overall }
+  const [pool, setPool] = useState(null)       // { exists, films, judges }
+  const [error, setError] = useState('')
+  const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [count, setCount] = useState('')
+  const [preview, setPreview] = useState(null) // ok preview, or { blocked: {...} }
+  const [confirming, setConfirming] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [openId, setOpenId] = useState(null)
+
+  async function load() {
+    setError('')
+    const [r, p] = await Promise.all([apiJson('/api/admin/rankings'), apiJson('/api/admin/judges-pool')])
+    if (r.ok && p.ok) {
+      setRank(r.data); setPool(p.data)
+      setCount((c) => c || String(Math.min(20, r.data.films.length || 20)))
+    } else setError((!r.ok ? r.data?.error : p.data?.error) || 'Could not load the rankings')
+  }
+  useEffect(() => { load() }, [])
+
+  async function runPreview(n = count) {
+    setMsg(''); setConfirming(false); setPreview(null)
+    const { ok, status, data } = await apiJson(`/api/admin/judges-pool/preview?count=${encodeURIComponent(n)}`)
+    if (ok) setPreview(data)
+    else if (status === 409) setPreview({ blocked: data })
+    else setMsg(`Error: ${data?.error || 'Could not preview'}`)
+  }
+
+  async function confirmPool() {
+    setBusy(true); setMsg('')
+    const { ok, data } = await apiJson('/api/admin/judges-pool', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: Number(count) }),
+    })
+    setBusy(false); setConfirming(false)
+    if (!ok) { setMsg(`Error: ${data?.error || 'Could not set the pool'}`); return }
+    setMsg(`The judges' pool is set: ${data.count} films, given to ${data.judges} judge${data.judges === 1 ? '' : 's'}.`)
+    setPreview(null)
+    await load(); onDataChanged()
+  }
+
+  async function assignAgain() {
+    setMsg('')
+    const { ok, data } = await apiJson('/api/admin/judges-pool/assign', { method: 'POST' })
+    setMsg(ok ? `Done: ${data.assigned} new film${data.assigned === 1 ? '' : 's'} given to ${data.judges} judge${data.judges === 1 ? '' : 's'}.` : `Error: ${data?.error || 'Failed'}`)
+    await load()
+  }
+
+  async function clearPool() {
+    setBusy(true); setMsg('')
+    const { ok, data } = await apiJson('/api/admin/judges-pool', { method: 'DELETE' })
+    setBusy(false); setClearing(false)
+    setMsg(ok ? 'The judges\' pool was cleared.' : `Error: ${data?.error || 'Could not clear the pool'}`)
+    await load(); onDataChanged()
+  }
+
+  if (!rank || !pool) return error ? <div style={{ color: '#a00' }}>{error}</div> : <p style={{ color: '#666' }}>Loading…</p>
+
+  const o = rank.overall
+  const blocked = preview?.blocked
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ border: '1px solid #ddd', borderRadius: 8, padding: 12, maxWidth: 800 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Judges' pool</div>
+        {msg && <div style={{ fontSize: 13, marginBottom: 8, color: msg.startsWith('Error') ? '#a00' : '#060' }}>{msg}</div>}
+
+        {pool.exists ? (
+          <>
+            <div style={{ fontSize: 13, marginBottom: 8 }}>
+              {pool.films.length} films are in the pool. Every judge rates all of them and never sees any scores.
+            </div>
+            <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13, marginBottom: 8 }}>
+              <thead><tr><th>judge</th><th>films</th><th>not opened</th><th>opened</th><th>submitted</th></tr></thead>
+              <tbody>
+                {pool.judges.map((j) => <tr key={j.id}><td style={{ wordBreak: 'break-all' }}>{j.email}</td><td>{j.films}</td><td>{j.assigned}</td><td>{j.seen}</td><td>{j.rated}</td></tr>)}
+                {pool.judges.length === 0 && <tr><td colSpan={5} style={{ color: '#a60' }}>No user has the judge role yet (Users tab).</td></tr>}
+              </tbody>
+            </table>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button onClick={assignAgain}>Give the pool to all judges again</button>
+              {!clearing
+                ? <button style={{ color: '#a00' }} onClick={() => setClearing(true)}>Clear the pool…</button>
+                : <span style={{ fontSize: 13 }}>Clear the pool and the judges' unrated films?{' '}
+                    <button onClick={clearPool} disabled={busy} style={{ color: '#a00' }}>Yes, clear</button>{' '}
+                    <button onClick={() => setClearing(false)}>Cancel</button></span>}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 13, color: '#555', marginBottom: 8 }}>
+              The top films by the reviewers' average score become the judges' pool. Preview the list first; nothing is applied until you confirm.
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label style={{ fontSize: 13 }}>Number of films{' '}
+                <input type="number" min="1" max={rank.films.length} value={count} onChange={(e) => { setCount(e.target.value); setPreview(null) }} style={{ width: 70 }} />
+              </label>
+              <button onClick={() => runPreview()} disabled={!count}>Preview</button>
+            </div>
+
+            {blocked && (
+              <div role="status" style={{ marginTop: 10, border: '1px solid #e0cfa8', background: '#fffaf0', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
+                {blocked.error}
+                {blocked.missing && blocked.missing.length > 0 && (
+                  <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                    {blocked.missing.map((m) => <li key={m.identifier}>{m.title}: {m.rated} of {m.needed} reviews submitted</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {preview && !blocked && (
+              <div style={{ marginTop: 10 }}>
+                {!preview.valid && (
+                  <div role="alert" style={{ marginBottom: 8, border: '1px solid #e0b4b4', background: '#fff6f6', borderRadius: 6, padding: '8px 10px', fontSize: 13 }}>
+                    {preview.tie.message} It can't be confirmed. Valid numbers nearby:{' '}
+                    {[preview.tie.nearest_valid_counts.lower, preview.tie.nearest_valid_counts.higher].filter((n) => n !== null).map((n, i) => (
+                      <button key={n} style={{ fontSize: 12, marginRight: 6 }} onClick={() => { setCount(String(n)); runPreview(n) }}>{n}</button>
+                    ))}
+                    {preview.tie.nearest_valid_counts.lower === null && preview.tie.nearest_valid_counts.higher === null && 'none'}
+                  </div>
+                )}
+                <div style={{ fontSize: 13, marginBottom: 4 }}>The {preview.count} highest-scoring films:</div>
+                <RankingTable films={preview.films} openId={openId} setOpenId={setOpenId} />
+                {preview.valid && (
+                  <div style={{ marginTop: 10 }}>
+                    {!confirming
+                      ? <button className="btn-primary" onClick={() => setConfirming(true)}>Confirm judges' pool of {preview.count} films…</button>
+                      : <div style={{ fontSize: 13 }}>Make these {preview.count} films the judges' pool and give them to every judge?{' '}
+                          <button className="btn-primary" onClick={confirmPool} disabled={busy}>{busy ? 'Working…' : 'Yes, confirm'}</button>{' '}
+                          <button onClick={() => setConfirming(false)} disabled={busy}>Cancel</button></div>}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 600 }}>All films by average score</span>
+          <span style={{ fontSize: 13, color: '#555' }}>{o.fully_reviewed} of {o.films} fully reviewed</span>
+          <a href="/api/admin/rankings.csv" style={{ fontSize: 13 }}>⬇ Download rankings.csv</a>
+          <button onClick={load} style={{ fontSize: 12 }}>↻ Update</button>
+        </div>
+        {rank.films.length === 0 ? <p style={{ color: '#666', margin: 0 }}>No films yet.</p> : <RankingTable films={rank.films} openId={openId} setOpenId={setOpenId} />}
+      </div>
+    </div>
+  )
+}
+
 // onDataChanged: called after an import or when the DB is emptied, so the
 // rating view can reload.
 function AdminPanel({ apiJson, onDataChanged, meId }) {
@@ -636,9 +828,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: '#f9f9f9', borderBottom: '1px solid #ddd' }}>
         <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'import', 'users', 'reviews', 'db', 'backup'].map(t => (
+        {['actions', 'import', 'users', 'reviews', 'rankings', 'db', 'backup'].map(t => (
           <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {{ actions: 'Actions', import: 'Import', users: 'Users', reviews: 'Reviews', db: 'DB Browser', backup: 'Backup' }[t]}
+            {{ actions: 'Actions', import: 'Import', users: 'Users', reviews: 'Reviews', rankings: 'Rankings', db: 'DB Browser', backup: 'Backup' }[t]}
           </button>
         ))}
       </div>
@@ -647,6 +839,9 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 
         {/* ── Reviews ── */}
         {tab === 'reviews' && <ReviewsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
+
+        {/* ── Rankings ── */}
+        {tab === 'rankings' && <RankingsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
 
         {/* ── Actions ── */}
         {tab === 'actions' && (() => {
@@ -1220,6 +1415,19 @@ export default function App() {
       window.history.replaceState({}, '', '/signin')
     }
     loadMe()
+  }, [])
+
+  // Pasting a link into a tab that already shows /signin only changes the fragment (no reload).
+  useEffect(() => {
+    const onHash = () => {
+      if (window.location.pathname === '/signin' && window.location.hash.length > 1) {
+        setSigninToken(window.location.hash.slice(1))
+        setSigninError('')
+        window.history.replaceState({}, '', '/signin')
+      }
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
   async function signIn() {

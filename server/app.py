@@ -48,6 +48,7 @@ from server.services.distribution_service import DistributionService
 from server.services.import_service import ImportService
 from server.services.job_service import JobService
 from server.services.login_link_service import LoginLinkService
+from server.services.ranking_service import RankingService
 from server.services.rating_service import RatingService
 from server.services.summary_service import SummaryService
 
@@ -142,6 +143,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
     summary = SummaryService(ratings)
     links = LoginLinkService(users, login_links, sessions)
     distribution = DistributionService(users, films, assignments)
+    ranking = RankingService(users, films, assignments, ratings, distribution)
 
     # Expose for tests / routes
     app.settings = settings
@@ -162,6 +164,7 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
         "summary": summary,
         "links": links,
         "distribution": distribution,
+        "ranking": ranking,
     }
 
     # --- Request logging + request id ---

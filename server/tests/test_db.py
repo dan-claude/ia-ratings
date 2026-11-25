@@ -140,6 +140,7 @@ def test_constraints_reject_bad_rows(app):
         f"INSERT INTO ratings (user_id, film_id, comment) VALUES ({uid}, {fid + 1}, '{'x' * 1001}')",   # too long (and no such film)
         f"INSERT INTO assignments (user_id, film_id, status) VALUES ({uid}, {fid}, 'done')",
         "INSERT INTO films (ia_identifier) VALUES ('f1')",                                                 # unique identifier
+        f"INSERT INTO assignments (user_id, film_id, round) VALUES ({uid}, {fid}, 'finals')",
         "INSERT INTO users (email, is_judge) VALUES ('z@example.com', 2)",
         "INSERT INTO assignments (user_id, film_id) VALUES (999, 1)",                                      # foreign key
     ]
