@@ -1,3 +1,6 @@
+## Unreleased (branch `major-changes`, role badges)
+- Client: the top bar of every page now shows the signed-in person's roles as small badges next to their email (admin / reviewer / judge, or "no role yet"), using the roles `GET /api/me` already returns.
+
 ## Unreleased (branch `major-changes`, My films list)
 - New `GET /api/me/films` (reviewers and judges; 403 otherwise): the caller's assigned films with `status` (`assigned` / `seen` / `rated`), alphabetical by title. Listing doesn't mark films seen.
 - Client: **My films** page listing every assigned film as a link to that film's rating page, with a status column (unseen / seen / rated) and an "only films I haven't rated" filter. Any film can be opened and rated in any order; opening one marks it seen; a rated film opens read-only with the person's own scores and comment. Submitting from a listed film carries on with the next film. Pages are now URL-fragment routes (`#/`, `#/films`, `#/film/<id>`, `#/results`), so every film has a real link and the browser's Back button works; the top bar gains Rate / My films / My ranked films.

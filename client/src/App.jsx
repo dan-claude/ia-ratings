@@ -1740,6 +1740,11 @@ export default function App() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <ThemeToggle />
           <span style={{ fontSize: 14, color: 'var(--text-2)' }}>{me.email}</span>
+          <span aria-label={`Your roles: ${me.roles.length ? me.roles.join(', ') : 'none'}`} style={{ display: 'inline-flex', gap: 4 }}>
+            {me.roles.length === 0
+              ? <span style={{ background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid var(--warn-border)', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>no role yet</span>
+              : me.roles.map((r) => <span key={r} style={{ background: 'var(--badge-bg)', color: 'var(--text)', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{r}</span>)}
+          </span>
           {canRate && <button onClick={() => navigate('')} disabled={route.view === 'rate'}>Rate</button>}
           {canRate && <button onClick={() => navigate('#/films')} disabled={route.view === 'films'}>My films</button>}
           {me.is_judge && <button onClick={() => navigate('#/results')} disabled={route.view === 'results'}>My ranked films</button>}
