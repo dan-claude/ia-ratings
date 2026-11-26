@@ -1514,8 +1514,14 @@ export default function App() {
   }
 
   async function loadMyFilms() {
-    const { ok, data } = await apiJson('/api/me/films')
-    setMyFilms(ok ? data.films : [])
+    const { ok, status, data } = await apiJson('/api/me/films')
+    if (ok) { setMyFilms({ films: data.films }); return }
+    // Say what went wrong; an empty list would wrongly claim that nothing is assigned.
+    setMyFilms({
+      error: status === 403
+        ? 'Your account does not have the reviewer or judge role, so it has no films. Ask an administrator to give you one.'
+        : `Could not load your films (${status || 'no response'}${data?.error ? `: ${data.error}` : ''}). If this keeps happening, the server may need restarting.`,
+    })
   }
 
   // One particular film, opened from the list (opening it marks it seen).
@@ -1748,7 +1754,11 @@ export default function App() {
       {route.view === 'results' && results ? (
         <ResultsScreen results={results} categories={categories} onBack={() => navigate('')} />
       ) : null}
-      {route.view === 'films' && myFilms ? <MyFilmsScreen films={myFilms} /> : null}
+      {route.view === 'films' && myFilms ? (
+        myFilms.error
+          ? <div role="alert" style={{ marginTop: 14, color: 'var(--danger)' }}>{myFilms.error}</div>
+          : <MyFilmsScreen films={myFilms.films} />
+      ) : null}
 
       {loading ? <p>Loading…</p> : null}
       {error ? (
