@@ -366,6 +366,10 @@ def db_restore():
         return jsonify({"error": "Request body must be JSON"}), 400
     if backup.get("app") != "ia_ratings":
         return jsonify({"error": "Invalid backup: unexpected app identifier"}), 400
+    if backup.get("format_version") == 1:
+        return jsonify({"error": "This backup was made by the old version of the app (format 1) and can't be "
+                                 "restored into the new one, which stores its data differently. "
+                                 "Start fresh instead: import the spreadsheet and invite people again."}), 400
     if backup.get("format_version") != BACKUP_FORMAT_VERSION:
         return jsonify({"error": f"Unsupported format_version: {backup.get('format_version')}"}), 400
 

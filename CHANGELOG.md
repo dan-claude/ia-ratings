@@ -1,3 +1,6 @@
+## Unreleased (branch `major-changes`, restore message)
+- Restoring a backup from the old app (`format_version` 1) now says so in plain words ("made by the old version of the app and can't be restored into the new one") instead of "Unsupported format_version: 1". Still a 400; nothing is changed.
+
 ## Unreleased (branch `major-changes`, judges' results)
 - New admin routes `GET /api/admin/judges-pool/results` and `.../results.csv`: the judges' pool films ranked by the **judges'** average score (ratings submitted so far, by people holding the judge role, whichever round they were made in), with each film's number of judge ratings and the reviewers' average beside it; `complete` says whether every judge has rated every pool film. 409 `no_pool` before a pool exists. Admin only.
 - Admin → Rankings and pool shows a **Judges' results** section once a pool exists (above the all-films ranking, which is now labelled "by the reviewers' average score"); Exports and safety lists `judges_results.csv`.

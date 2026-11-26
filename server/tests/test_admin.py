@@ -122,7 +122,9 @@ def test_backup_and_restore_round_trip(app):
 def test_restore_rejects_old_or_foreign_backups(app):
     admin, _ = make_user(app, "a@example.com", ["admin"])
     good = json.loads(admin.get("/api/admin/db/backup").data)
-    assert admin.post("/api/admin/db/restore", json={**good, "format_version": 1}).status_code == 400   # the old app's format
+    old = admin.post("/api/admin/db/restore", json={**good, "format_version": 1})                      # the old app's format
+    assert old.status_code == 400 and "old version of the app" in old.get_json()["error"]
+    assert admin.post("/api/admin/db/restore", json={**good, "format_version": 7}).get_json()["error"].startswith("Unsupported format_version")
     assert admin.post("/api/admin/db/restore", json={**good, "schema_version": 9}).status_code == 400
     assert admin.post("/api/admin/db/restore", json={**good, "app": "other"}).status_code == 400
     assert admin.post("/api/admin/db/restore", json={**good, "tables": []}).status_code == 400

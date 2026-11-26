@@ -575,7 +575,7 @@ Downloads the whole database as JSON
   "tables": { "users": [ { "id": 1, "...": "..." } ], "films": [] }
 }
 ```
-Backups of the old app (`format_version` 1) cannot be restored. Login sessions and
+Backups of the old app (`format_version` 1) cannot be restored (400 with an explanatory message). Login sessions and
 magic links are never included.
 
 #### POST /api/admin/db/restore — admin, destructive
