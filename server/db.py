@@ -1,4 +1,7 @@
+import logging
+import os
 import sqlite3
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 # Version of the schema below. The migration history restarted at 1 with the
@@ -11,8 +14,28 @@ SCHEMA_VERSION = 1
 _LEGACY_TABLES = {"criteria", "film_notes", "app_settings"}
 
 
+logger = logging.getLogger(__name__)
+
+
 class LegacyDatabaseError(RuntimeError):
     """The database file was made by an older, incompatible version of the app."""
+
+
+def move_legacy_aside(path: str) -> str:
+    """Rename an old-style database (and its -wal / -shm files) to `<path>.legacy-<UTC time>`
+    so a fresh one can be created in its place. Nothing is deleted: the old data stays on the
+    volume under the new name. Returns the new main file's path."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = f"{path}.legacy-{stamp}"
+    n = 1
+    while os.path.exists(target):          # two moves within one second
+        n += 1
+        target = f"{path}.legacy-{stamp}-{n}"
+    for suffix in ("", "-wal", "-shm"):
+        if os.path.exists(path + suffix):
+            os.rename(path + suffix, target + suffix)
+    logger.warning("db.legacy.moved_aside from=%s to=%s", path, target)
+    return target
 
 
 _SCHEMA = """

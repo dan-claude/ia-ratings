@@ -33,7 +33,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from server.config import load_settings, _DEV_SECRET
-from server.db import Database, LegacyDatabaseError
+from server.db import Database, LegacyDatabaseError, move_legacy_aside
 from server.logging_config import configure_logging
 
 from server.repositories.assignment_repo import AssignmentRepository
@@ -126,7 +126,13 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
 
     # --- Database + repos ---
     # Raises LegacyDatabaseError (so the server won't boot) if the file is from the old app.
-    db = Database(settings.db_path)
+    try:
+        db = Database(settings.db_path)
+    except LegacyDatabaseError:
+        if settings.legacy_db.strip().lower() != "move-aside":
+            raise
+        move_legacy_aside(settings.db_path)   # keeps the old data, then starts fresh
+        db = Database(settings.db_path)
     users = UserRepository(db)
     films = FilmRepository(db)
     assignments = AssignmentRepository(db)

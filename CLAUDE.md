@@ -78,6 +78,7 @@ Magic-link details (`server/services/login_link_service.py`, `server/repositorie
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
+| `LEGACY_DB` | *(unset)* | Set to `move-aside` once, when deploying the new schema over the old production database: an old-style `DB_PATH` file is **renamed** to `<DB_PATH>.legacy-<UTC time>` (with its `-wal`/`-shm`; never deleted) and a fresh database is created. Harmless if left set (it only acts on an old-style file); any other value is ignored and the old file is refused |
 | `PUBLIC_URL` | *(unset)* | Site address (e.g. `https://ratings.example.org`) used only by `tools/print_db.py --invite` to print full links; the admin panel builds links from the browser's address |
 | `LOG_LEVEL` | `INFO` | Server log level (`server/logging_config.py`) |
 | `FLASK_RUN_HOST` / `FLASK_RUN_PORT` | `127.0.0.1` / `5000` | Defaults for `--host` / `--port` when running `python -m server.app`. Local only by default; `--debug` is refused on a non-local host (the Werkzeug debugger runs arbitrary code) |
@@ -136,7 +137,7 @@ Deploys come from Railway's **GitHub integration**: the Railway service is conne
 Railway service variables:
 - `SESSION_SECRET` — **required**; a missing one now stops the app booting (deploy fails its health check and Railway keeps the previous deployment). Random secret: `python3 -c "import secrets; print(secrets.token_hex(32))"`, keep private
 - `TRUSTED_PROXY_HOPS` — set to `1` by the Dockerfile; don't override
-- **Resetting for the new app:** an old-style database is refused at startup. Agree the procedure with the owner first (download a Backup in the old admin panel; delete `/data/app.db`, `-wal` and `-shm` via `railway ssh` as the `app` user; deploy; create the first admin with `tools/print_db.py --invite EMAIL --admin` (set `PUBLIC_URL`); import the spreadsheet).
+- `LEGACY_DB` — one-time, only for the move to the new app; see **Resetting production for the new schema** below. Remove it afterwards.
 - `DB_PATH` — `/data/app.db`
 - `PORT` is provided by Railway; don't set it
 
@@ -171,6 +172,16 @@ gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "serve
 - **Keep `--workers 1`.** SQLite writes and the Flask-Limiter `memory://` store assume a single process; more workers would give each its own rate-limit counters and more lock contention. Scale with `--threads`.
 - **`--timeout 0`** stops gunicorn killing a worker during long requests; the title lookup after an import can take minutes (it runs in a background thread, so the request itself returns at once).
 - `python -m server.app` (with its port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
+
+### Resetting production for the new schema (one time)
+
+The new app refuses an old-style database (`LegacyDatabaseError`), and Railway then keeps the previous deployment running. To switch over **without deleting anything**:
+
+1. In the old app's admin panel, download a **Backup** (JSON) while the old version still runs, and keep it safe (it contains old user data).
+2. In Railway, set the service variable `LEGACY_DB=move-aside` and `PUBLIC_URL=https://<the site>`.
+3. Deploy `main` (after the owner agrees to merge `major-changes`). On first start the app renames `/data/app.db` (+ `-wal`, `-shm`) to `/data/app.db.legacy-<time>` and creates a fresh database. The old data stays on the volume; delete the `.legacy-*` files later with `railway ssh` when it is certain they are not needed (they take volume space).
+4. Create the first admin: `railway ssh`, then `setpriv --reuid=app --regid=app --init-groups python tools/print_db.py --invite NAME@example.com --admin` (run as `app`, see below). It prints the sign-in link; open it and press **Sign in**.
+5. Remove the `LEGACY_DB` variable (optional; it does nothing once the database is new). Then import the spreadsheet (Import tab), invite reviewers and judges (Users tab), and press **Distribute films** (Reviews tab).
 
 ### Redeploy and production shell
 

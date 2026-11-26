@@ -26,6 +26,12 @@ class Settings:
     db_path: str = _env("DB_PATH", _DEFAULT_DB_PATH)
     session_secret: str = _env("SESSION_SECRET", _DEV_SECRET)
 
+    # One-time switch for the move to the new schema. Set to "move-aside" and an old-style
+    # database found at DB_PATH is renamed to <DB_PATH>.legacy-<time> (never deleted) and a
+    # fresh one is created. Does nothing when the database is already the new kind, so a
+    # forgotten setting is harmless. Any other value is ignored (the app then refuses the old file).
+    legacy_db: str = _env("LEGACY_DB", "")
+
     # Public address of the site (e.g. https://ratings.example.org), used by the command-line
     # tool to print magic links. The admin panel builds links from the address in the browser.
     public_url: str = _env("PUBLIC_URL", "")

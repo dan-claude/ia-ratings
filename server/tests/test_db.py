@@ -159,3 +159,85 @@ def test_one_active_login_link_per_user(app):
     conn.execute("UPDATE login_links SET revoked_at = datetime('now')")
     conn.execute("INSERT INTO login_links (token_hash, user_id, expires_at) VALUES ('b', ?, '2999-01-01')", (uid,))
     conn.close()
+
+
+# ---- LEGACY_DB=move-aside --------------------------------------------------------------
+
+def app_with(tmp_path, monkeypatch, legacy_db=None):
+    import importlib
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("SESSION_SECRET", "s")
+    if legacy_db is None:
+        monkeypatch.delenv("LEGACY_DB", raising=False)
+    else:
+        monkeypatch.setenv("LEGACY_DB", legacy_db)
+    import server.app as m
+    importlib.reload(m)
+    return m
+
+
+def moved_files(tmp_path):
+    return sorted(p.name for p in tmp_path.iterdir() if ".legacy-" in p.name)
+
+
+def test_move_aside_keeps_the_old_data_and_starts_fresh(tmp_path, monkeypatch):
+    path = str(tmp_path / "app.db")
+    make_old_database(path)
+    conn = sqlite3.connect(path); conn.execute("INSERT INTO criteria (key) VALUES ('keepme')"); conn.commit(); conn.close()
+    m = app_with(tmp_path, monkeypatch, "move-aside")
+    app = m.create_app()
+    assert Database(path).fetchone("SELECT COUNT(*) AS n FROM users")["n"] == 0        # fresh, new-style
+    assert tables(app.db) == EXPECTED_TABLES
+    (old,) = moved_files(tmp_path)
+    kept = sqlite3.connect(str(tmp_path / old))
+    assert kept.execute("SELECT key FROM criteria").fetchone()[0] == "keepme"            # nothing was deleted
+    kept.close()
+
+
+def test_move_legacy_aside_moves_the_wal_and_shm_files_too(tmp_path):
+    from server.db import move_legacy_aside
+    path = tmp_path / "app.db"
+    make_old_database(str(path))
+    (tmp_path / "app.db-wal").write_bytes(b"wal"); (tmp_path / "app.db-shm").write_bytes(b"shm")
+    target = move_legacy_aside(str(path))
+    assert not path.exists() and not (tmp_path / "app.db-wal").exists() and not (tmp_path / "app.db-shm").exists()
+    assert (tmp_path / "app.db-wal").name not in moved_files(tmp_path)
+    assert open(target + "-wal", "rb").read() == b"wal" and open(target + "-shm", "rb").read() == b"shm"
+
+
+def test_a_leftover_setting_does_nothing_once_the_database_is_new(tmp_path, monkeypatch):
+    path = str(tmp_path / "app.db")
+    make_old_database(path)
+    m = app_with(tmp_path, monkeypatch, "move-aside")
+    app = m.create_app()
+    uid = app.repos["users"].create_user("a@example.com", ["admin"])
+    for _ in range(3):                                    # every later deploy or restart
+        app = m.create_app()
+    assert app.repos["users"].get_by_id(uid)["email"] == "a@example.com"                 # data intact
+    assert len(moved_files(tmp_path)) == 1                                              # nothing moved again
+
+
+def test_without_the_setting_or_with_another_value_the_old_file_is_refused_and_left_alone(tmp_path, monkeypatch):
+    path = str(tmp_path / "app.db")
+    make_old_database(path)
+    for value in (None, "", "delete", "yes", "1"):
+        m = app_with(tmp_path, monkeypatch, value)
+        with pytest.raises(LegacyDatabaseError):
+            m.create_app()
+    assert moved_files(tmp_path) == [] and (tmp_path / "app.db").exists()
+
+
+def test_move_aside_on_a_missing_or_new_database_changes_nothing(tmp_path, monkeypatch):
+    m = app_with(tmp_path, monkeypatch, "move-aside")
+    m.create_app()                                        # no file yet: created fresh
+    m.create_app()
+    assert moved_files(tmp_path) == []
+
+
+def test_two_moves_in_the_same_second_do_not_collide(tmp_path):
+    from server.db import move_legacy_aside
+    a = str(tmp_path / "a.db")
+    for _ in range(2):
+        make_old_database(a)
+        move_legacy_aside(a)
+    assert len(moved_files(tmp_path)) == 2

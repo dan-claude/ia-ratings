@@ -1,3 +1,6 @@
+## Unreleased (branch `major-changes`, legacy database switch)
+- New one-time setting `LEGACY_DB=move-aside`: when the app finds an old-style database at `DB_PATH` it renames it (and its `-wal` / `-shm`) to `<DB_PATH>.legacy-<UTC time>` instead of refusing to start, and creates a fresh database. **Nothing is deleted.** It only acts on an old-style file, so a forgotten setting does nothing on later deploys; any other value leaves the old behaviour (refuse to boot). The production reset steps are in `CLAUDE.md`.
+
 ## Unreleased (branch `major-changes`, step 8: dark mode)
 Not deployed. Client only (no API change).
 - Dark mode with a Moon / Sun toggle (top bar and the sign-in pages). The choice is remembered in the browser (`localStorage`); the first visit follows the device's light/dark setting; the theme is set before the first paint so there is no flash. All colours moved from inline literals to CSS variables in the new `client/src/theme.css`, and native controls follow the theme (`color-scheme`).
