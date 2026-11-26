@@ -104,7 +104,7 @@ npm install
 npm run dev
 ```
 
-`client/vite.config.js` proxies `/api` to `http://127.0.0.1:5001`. Flask defaults to 5000 but falls back to the next free port (on macOS, 5000 is usually taken by AirPlay, so it lands on 5001). `.claude/launch.json` also starts Flask on 5001.
+`client/vite.config.js` proxies `/api` to the `API_URL` environment variable (a base URL such as `http://127.0.0.1:5002` or `https://host`; also readable from `client/.env.local`), default `http://127.0.0.1:5001`. Flask defaults to 5000 but falls back to the next free port (on macOS, 5000 is usually taken by AirPlay, so it lands on 5001). `.claude/launch.json` also starts Flask on 5001.
 
 ### Client (production build, served by Flask)
 ```bash

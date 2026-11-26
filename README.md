@@ -91,8 +91,17 @@ npm install
 npm run dev        # http://localhost:5173, proxies /api → http://127.0.0.1:5001
 ```
 
-If your Flask server is on a different port, change the proxy target in
-`client/vite.config.js`.
+To point the dev server at a different API (another port, host, or a deployed server), set the
+base URL, protocol and port included, in `API_URL`:
+
+```bash
+API_URL=http://127.0.0.1:5002 npm run dev
+API_URL=https://ratings.example.org npm run dev
+```
+
+or put `API_URL=...` in `client/.env.local`. The browser still only talks to the Vite server, so
+sign-in cookies work. (A deployed server sets `Secure` cookies, so use `http://localhost`, not a LAN
+address, to open the dev page.)
 
 ### First-time setup
 

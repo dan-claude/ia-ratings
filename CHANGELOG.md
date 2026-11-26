@@ -1,3 +1,6 @@
+## Unreleased (branch `major-changes`, dev proxy target)
+- The Vite dev server's `/api` proxy target is now configurable with `API_URL` (base URL: protocol, host, port; default `http://127.0.0.1:5001`), from the environment or `client/.env.local`, instead of being hard-coded in `client/vite.config.js`.
+
 ## Unreleased (branch `major-changes`, legacy database switch)
 - New one-time setting `LEGACY_DB=move-aside`: when the app finds an old-style database at `DB_PATH` it renames it (and its `-wal` / `-shm`) to `<DB_PATH>.legacy-<UTC time>` instead of refusing to start, and creates a fresh database. **Nothing is deleted.** It only acts on an old-style file, so a forgotten setting does nothing on later deploys; any other value leaves the old behaviour (refuse to boot). The production reset steps are in `CLAUDE.md`.
 
