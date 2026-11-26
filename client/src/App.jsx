@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
+import { ClearPoolControl, DangerCard, OverviewTab, ResetDistributionControl } from './AdminExtras.jsx'
 
 function linkifyText(text) {
   const urlRegex = /(https?:\/\/[^\s]+)/g
@@ -83,8 +84,6 @@ function ReviewsTab({ apiJson, onDataChanged }) {
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const [confirmDistribute, setConfirmDistribute] = useState(false)
-  const [resetOpen, setResetOpen] = useState(false)
-  const [resetText, setResetText] = useState('')
   const [openPerson, setOpenPerson] = useState(null)   // person id whose films are shown
   const [onlyNeeding, setOnlyNeeding] = useState(false)
   const [addChoice, setAddChoice] = useState({})       // film identifier -> user id chosen in its "add" select
@@ -103,20 +102,6 @@ function ReviewsTab({ apiJson, onDataChanged }) {
     setBusy(false); setConfirmDistribute(false)
     if (!ok) { setMsg(`Error: ${d?.error || 'Could not hand out the films'}`); return }
     setMsg(`Handed out ${d.films} films to ${d.reviewers} reviewers (${d.assignments} reviews; each reviewer has ${d.per_reviewer.min === d.per_reviewer.max ? d.per_reviewer.min : `${d.per_reviewer.min}–${d.per_reviewer.max}`} films).`)
-    await load(); onDataChanged()
-  }
-
-  async function reset() {
-    setBusy(true); setMsg('')
-    const { ok, data: d } = await apiJson('/api/admin/distribute/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: 'RESET' }),
-    })
-    setBusy(false)
-    if (!ok) { setMsg(`Error: ${d?.error || 'Could not reset'}`); return }
-    setMsg(`Reset: ${d.deleted.assignments} assignments and ${d.deleted.ratings} ratings deleted.`)
-    setResetOpen(false); setResetText(''); setOpenPerson(null)
     await load(); onDataChanged()
   }
 
@@ -185,29 +170,13 @@ function ReviewsTab({ apiJson, onDataChanged }) {
       ) : (
         <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, maxWidth: 700 }}>
           <div style={{ fontWeight: 600, marginBottom: 4 }}>Films have been handed out</div>
-          {!resetOpen ? (
-            <button onClick={() => { setResetOpen(true); setMsg('') }} style={{ color: 'var(--danger)' }}>Reset distribution…</button>
-          ) : (
-            <div style={{ border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 8, padding: 12 }}>
-              <p style={{ margin: '0 0 8px', fontSize: 13 }}>
-                This deletes <strong>every assignment and every rating</strong> ({o.assignments.rated} submitted so far) and empties the judges' pool, so the films can be
-                handed out again. Download a backup first (Backup tab).
-              </p>
-              <label style={{ fontSize: 13 }}>Type <code>RESET</code> to confirm:{' '}
-                <input value={resetText} onChange={(e) => setResetText(e.target.value)} style={{ width: 90 }} autoComplete="off" />
-              </label>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button onClick={reset} disabled={resetText !== 'RESET' || busy} style={{ color: 'var(--danger)' }}>{busy ? 'Resetting…' : 'Reset distribution'}</button>
-                <button onClick={() => { setResetOpen(false); setResetText('') }} disabled={busy}>Cancel</button>
-              </div>
-            </div>
-          )}
+          <div style={{ fontSize: 13, color: 'var(--muted-2)' }}>To start over, use <a href="#/admin/data">Reset distribution</a> under Exports and safety.</div>
         </div>
       )}
 
       <div>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>People</div>
-        {raters.length === 0 ? <p style={{ color: 'var(--muted)', margin: 0 }}>No reviewers or judges yet (Users tab).</p> : (
+        {raters.length === 0 ? <p style={{ color: 'var(--muted)', margin: 0 }}>No reviewers or judges yet (People page).</p> : (
           <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
             <thead><tr><th>person</th><th>roles</th><th>not opened</th><th>opened</th><th>submitted</th><th>total</th><th></th></tr></thead>
             <tbody>
@@ -323,7 +292,6 @@ function RankingsTab({ apiJson, onDataChanged }) {
   const [count, setCount] = useState('')
   const [preview, setPreview] = useState(null) // ok preview, or { blocked: {...} }
   const [confirming, setConfirming] = useState(false)
-  const [clearing, setClearing] = useState(false)
   const [openId, setOpenId] = useState(null)
 
   async function load() {
@@ -363,14 +331,6 @@ function RankingsTab({ apiJson, onDataChanged }) {
     await load()
   }
 
-  async function clearPool() {
-    setBusy(true); setMsg('')
-    const { ok, data } = await apiJson('/api/admin/judges-pool', { method: 'DELETE' })
-    setBusy(false); setClearing(false)
-    setMsg(ok ? 'The judges\' pool was cleared.' : `Error: ${data?.error || 'Could not clear the pool'}`)
-    await load(); onDataChanged()
-  }
-
   if (!rank || !pool) return error ? <div style={{ color: 'var(--danger)' }}>{error}</div> : <p style={{ color: 'var(--muted)' }}>Loading…</p>
 
   const o = rank.overall
@@ -391,16 +351,12 @@ function RankingsTab({ apiJson, onDataChanged }) {
               <thead><tr><th>judge</th><th>films</th><th>not opened</th><th>opened</th><th>submitted</th></tr></thead>
               <tbody>
                 {pool.judges.map((j) => <tr key={j.id}><td style={{ wordBreak: 'break-all' }}>{j.email}</td><td>{j.films}</td><td>{j.assigned}</td><td>{j.seen}</td><td>{j.rated}</td></tr>)}
-                {pool.judges.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--warn)' }}>No user has the judge role yet (Users tab).</td></tr>}
+                {pool.judges.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--warn)' }}>No user has the judge role yet (People page).</td></tr>}
               </tbody>
             </table>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button onClick={assignAgain}>Give the pool to all judges again</button>
-              {!clearing
-                ? <button style={{ color: 'var(--danger)' }} onClick={() => setClearing(true)}>Clear the pool…</button>
-                : <span style={{ fontSize: 13 }}>Clear the pool and the judges' unrated films?{' '}
-                    <button onClick={clearPool} disabled={busy} style={{ color: 'var(--danger)' }}>Yes, clear</button>{' '}
-                    <button onClick={() => setClearing(false)}>Cancel</button></span>}
+              <span style={{ fontSize: 13, color: 'var(--muted-2)', alignSelf: 'center' }}>To choose again, use <a href="#/admin/data">Clear the judges' pool</a> under Exports and safety.</span>
             </div>
           </>
         ) : (
@@ -469,8 +425,9 @@ function RankingsTab({ apiJson, onDataChanged }) {
 
 // onDataChanged: called after an import or when the DB is emptied, so the
 // rating view can reload.
-function AdminPanel({ apiJson, onDataChanged, meId }) {
-  const [tab, setTab] = useState('actions')
+// page: which admin page the URL asks for (overview, films, people, progress, rankings, data).
+function AdminPanel({ apiJson, onDataChanged, meId, page }) {
+  const tab = page
 
   // Background job state (the title lookup after an import; status comes from the server, so it survives a page reload)
   const [jobStatus, setJobStatus] = useState(null)   // { state, kind, phase, done, total, processed, error, film_count, ... }
@@ -514,6 +471,8 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   const [usersLoading, setUsersLoading] = useState(false)
   const [usersError, setUsersError] = useState('')
   const [actionMsg, setActionMsg] = useState('')
+  const [userFilter, setUserFilter] = useState('all')   // all | admin | reviewer | judge | none
+  const [openUser, setOpenUser] = useState(null)         // id of the person whose link controls are open
   const [invEmail, setInvEmail] = useState('')
   const [invRoles, setInvRoles] = useState({ admin: false, reviewer: true, judge: false })
   const [invExpiry, setInvExpiry] = useState(dateInDays(30))
@@ -806,107 +765,76 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
   }, [jobStatus?.state])
 
   useEffect(() => {
-    if (tab === 'db'       && tables   === null) loadTables()
-    if (tab === 'users'    && users    === null) loadUsers()
+    if (tab === 'data'   && tables === null) loadTables()
+    if (tab === 'people' && users  === null) loadUsers()
   }, [tab])
-
-  const tabStyle = (t) => ({
-    padding: '6px 14px',
-    cursor: 'pointer',
-    border: '1px solid var(--border-strong)',
-    borderBottom: tab === t ? '1px solid var(--surface)' : '1px solid var(--border-strong)',
-    background: tab === t ? 'var(--surface)' : 'var(--surface-tab)',
-    marginBottom: -1,
-    fontWeight: tab === t ? 600 : 400,
-    borderRadius: '6px 6px 0 0',
-  })
 
   const cols = rows && rows.length > 0 ? Object.keys(rows[0]) : []
 
-  return (
-    <div style={{ marginTop: 12, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 4, padding: '10px 12px 0', background: 'var(--surface-alt)', borderBottom: '1px solid var(--border)' }}>
-        <span style={{ fontWeight: 700, alignSelf: 'center', marginRight: 8 }}>Admin</span>
-        {['actions', 'import', 'users', 'reviews', 'rankings', 'db', 'backup'].map(t => (
-          <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-            {{ actions: 'Actions', import: 'Import', users: 'Users', reviews: 'Reviews', rankings: 'Rankings', db: 'DB Browser', backup: 'Backup' }[t]}
-          </button>
-        ))}
-      </div>
+  const NAV = [
+    ['overview', 'Overview', null],
+    ['films', 'Films', 'Set up'],
+    ['people', 'People', null],
+    ['progress', 'Progress', 'Reviewing'],
+    ['rankings', 'Rankings and pool', null],
+    ['data', 'Exports and safety', 'Data'],
+  ]
+  const PAGE_INTRO = {
+    films: ['Films', 'Import adds or updates films from the spreadsheet.'],
+    people: ['People', 'Invite people, set roles, and manage sign-in links.'],
+    progress: ['Progress', 'Hand the films out and see who still owes reviews.'],
+    rankings: ['Rankings and pool', "Every film by average score, and the judges' pool chosen from the top."],
+    data: ['Exports and safety', "Downloads, backups, and the actions that can't be undone."],
+  }
 
-      <div style={{ padding: 14 }}>
+  return (
+    <div className="admin-shell">
+      <nav className="admin-nav" aria-label="Admin pages">
+        {NAV.map(([id, label, group]) => (
+          <Fragment key={id}>
+            {group && <div className="admin-nav-group">{group}</div>}
+            <a href={`#/admin${id === 'overview' ? '' : '/' + id}`} className={tab === id ? 'on' : ''} aria-current={tab === id ? 'page' : undefined}>{label}</a>
+          </Fragment>
+        ))}
+      </nav>
+
+      <div className="admin-main">
+        {PAGE_INTRO[tab] && (
+          <>
+            <h3 style={{ margin: '0 0 2px' }}>{PAGE_INTRO[tab][0]}</h3>
+            <p style={{ margin: '0 0 14px', color: 'var(--muted-2)', fontSize: 14 }}>{PAGE_INTRO[tab][1]}</p>
+          </>
+        )}
+
+        {/* ── Overview ── */}
+        {tab === 'overview' && <OverviewTab apiJson={apiJson} />}
 
         {/* ── Reviews ── */}
-        {tab === 'reviews' && <ReviewsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
+        {tab === 'progress' && <ReviewsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
 
         {/* ── Rankings ── */}
         {tab === 'rankings' && <RankingsTab apiJson={apiJson} onDataChanged={onDataChanged} />}
 
-        {/* ── Actions ── */}
-        {tab === 'actions' && (() => {
+        {/* ── Films: count, background job, import ── */}
+        {tab === 'films' && (() => {
           const running = jobStatus?.state === 'running'
           return (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
               <div style={{ fontSize: 14 }}>
                 Films in the database: <strong>{jobStatus ? jobStatus.film_count : '…'}</strong>
               </div>
-
               {jobStatus && jobStatus.state !== 'idle' && (
                 <div role="status" style={{ fontSize: 13, color: jobStatus.state === 'error' ? 'var(--danger)' : running ? 'var(--muted)' : 'var(--ok)' }}>
                   {running && <progress style={{ width: 320, display: 'block', marginBottom: 6 }} {...(jobStatus.total ? { value: jobStatus.done, max: jobStatus.total } : {})} aria-label="Background job progress" />}
                   {describeJob(jobStatus)}
                 </div>
               )}
-
-              <div>
-                <a href="/api/admin/ratings.csv" style={{ fontSize: 14 }}>⬇ Download ratings.csv</a>
-              </div>
-
-              <div style={{ borderTop: '1px solid var(--border-soft)', paddingTop: 12 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Danger zone</div>
-                {!emptyOpen ? (
-                  <button onClick={() => { setEmptyOpen(true); setEmptyMsg('') }} disabled={running} style={{ color: 'var(--danger)' }}>
-                    Empty film database…
-                  </button>
-                ) : (
-                  <div style={{ border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 8, padding: 12, maxWidth: 520 }}>
-                    <p style={{ margin: '0 0 8px', fontSize: 13 }}>
-                      This permanently deletes <strong>all films, assignments and ratings</strong>. User accounts are kept.
-                      Download a backup first (Backup tab) if you might want the data back.
-                      Raters will see "film database hasn't been set up" until you import again.
-                    </p>
-                    <label style={{ fontSize: 13 }}>
-                      Type <code>EMPTY</code> to confirm:{' '}
-                      <input
-                        value={emptyConfirmText}
-                        onChange={e => setEmptyConfirmText(e.target.value)}
-                        style={{ width: 90 }}
-                        autoComplete="off"
-                      />
-                    </label>
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                      <button
-                        onClick={emptyDatabase}
-                        disabled={emptyConfirmText !== 'EMPTY' || emptying || running}
-                        style={{ color: 'var(--danger)' }}
-                      >
-                        {emptying ? 'Emptying…' : 'Empty database'}
-                      </button>
-                      <button onClick={() => { setEmptyOpen(false); setEmptyConfirmText('') }} disabled={emptying}>Cancel</button>
-                    </div>
-                  </div>
-                )}
-                {emptyMsg && (
-                  <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{emptyMsg}</div>
-                )}
-              </div>
             </div>
           )
         })()}
 
         {/* ── Import from spreadsheet ── */}
-        {tab === 'import' && (() => {
+        {tab === 'films' && (() => {
           const running = jobStatus?.state === 'running'
           const headers = impPreview?.headers || []
           const colLabel = (i) => `${i + 1}. ${(headers[i] || '(no header)').slice(0, 60)}`
@@ -1042,81 +970,8 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
           )
         })()}
 
-        {/* ── DB Browser ── */}
-        {tab === 'db' && (
-          <div>
-            {dbError && <div style={{ color: 'var(--danger)', marginBottom: 8 }}>{dbError}</div>}
-
-            {/* Table list */}
-            {tables && (
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-                {Object.entries(tables).map(([t, count]) => (
-                  <button
-                    key={t}
-                    onClick={() => { setSelTable(t); setOrderBy(''); setLimit('100'); loadRows(t, { orderBy: '', limit: '100' }) }}
-                    style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? 'var(--selected-bg)' : '' }}
-                  >
-                    {t} <span style={{ fontSize: 12, color: 'var(--muted)' }}>({count})</span>
-                  </button>
-                ))}
-                <button onClick={loadTables} style={{ marginLeft: 4, fontSize: 12 }}>↻ Refresh</button>
-              </div>
-            )}
-
-            {/* Filter bar */}
-            {selTable && (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
-                <input
-                  placeholder="ORDER BY column [ASC|DESC]"
-                  value={orderBy}
-                  onChange={e => setOrderBy(e.target.value)}
-                  style={{ width: 220, fontFamily: 'monospace', fontSize: 13 }}
-                />
-                <input
-                  placeholder="LIMIT"
-                  value={limit}
-                  onChange={e => setLimit(e.target.value)}
-                  style={{ width: 70, fontFamily: 'monospace', fontSize: 13 }}
-                />
-                <button onClick={() => loadRows()} disabled={dbLoading}>
-                  {dbLoading ? 'Loading…' : 'Run'}
-                </button>
-              </div>
-            )}
-
-            {/* Results table */}
-            {rows && (
-              rows.length === 0
-                ? <p style={{ color: 'var(--muted)' }}>(no rows)</p>
-                : (
-                  <div style={{ overflowX: 'auto' }}>
-                    <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
-                      <thead>
-                        <tr>{cols.map(c => <th key={c} style={{ whiteSpace: 'nowrap' }}>{c}</th>)}</tr>
-                      </thead>
-                      <tbody>
-                        {rows.map((row, i) => (
-                          <tr key={i}>
-                            {cols.map(c => (
-                              <td key={c} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 400 }}>
-                                {row[c] === null ? <span style={{ color: 'var(--faint)' }}>NULL</span> : String(row[c])}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{rows.length} row{rows.length !== 1 ? 's' : ''}</div>
-                  </div>
-                )
-            )}
-
-            {dbLoading && !rows && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
-          </div>
-        )}
-
         {/* ── Users ── */}
-        {tab === 'users' && (
+        {tab === 'people' && (
           <div>
             <form onSubmit={sendInvite} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 14, maxWidth: 640 }}>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Invite a person</div>
@@ -1160,8 +1015,26 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
             <button onClick={loadUsers} disabled={usersLoading} style={{ marginBottom: 10, fontSize: 12 }}>
               {usersLoading ? 'Loading…' : '↻ Update'}
             </button>
-            {users && (
+            {users && (() => {
+              const FILTERS = [
+                ['all', 'All', () => true],
+                ['reviewer', 'Reviewers', (u) => u.is_reviewer],
+                ['judge', 'Judges', (u) => u.is_judge],
+                ['admin', 'Admins', (u) => u.is_admin],
+                ['none', 'No role', (u) => u.roles.length === 0],
+              ]
+              const active = FILTERS.find(([k]) => k === userFilter) || FILTERS[0]
+              const shown = users.filter(active[2])
+              return (
               <div style={{ overflowX: 'auto' }}>
+                <div role="group" aria-label="Filter people by role" style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+                  {FILTERS.map(([k, label, fn]) => (
+                    <button key={k} onClick={() => setUserFilter(k)} aria-pressed={userFilter === k}
+                      style={{ fontSize: 12, borderRadius: 12, background: userFilter === k ? 'var(--selected-bg)' : '', fontWeight: userFilter === k ? 600 : 400, color: k === 'none' && users.some((u) => u.roles.length === 0) ? 'var(--warn)' : '' }}>
+                      {label} {users.filter(fn).length}
+                    </button>
+                  ))}
+                </div>
                 <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
                   <thead>
                     <tr>
@@ -1172,7 +1045,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map(u => (
+                    {shown.map(u => (
                       <tr key={u.id}>
                         <td>{u.id}</td>
                         <td style={{ wordBreak: 'break-all' }}>{u.email}</td>
@@ -1193,8 +1066,11 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                           })}
                         </td>
                         <td>
-                          <div style={{ color: u.link?.state === 'active' ? 'var(--ok)' : 'var(--warn)', marginBottom: 4 }}>{describeLink(u.link)}</div>
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: openUser === u.id ? 4 : 0 }}>
+                            <span style={{ color: u.link?.state === 'active' ? 'var(--ok)' : 'var(--warn)' }}>{describeLink(u.link)}</span>
+                            <button style={{ fontSize: 12 }} onClick={() => setOpenUser(openUser === u.id ? null : u.id)} aria-expanded={openUser === u.id}>{openUser === u.id ? 'Close' : 'Manage'}</button>
+                          </div>
+                          {openUser === u.id && <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                             <input
                               type="date" value={expiryFor(u)} min={dateInDays(1)}
                               onChange={(e) => setRowExpiry({ ...rowExpiry, [u.id]: e.target.value })}
@@ -1203,22 +1079,35 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
                             <button style={{ fontSize: 12 }} onClick={() => issueLink(u)}>New link</button>
                             {u.link && <button style={{ fontSize: 12 }} onClick={() => changeExpiry(u)}>Set expiry</button>}
                             {u.link && <button style={{ fontSize: 12, color: 'var(--danger)' }} onClick={() => cancelLink(u)}>Cancel link</button>}
-                          </div>
+                          </div>}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                {shown.length === 0 && <p style={{ color: 'var(--muted)' }}>Nobody matches this filter.</p>}
                 <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
-                  {users.length} user{users.length !== 1 ? 's' : ''}. A new or cancelled link also logs that person out everywhere.
+                  {shown.length} of {users.length} user{users.length !== 1 ? 's' : ''}. A new or cancelled link also logs that person out everywhere.
                 </div>
               </div>
-            )}
+              )
+            })()}
+          </div>
+        )}
+
+        {/* ── Exports and safety ── */}
+        {tab === 'data' && (
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Exports</div>
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 14 }}>
+              <a href="/api/admin/ratings.csv">⬇ ratings.csv (every submitted rating)</a>
+              <a href="/api/admin/rankings.csv">⬇ rankings.csv (films by average score)</a>
+            </div>
           </div>
         )}
 
         {/* ── Backup / Restore ── */}
-        {tab === 'backup' && (
+        {tab === 'data' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
             {/* Download */}
@@ -1289,6 +1178,111 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
           </div>
         )}
 
+        {/* ── DB Browser ── */}
+        {tab === 'data' && (
+          <details style={{ margin: '0 0 18px' }}>
+            <summary style={{ cursor: 'pointer', fontWeight: 600, marginBottom: 8 }}>Browse the database</summary>
+          <div>
+            {dbError && <div style={{ color: 'var(--danger)', marginBottom: 8 }}>{dbError}</div>}
+
+            {/* Table list */}
+            {tables && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                {Object.entries(tables).map(([t, count]) => (
+                  <button
+                    key={t}
+                    onClick={() => { setSelTable(t); setOrderBy(''); setLimit('100'); loadRows(t, { orderBy: '', limit: '100' }) }}
+                    style={{ fontWeight: selTable === t ? 700 : 400, background: selTable === t ? 'var(--selected-bg)' : '' }}
+                  >
+                    {t} <span style={{ fontSize: 12, color: 'var(--muted)' }}>({count})</span>
+                  </button>
+                ))}
+                <button onClick={loadTables} style={{ marginLeft: 4, fontSize: 12 }}>↻ Refresh</button>
+              </div>
+            )}
+
+            {/* Filter bar */}
+            {selTable && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+                <input
+                  placeholder="ORDER BY column [ASC|DESC]"
+                  value={orderBy}
+                  onChange={e => setOrderBy(e.target.value)}
+                  style={{ width: 220, fontFamily: 'monospace', fontSize: 13 }}
+                />
+                <input
+                  placeholder="LIMIT"
+                  value={limit}
+                  onChange={e => setLimit(e.target.value)}
+                  style={{ width: 70, fontFamily: 'monospace', fontSize: 13 }}
+                />
+                <button onClick={() => loadRows()} disabled={dbLoading}>
+                  {dbLoading ? 'Loading…' : 'Run'}
+                </button>
+              </div>
+            )}
+
+            {/* Results table */}
+            {rows && (
+              rows.length === 0
+                ? <p style={{ color: 'var(--muted)' }}>(no rows)</p>
+                : (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+                      <thead>
+                        <tr>{cols.map(c => <th key={c} style={{ whiteSpace: 'nowrap' }}>{c}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row, i) => (
+                          <tr key={i}>
+                            {cols.map(c => (
+                              <td key={c} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 400 }}>
+                                {row[c] === null ? <span style={{ color: 'var(--faint)' }}>NULL</span> : String(row[c])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>{rows.length} row{rows.length !== 1 ? 's' : ''}</div>
+                  </div>
+                )
+            )}
+
+            {dbLoading && !rows && <p style={{ color: 'var(--muted)' }}>Loading…</p>}
+          </div>
+          </details>
+        )}
+
+        {tab === 'data' && (
+          <div style={{ border: '1px solid var(--danger-border)', background: 'var(--danger-bg)', borderRadius: 10, padding: '12px 14px', marginTop: 18 }}>
+            <div style={{ fontWeight: 600, color: 'var(--danger)', marginBottom: 2 }}>Danger zone</div>
+            <div style={{ fontSize: 13, color: 'var(--muted-2)' }}>These can't be undone. Download a backup first.</div>
+            <DangerCard title="Empty the film database">
+              <div style={{ fontSize: 13, color: 'var(--muted-2)', marginBottom: 6 }}>Deletes all films, assignments and ratings. People stay.</div>
+              {!emptyOpen ? (
+                <button onClick={() => { setEmptyOpen(true); setEmptyMsg('') }} disabled={jobStatus?.state === 'running'} style={{ color: 'var(--danger)' }}>Empty film database…</button>
+              ) : (
+                <div style={{ border: '1px solid var(--danger-border)', background: 'var(--surface)', borderRadius: 8, padding: 12, maxWidth: 520 }}>
+                  <p style={{ margin: '0 0 8px', fontSize: 13 }}>
+                    This permanently deletes <strong>all films, assignments and ratings</strong>. User accounts are kept.
+                    Raters will see "film database hasn't been set up" until you import again.
+                  </p>
+                  <label style={{ fontSize: 13 }}>Type <code>EMPTY</code> to confirm:{' '}
+                    <input value={emptyConfirmText} onChange={e => setEmptyConfirmText(e.target.value)} style={{ width: 90 }} autoComplete="off" />
+                  </label>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button onClick={emptyDatabase} disabled={emptyConfirmText !== 'EMPTY' || emptying || jobStatus?.state === 'running'} style={{ color: 'var(--danger)' }}>{emptying ? 'Emptying…' : 'Empty database'}</button>
+                    <button onClick={() => { setEmptyOpen(false); setEmptyConfirmText('') }} disabled={emptying}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              {emptyMsg && <div style={{ marginTop: 8, fontSize: 13, color: emptyMsg.startsWith('Error') ? 'var(--danger)' : 'var(--ok)' }}>{emptyMsg}</div>}
+            </DangerCard>
+            <ResetDistributionControl apiJson={apiJson} onDataChanged={onDataChanged} />
+            <ClearPoolControl apiJson={apiJson} onDataChanged={onDataChanged} />
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1298,7 +1292,7 @@ function AdminPanel({ apiJson, onDataChanged, meId }) {
 // A judge's own ranked list (shown after their last film, and from "My ranked films")
 // ---------------------------------------------------------------------------
 
-function ResultsScreen({ results, categories, onBack }) {
+function ResultsScreen({ results, categories, onBack, me }) {
   return (
     <div style={{ marginTop: 14 }}>
       <h3 style={{ margin: '0 0 4px' }}>Your ranked films</h3>
@@ -1326,7 +1320,7 @@ function ResultsScreen({ results, categories, onBack }) {
               {results.films.map((f) => (
                 <tr key={f.identifier}>
                   <td>{f.rank}</td>
-                  <td><a href={f.archiveUrl} target="_blank" rel="noreferrer">{f.title}</a>{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
+                  <td><a href={f.archiveUrl} target="_blank" rel="noreferrer">{f.title}</a>{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}{me?.is_reviewer && f.round === 'reviewers' && <span style={{ marginLeft: 6, fontSize: 12, borderRadius: 10, padding: '1px 8px', background: 'var(--chip-assigned-bg)', color: 'var(--chip-assigned-fg)' }}>rated as reviewer</span>}</td>
                   {categories.map((c) => <td key={c.key}>{f.scores[c.key]}</td>)}
                   <td><strong>{f.total}</strong></td>
                   <td style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxWidth: 360 }}>{f.comment}</td>
@@ -1376,10 +1370,17 @@ function ThemeToggle() {
 // real link (#/film/<identifier>) and the browser's back button works:
 //   #/ (or nothing)  rate: the next film        #/films    the list of my films
 //   #/film/<id>      one particular film         #/results  a judge's ranked list
+//   #/admin[/page]   the admin pages (admins only): overview, films, people, progress, rankings, data
 // ---------------------------------------------------------------------------
+
+const ADMIN_PAGES = ['overview', 'films', 'people', 'progress', 'rankings', 'data']
 
 function parseRoute() {
   const h = window.location.hash.replace(/^#\/?/, '')
+  if (h === 'admin' || h.startsWith('admin/')) {
+    const page = h.slice(6)
+    return { view: 'admin', page: ADMIN_PAGES.includes(page) ? page : 'overview' }
+  }
   if (h === 'films') return { view: 'films' }
   if (h === 'results') return { view: 'results' }
   if (h.startsWith('film/') && h.length > 5) {
@@ -1391,7 +1392,44 @@ function parseRoute() {
 // What the list calls each assignment status.
 const MY_STATUS_LABEL = { assigned: 'unseen', seen: 'seen', rated: 'rated' }
 
-function MyFilmsScreen({ films }) {
+// One progress bar per round. A round with no films isn't shown. The judges' round only
+// starts once the reviewing round is over, so the two are never mixed into one bar.
+function roundsOf(films, me) {
+  const rated = (list) => list.filter((f) => f.status === 'rated').length
+  const reviewing = films.filter((f) => f.round === 'reviewers')
+  const judging = me.is_judge ? films.filter((f) => f.in_judges_pool) : []
+  const out = []
+  if (reviewing.length) out.push({ label: 'Reviewing', done: rated(reviewing), total: reviewing.length })
+  if (judging.length) out.push({ label: "Judges' pool", done: rated(judging), total: judging.length })
+  return out
+}
+
+function RoundProgress({ rounds, named }) {
+  if (!rounds.length) return null
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '10px 0', maxWidth: 520 }}>
+      {rounds.map((r) => (
+        <div key={r.label} style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <span style={{ fontSize: 14, color: 'var(--text-2)', whiteSpace: 'nowrap', minWidth: named ? 190 : 0 }}>
+            {named ? `${r.label}: ` : ''}{r.done} of {r.total} rated
+          </span>
+          <progress value={r.done} max={r.total} style={{ flex: 1 }} aria-label={`${r.label} progress`} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function RoundChip({ judges }) {
+  return (
+    <span style={{ fontSize: 12, borderRadius: 10, padding: '1px 8px', background: judges ? 'var(--chip-seen-bg)' : 'var(--chip-assigned-bg)', color: judges ? 'var(--chip-seen-fg)' : 'var(--chip-assigned-fg)' }}>
+      {judges ? "Judges' pool" : 'Reviewing'}
+    </span>
+  )
+}
+
+function MyFilmsScreen({ films, me }) {
+  const bothRoles = me.is_reviewer && me.is_judge
   const [onlyOpen, setOnlyOpen] = useState(false)
   const count = (st) => films.filter((f) => f.status === st).length
   const shown = onlyOpen ? films.filter((f) => f.status !== 'rated') : films
@@ -1402,23 +1440,26 @@ function MyFilmsScreen({ films }) {
         {films.length} film{films.length === 1 ? '' : 's'}: {count('rated')} rated, {count('seen')} seen, {count('assigned')} unseen.
         Open any film to rate it. <a href="#/">Rate the next film</a>
       </div>
+      <RoundProgress rounds={roundsOf(films, me)} named={bothRoles} />
       {films.length === 0 ? <p style={{ color: 'var(--muted)' }}>No films have been assigned to you yet.</p> : (
         <>
           <label style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
             <input type="checkbox" checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} /> Only films I haven't rated
           </label>
           <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 15, maxWidth: 760 }}>
-            <thead><tr><th>film</th><th>status</th></tr></thead>
+            <thead><tr><th>film</th>{bothRoles && <th>round</th>}<th>status</th></tr></thead>
             <tbody>
               {shown.map((f) => (
                 <tr key={f.identifier}>
                   <td><a href={`#/film/${encodeURIComponent(f.identifier)}`}>{f.title}</a>{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
+                  {bothRoles && <td><RoundChip judges={f.in_judges_pool} /></td>}
                   <td><StatusChip status={f.status} label={MY_STATUS_LABEL[f.status]} /></td>
                 </tr>
               ))}
-              {shown.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--muted)' }}>You have rated every film.</td></tr>}
+              {shown.length === 0 && <tr><td colSpan={bothRoles ? 3 : 2} style={{ color: 'var(--muted)' }}>You have rated every film.</td></tr>}
             </tbody>
           </table>
+          {bothRoles && <div style={{ fontSize: 13, color: 'var(--muted-2)', marginTop: 8 }}>A pool film you already rated in the reviewing round shows as rated and opens read-only. It isn't rated twice.</div>}
         </>
       )}
     </div>
@@ -1584,6 +1625,7 @@ export default function App() {
     }
 
     await loadNextFilm()
+    loadMyFilms()   // refresh the progress bars
     if (parseRoute().view !== 'rate') navigate('', { replace: true })   // opened from the list: carry on with the next film
     setConfirmOpen(false)
     setSubmitting(false)
@@ -1632,9 +1674,11 @@ export default function App() {
   // film is loaded directly and `loadedFor` already says so, so nothing is fetched twice.)
   useEffect(() => {
     if (!me) return
-    const page = route.view === 'film' ? `film:${route.id}` : route.view
+    const page = route.view === 'film' ? `film:${route.id}` : route.view   // (all admin pages count as one)
     const key = `${me.id}|${page}`
     if (loadedFor.current === key) return
+    // An admin who doesn't rate lands on the admin pages instead (see the redirect below).
+    if (route.view === 'rate' && me.is_admin && !me.is_reviewer && !me.is_judge && window.location.hash === '') return
     const newPerson = !loadedFor.current.startsWith(`${me.id}|`)
     loadedFor.current = key
     if (newPerson) {
@@ -1644,13 +1688,20 @@ export default function App() {
     setFilm(null); setNotice(null); setError(''); setFlash('')
     setLoading(true)
     const run = {
-      rate: () => loadNextFilm(),
-      film: () => loadFilm(route.id),
+      rate: () => Promise.all([loadNextFilm(), loadMyFilms()]),
+      film: () => Promise.all([loadFilm(route.id), loadMyFilms()]),
+      admin: () => null,
       films: () => loadMyFilms(),
       results: () => loadResults(),
     }[route.view]
     Promise.all([newPerson ? loadCategories() : null, run()]).finally(() => setLoading(false))
   }, [me?.id, route.view, route.id])
+
+  useEffect(() => {
+    if (!me || window.location.pathname === '/signin' || (route.view !== 'rate' && route.view !== 'admin')) return   // (never while a sign-in link is open)
+    if (route.view === 'admin' && !me.is_admin) navigate('', { replace: true })
+    else if (route.view === 'rate' && me.is_admin && !me.is_reviewer && !me.is_judge && window.location.hash === '') navigate('#/admin', { replace: true })
+  }, [me?.id, route.view])
 
   // After a judge's last film, go straight to their ranked list (only once a judges' pool exists).
   useEffect(() => {
@@ -1660,6 +1711,8 @@ export default function App() {
   }, [notice?.code, me?.is_judge])
 
   const inRateView = route.view === 'rate' || route.view === 'film'
+  const myFilmList = myFilms && !myFilms.error ? myFilms.films : null
+  const thisFilmInfo = film && myFilmList ? myFilmList.find((f) => f.identifier === film.identifier) : null
   const canRate = !!me && (me.is_reviewer || me.is_judge)
   // A film the person has already rated opens read-only, showing their own submitted rating.
   const readOnly = film?.status === 'rated'
@@ -1705,6 +1758,17 @@ export default function App() {
         .grid-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .grid-table th { text-align: left; font-weight: 600; border-bottom: 2px solid var(--border); padding: 10px 8px; }
         .grid-table td { border-bottom: 1px solid var(--border-soft); padding: 10px 8px; vertical-align: middle; }
+        .admin-shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+        .admin-nav { background: var(--surface-alt); padding: 10px 8px; border-right: 1px solid var(--border); }
+        .admin-nav-group { font-size: 11px; color: var(--muted); margin: 12px 8px 4px; }
+        .admin-nav a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--text-2); text-decoration: none; border: 1px solid transparent; }
+        .admin-nav a.on { background: var(--surface); color: var(--text); font-weight: 600; border-color: var(--border); }
+        .admin-main { padding: 16px; min-width: 0; }
+        @media (max-width: 768px) {
+          .admin-shell { grid-template-columns: 1fr; }
+          .admin-nav { border-right: 0; border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 4px; }
+          .admin-nav-group { display: none; }
+        }
         .btn-primary { padding: 10px 14px; }
         .btn-primary[disabled] { opacity: 0.5; cursor: not-allowed; }
         .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -1745,6 +1809,7 @@ export default function App() {
               ? <span style={{ background: 'var(--warn-bg)', color: 'var(--warn)', border: '1px solid var(--warn-border)', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>no role yet</span>
               : me.roles.map((r) => <span key={r} style={{ background: 'var(--badge-bg)', color: 'var(--text)', borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{r}</span>)}
           </span>
+          {me.is_admin && <button onClick={() => navigate('#/admin')} disabled={route.view === 'admin'}>Admin</button>}
           {canRate && <button onClick={() => navigate('')} disabled={route.view === 'rate'}>Rate</button>}
           {canRate && <button onClick={() => navigate('#/films')} disabled={route.view === 'films'}>My films</button>}
           {me.is_judge && <button onClick={() => navigate('#/results')} disabled={route.view === 'results'}>My ranked films</button>}
@@ -1752,17 +1817,17 @@ export default function App() {
         </div>
       </div>
 
-      {me?.is_admin ? (
-        <AdminPanel apiJson={apiJson} onDataChanged={() => { loadedFor.current = ''; if (parseRoute().view === 'rate') loadNextFilm() }} meId={me.id} />
+      {route.view === 'admin' && me.is_admin ? (
+        <AdminPanel apiJson={apiJson} onDataChanged={() => {}} meId={me.id} page={route.page} />
       ) : null}
 
       {route.view === 'results' && results ? (
-        <ResultsScreen results={results} categories={categories} onBack={() => navigate('')} />
+        <ResultsScreen results={results} categories={categories} onBack={() => navigate('')} me={me} />
       ) : null}
       {route.view === 'films' && myFilms ? (
         myFilms.error
           ? <div role="alert" style={{ marginTop: 14, color: 'var(--danger)' }}>{myFilms.error}</div>
-          : <MyFilmsScreen films={myFilms.films} />
+          : <MyFilmsScreen films={myFilms.films} me={me} />
       ) : null}
 
       {loading ? <p>Loading…</p> : null}
@@ -1782,9 +1847,11 @@ export default function App() {
 
       {film && inRateView ? (
         <div className="film-panel">
+          {myFilmList && <RoundProgress rounds={roundsOf(myFilmList, me)} named={me.is_reviewer && me.is_judge} />}
           <h3 className="film-title">
             <a href={film.archiveUrl} target="_blank" rel="noreferrer">{film.title}</a>
             {film.creator ? <span style={{ fontWeight: 400 }}> by {film.creator}</span> : null}
+            {me.is_reviewer && me.is_judge && thisFilmInfo && <span style={{ marginLeft: 10, verticalAlign: 'middle' }}><RoundChip judges={thisFilmInfo.in_judges_pool} /></span>}
           </h3>
 
           {film.description ? (

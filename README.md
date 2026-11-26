@@ -25,25 +25,25 @@ Production runs on Railway (new deployment being set up; URL to follow).
   them. Each assignment is `assigned`, `seen` or `rated`. A rating (three scores and an
   optional comment of up to 1000 characters) is final.
 - **Judges' results.** After a judge's last film they see their own ranked list (highest total first, with their scores and comments) and can download it as a CSV (*My ranked films* at any time). Reviewers have no export.
+- **Progress per round.** Reviewers and judges see one progress bar per round (*Reviewing*, and *Judges' pool* once it exists): "12 of 24 rated". Someone holding both roles also sees a round label on each film and on the rating page.
 - **My films.** Reviewers and judges can open a list of all their films, each a link to that film's rating page, with its status: *unseen*, *seen* or *rated* (a rated film opens read-only showing their own scores and comment). The back button works.
 - **Dark mode.** A Moon / Sun button switches between light and dark; the choice is remembered in the browser, and a first visit follows the device setting.
-- **Three roles**, independent checkboxes in the admin panel's Users tab: *admin*
+- **Three roles**, independent checkboxes on the admin People page: *admin*
   (manages everything, doesn't rate), *reviewer* and *judge* (both rate their own
   films). A user with no role sees no films.
 - **Sign-in is by personal magic link only.** An admin invites a person by email address
-  (Users tab → Invite) and passes them the link; the app sends no email. The link opens a
+  (People page → Invite) and passes them the link; the app sends no email. The link opens a
   page with a **Sign in** button (so chat and email apps that preview links can't use it),
   works repeatedly until the expiry date the admin chose, and is replaced or cancelled by
   the admin (which also logs that person out). There are no passwords, archive.org logins
   or GitHub login.
-- **Admin panel** (shown to users with `users.is_admin = 1`), with tabs:
-  - *Import* — populate the film database from a CSV spreadsheet (see below)
-  - *Actions* — film count and title-lookup progress, download `ratings.csv`, empty the film database (films, assignments and ratings; asks for confirmation)
-  - *Reviews* — hand the films out to reviewers (every film to 2 different reviewers, at random, once; a typed-confirmation reset starts over), the "N of M films fully reviewed" counter, a per-person table (not opened / opened / submitted, with each person's films) and a per-film table showing who still owes a review, with hand assign / remove
-  - *Rankings* — every film with its average score from highest to lowest (and all its details, downloadable as `rankings.csv`); choose the **judges' pool**: preview the top N films, with a check that the cut-off isn't a tie, blocked until every film has both its reviews; confirming gives every judge all the pool films (judges never see scores)
-  - *Users* — invite people, tick Admin / Reviewer / Judge, create / cancel sign-in links and change their expiry
-  - *DB Browser* — table row counts and paged table dumps
-  - *Backup* — download the full DB as JSON; restore from a backup file
+- **Admin pages** (admins only, a separate page from rating, reached with the top-bar **Admin** button; a sidebar grouped in the order things happen):
+  - *Overview* — the contest as six stages (films imported, people invited, films handed out, reviews, judges' pool, judges rate) with done / now / locked badges and progress bars, a "next step" box, and a "needs attention" list (expired sign-in links, people with no role)
+  - *Films* — film count and title-lookup progress, and the spreadsheet **import** (see below)
+  - *People* — invite people, filter by role, tick Admin / Reviewer / Judge, and manage sign-in links (new link, change expiry, cancel)
+  - *Progress* — hand the films out to reviewers (every film to 2 different reviewers, at random, once), the "N of M films fully reviewed" counter, a per-person table and a per-film table showing who still owes a review, with hand assign / remove
+  - *Rankings and pool* — every film by average score (details, `rankings.csv`); choose the **judges' pool**: preview the top N, with a check that the cut-off isn't a tie, blocked until every film has both its reviews; confirming gives every judge all the pool films (judges never see scores)
+  - *Exports and safety* — `ratings.csv` and `rankings.csv`, backup and restore, the database browser, and the **danger zone**: empty the film database, reset the distribution, clear the judges' pool (each says what it deletes and needs a typed confirmation)
 - Cookie sessions backed by a server-side record (8-hour lifetime, `HttpOnly`,
   `SameSite=Lax`, `Secure`): logging out really ends the session, and restoring a
   backup logs everyone else out.
@@ -114,7 +114,7 @@ address, to open the dev page.)
    PUBLIC_URL=http://localhost:5173 python tools/print_db.py --invite you@example.com --admin
    ```
    Open the printed link and press **Sign in**.
-3. As an admin, open the admin panel → *Import* and load the spreadsheet. Until you do,
+3. As an admin, open Admin → *Films* and load the spreadsheet. Until you do,
    people see "the film database hasn't been set up yet".
 
 ## Configuration
@@ -135,7 +135,7 @@ address, to open the dev page.)
 ## Importing films from a spreadsheet
 
 Films come only from a spreadsheet: export it as **CSV** (Google Sheets: *File → Download →
-Comma-separated values*), then open the admin panel → **Import**.
+Comma-separated values*), then open Admin → **Films**.
 
 1. Choose the file. The page guesses which column holds the archive.org link, the title, the
    creator (the "by" credit), the description, the public-domain works used, the AI disclosure and

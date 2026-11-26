@@ -66,6 +66,8 @@ class RatingService:
             "title": r["title"] or r["ia_identifier"],
             "creator": r["creator"],
             "status": r["status"],
+            "round": r["round"],
+            "in_judges_pool": bool(r["in_judges_pool"]),
         } for r in self.assignments.list_for_user(user_id)]
 
     def get_next_film(self, user_id: int) -> dict:
@@ -111,6 +113,7 @@ class RatingService:
                 "scores": {k: r["scores"].get(k) for k in CATEGORY_KEYS},
                 "total": sum(s for s in scores if s is not None),
                 "comment": r["comment"],
+                "round": r["round"],   # "reviewers" = rated in the reviewing round, kept as their judges' rating
             })
         rows.sort(key=lambda r: (-r["total"], r["title"].lower(), r["identifier"]))
         prev, rank = None, 0

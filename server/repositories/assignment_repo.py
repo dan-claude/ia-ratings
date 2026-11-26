@@ -42,7 +42,7 @@ class AssignmentRepository:
         """The person's films with their status, alphabetical by title."""
         return self.db.fetchall(
             """
-            SELECT f.ia_identifier, f.title, f.creator, a.status
+            SELECT f.ia_identifier, f.title, f.creator, f.in_judges_pool, a.status, a.round
             FROM assignments a
             JOIN films f ON f.id = a.film_id
             WHERE a.user_id = ?

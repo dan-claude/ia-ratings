@@ -1,3 +1,8 @@
+## Unreleased (branch `major-changes`, admin pages and per-round progress)
+- **Admin is its own page** (`#/admin`, top-bar **Admin** button) with a sidebar in workflow order instead of seven tabs stacked above the rating page: **Overview** (six contest stages with done / now / locked, progress bars, a next-step box and a needs-attention list), **Films** (count, title lookup, import), **People** (invite, role filter chips, per-person Manage panel for the sign-in link), **Progress** (distribution, counters, per-person and per-film views), **Rankings and pool**, **Exports and safety** (both CSVs, backup/restore, database browser, danger zone). The destructive actions (empty the film database, reset distribution, clear the judges' pool) now live together in the danger zone. Admins who don't rate land on the Overview. No API change for the admin pages.
+- Reviewers and judges: **one progress bar per round** (Reviewing; Judges' pool once it exists) on the rating page and My films, so the two rounds are never mixed. Someone with both roles also gets round labels on each film and a Round column on My films. API: `GET /api/me/films` rows gain `round` and `in_judges_pool`; `GET /api/me/results` rows gain `round` (a pool film rated in the reviewing round is tagged "rated as reviewer" for people who are also reviewers).
+- Fix: the admin redirect must not rewrite the URL while a sign-in link is open (it dismissed the Sign in page for an already-signed-in admin).
+
 ## Unreleased (branch `major-changes`, role badges)
 - Client: the top bar of every page now shows the signed-in person's roles as small badges next to their email (admin / reviewer / judge, or "no role yet"), using the roles `GET /api/me` already returns.
 

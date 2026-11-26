@@ -160,9 +160,13 @@ Every film assigned to the caller with its status, alphabetical by title (case-i
 `{ "error": "Forbidden" }` if the caller holds neither the reviewer nor the judge role. Listing does
 **not** mark anything as seen.
 ```json
-{ "films": [ { "identifier": "film-a", "title": "A Film", "creator": "Sam B", "status": "assigned" } ] }
+{ "films": [ { "identifier": "film-a", "title": "A Film", "creator": "Sam B", "status": "assigned",
+               "round": "reviewers", "in_judges_pool": false } ] }
 ```
 `status` is `assigned`, `seen` or `rated` (the client labels them *unseen*, *seen*, *rated*).
+`round` is `reviewers` or `judges` (the assignment's round; a judge who reviewed a pool film keeps
+`reviewers`) and `in_judges_pool` says whether the film is in the judges' pool; the client uses them
+for the per-round progress bars and round labels.
 
 ### GET /api/films/<identifier> — user
 One of the caller's own films (marks an unopened one `seen`).
@@ -213,9 +217,10 @@ other people's ratings or any averages.
   "films": [ { "rank": 1, "identifier": "film-a", "title": "A Film", "creator": "Sam B",
                "archiveUrl": "https://archive.org/details/film-a",
                "scores": { "aesthetic": 10, "sound": 9, "appeal": 8 }, "total": 27,
-               "comment": "Lovely work." } ] }
+               "comment": "Lovely work.", "round": "judges" } ] }
 ```
-Highest `total` first; equal totals share a rank (1, 2, 2, 4) and are listed alphabetically by
+`round` is `reviewers` for a film the judge rated in the reviewing round (kept as their judges' rating),
+otherwise `judges`. Highest `total` first; equal totals share a rank (1, 2, 2, 4) and are listed alphabetically by
 title. `complete` is true when the judge has rated every pool film (the client then shows this
 list right after their last submit). With no pool yet, `pool_size` is 0 and `films` is empty.
 

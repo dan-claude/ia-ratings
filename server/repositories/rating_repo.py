@@ -73,9 +73,11 @@ class RatingRepository:
         they rated them in): film details, scores by category and the comment."""
         rows = self.db.fetchall(
             """
-            SELECT r.id AS rating_id, r.comment, f.ia_identifier AS identifier, f.title AS title, f.creator AS creator
+            SELECT r.id AS rating_id, r.comment, f.ia_identifier AS identifier, f.title AS title, f.creator AS creator,
+                   COALESCE(a.round, 'reviewers') AS round
             FROM ratings r
             JOIN films f ON f.id = r.film_id AND f.in_judges_pool = 1
+            LEFT JOIN assignments a ON a.user_id = r.user_id AND a.film_id = r.film_id
             WHERE r.user_id = ?
             """,
             (int(user_id),),

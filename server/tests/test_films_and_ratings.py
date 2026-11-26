@@ -205,9 +205,9 @@ def test_my_films_lists_assigned_films_with_status_alphabetically(app):
     rev.post("/api/films/c/ratings", json={"scores": all_scores()})  # rated
     d = rev.get("/api/me/films").get_json()
     assert d["films"] == [
-        {"identifier": "a", "title": "Apple", "creator": "Maker a", "status": "assigned"},
-        {"identifier": "b", "title": "banana", "creator": "Maker b", "status": "seen"},
-        {"identifier": "c", "title": "Cherry", "creator": "Maker c", "status": "rated"},
+        {"identifier": "a", "title": "Apple", "creator": "Maker a", "status": "assigned", "round": "reviewers", "in_judges_pool": False},
+        {"identifier": "b", "title": "banana", "creator": "Maker b", "status": "seen", "round": "reviewers", "in_judges_pool": False},
+        {"identifier": "c", "title": "Cherry", "creator": "Maker c", "status": "rated", "round": "reviewers", "in_judges_pool": False},
     ]
 
 
@@ -237,3 +237,12 @@ def test_a_listed_film_opens_and_a_rated_one_shows_the_callers_rating(app):
     rev.post("/api/films/f1/ratings", json={"scores": {"aesthetic": 9, "sound": 8, "appeal": 7}, "comment": "Fine"})
     f = rev.get("/api/films/f1").get_json()
     assert f["status"] == "rated" and f["rating"] == {"scores": {"aesthetic": 9, "sound": 8, "appeal": 7}, "comment": "Fine"}
+
+
+def test_my_films_says_which_round_and_whether_the_film_is_in_the_judges_pool(app):
+    rev, rid = setup_reviewer(app, roles=("judge",), email="j@example.com")
+    fid = seed_film(app, "p1", "Pool film")
+    app.repos["films"].set_judges_pool([fid])
+    app.repos["assignments"].add(rid, fid, "judges")
+    assert rev.get("/api/me/films").get_json()["films"] == [
+        {"identifier": "p1", "title": "Pool film", "creator": None, "status": "assigned", "round": "judges", "in_judges_pool": True}]

@@ -40,7 +40,8 @@ def test_the_list_is_ranked_by_total_with_ties_sharing_a_rank_and_listed_alphabe
     assert d["pool_size"] == 5 and d["rated"] == 5 and d["complete"] is True
     top = d["films"][0]
     assert top == {"identifier": "f0", "title": "Film 0", "creator": "Maker 0", "archiveUrl": "https://archive.org/details/f0",
-                   "scores": {"aesthetic": 10, "sound": 10, "appeal": 10}, "total": 30, "comment": "Best", "rank": 1}
+                   "scores": {"aesthetic": 10, "sound": 10, "appeal": 10}, "total": 30, "comment": "Best", "round": "judges",
+                   "rank": 1}
 
 
 def test_partial_progress_is_not_complete(app):
@@ -83,6 +84,9 @@ def test_a_judge_who_already_reviewed_a_pool_film_has_that_rating_in_their_list(
     d = a.get("/api/me/results").get_json()
     assert d["complete"] is True and d["pool_size"] == 1
     assert (d["films"][0]["identifier"], d["films"][0]["total"], d["films"][0]["comment"]) == ("f0", 24, "reviewing round")
+    assert d["films"][0]["round"] == "reviewers"      # rated as a reviewer, kept as their judges' rating
+    jl = a.get("/api/me/films").get_json()["films"]
+    assert [(f["identifier"], f["round"], f["in_judges_pool"], f["status"]) for f in jl] == [("f0", "reviewers", True, "rated"), ("f1", "reviewers", False, "rated")]
     assert a.get("/api/films/next").get_json()["code"] == "all_rated"                      # nothing more to rate
 
 
