@@ -25,6 +25,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   them. Each assignment is `assigned`, `seen` or `rated`. A rating (three scores and an
   optional comment of up to 1000 characters) is final.
 - **Judges' results.** After a judge's last film they see their own ranked list (highest total first, with their scores and comments) and can download it as a CSV (*My ranked films* at any time). Reviewers have no export.
+- **My films.** Reviewers and judges can open a list of all their films, each a link to that film's rating page, with its status: *unseen*, *seen* or *rated* (a rated film opens read-only showing their own scores and comment). The back button works.
 - **Dark mode.** A Moon / Sun button switches between light and dark; the choice is remembered in the browser, and a first visit follows the device setting.
 - **Three roles**, independent checkboxes in the admin panel's Users tab: *admin*
   (manages everything, doesn't rate), *reviewer* and *judge* (both rate their own

@@ -191,3 +191,49 @@ def test_unknown_film(app):
     rev, _ = setup_reviewer(app)
     assert rev.get("/api/films/nope").status_code == 404
     assert rev.post("/api/films/nope/ratings", json={"scores": all_scores()}).status_code == 404
+
+
+# ---- "my films": the list of everything assigned, with status --------------------------
+
+def test_my_films_lists_assigned_films_with_status_alphabetically(app):
+    rev, rid = setup_reviewer(app)
+    other, oid = setup_reviewer(app, email="o@example.com")
+    for ident, title in (("b", "banana"), ("a", "Apple"), ("c", "Cherry")):
+        assign(app, rid, seed_film(app, ident, title, creator=f"Maker {ident}"))
+    assign(app, oid, seed_film(app, "x", "Not mine"))
+    rev.get("/api/films/b")                                          # opened
+    rev.post("/api/films/c/ratings", json={"scores": all_scores()})  # rated
+    d = rev.get("/api/me/films").get_json()
+    assert d["films"] == [
+        {"identifier": "a", "title": "Apple", "creator": "Maker a", "status": "assigned"},
+        {"identifier": "b", "title": "banana", "creator": "Maker b", "status": "seen"},
+        {"identifier": "c", "title": "Cherry", "creator": "Maker c", "status": "rated"},
+    ]
+
+
+def test_listing_does_not_mark_films_as_seen(app):
+    rev, rid = setup_reviewer(app)
+    fid = seed_film(app, "f1")
+    assign(app, rid, fid)
+    rev.get("/api/me/films")
+    assert app.repos["assignments"].get(rid, fid)["status"] == "assigned"
+
+
+def test_my_films_is_for_reviewers_and_judges_only(app, client):
+    assert client.get("/api/me/films").status_code == 401
+    for roles in ([], ["admin"]):
+        c, _ = make_user(app, f"{'-'.join(roles) or 'none'}@example.com", roles)
+        assert c.get("/api/me/films").status_code == 403
+    j, jid = make_user(app, "j@example.com", ["judge"])
+    assign(app, jid, seed_film(app, "f1"))
+    assert [f["identifier"] for f in j.get("/api/me/films").get_json()["films"]] == ["f1"]
+    empty, _ = setup_reviewer(app, email="empty@example.com")
+    assert empty.get("/api/me/films").get_json() == {"films": []}
+
+
+def test_a_listed_film_opens_and_a_rated_one_shows_the_callers_rating(app):
+    rev, rid = setup_reviewer(app)
+    assign(app, rid, seed_film(app, "f1", "One"))
+    rev.post("/api/films/f1/ratings", json={"scores": {"aesthetic": 9, "sound": 8, "appeal": 7}, "comment": "Fine"})
+    f = rev.get("/api/films/f1").get_json()
+    assert f["status"] == "rated" and f["rating"] == {"scores": {"aesthetic": 9, "sound": 8, "appeal": 7}, "comment": "Fine"}

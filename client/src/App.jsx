@@ -73,8 +73,8 @@ const STATUS_STYLE = {
   rated: { background: 'var(--chip-rated-bg)', color: 'var(--chip-rated-fg)' },
 }
 
-function StatusChip({ status }) {
-  return <span style={{ ...STATUS_STYLE[status], borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{status}</span>
+function StatusChip({ status, label }) {
+  return <span style={{ ...STATUS_STYLE[status], borderRadius: 10, padding: '1px 8px', fontSize: 12 }}>{label || status}</span>
 }
 
 function ReviewsTab({ apiJson, onDataChanged }) {
@@ -1372,6 +1372,60 @@ function ThemeToggle() {
 }
 
 // ---------------------------------------------------------------------------
+// Which page a reviewer or judge is on. The page is in the URL fragment so every film has a
+// real link (#/film/<identifier>) and the browser's back button works:
+//   #/ (or nothing)  rate: the next film        #/films    the list of my films
+//   #/film/<id>      one particular film         #/results  a judge's ranked list
+// ---------------------------------------------------------------------------
+
+function parseRoute() {
+  const h = window.location.hash.replace(/^#\/?/, '')
+  if (h === 'films') return { view: 'films' }
+  if (h === 'results') return { view: 'results' }
+  if (h.startsWith('film/') && h.length > 5) {
+    try { return { view: 'film', id: decodeURIComponent(h.slice(5)) } } catch { /* fall through */ }
+  }
+  return { view: 'rate' }
+}
+
+// What the list calls each assignment status.
+const MY_STATUS_LABEL = { assigned: 'unseen', seen: 'seen', rated: 'rated' }
+
+function MyFilmsScreen({ films }) {
+  const [onlyOpen, setOnlyOpen] = useState(false)
+  const count = (st) => films.filter((f) => f.status === st).length
+  const shown = onlyOpen ? films.filter((f) => f.status !== 'rated') : films
+  return (
+    <div style={{ marginTop: 14 }}>
+      <h3 style={{ margin: '0 0 4px' }}>My films</h3>
+      <div style={{ fontSize: 14, color: 'var(--text-2)', marginBottom: 8 }}>
+        {films.length} film{films.length === 1 ? '' : 's'}: {count('rated')} rated, {count('seen')} seen, {count('assigned')} unseen.
+        Open any film to rate it. <a href="#/">Rate the next film</a>
+      </div>
+      {films.length === 0 ? <p style={{ color: 'var(--muted)' }}>No films have been assigned to you yet.</p> : (
+        <>
+          <label style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+            <input type="checkbox" checked={onlyOpen} onChange={(e) => setOnlyOpen(e.target.checked)} /> Only films I haven't rated
+          </label>
+          <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 15, maxWidth: 760 }}>
+            <thead><tr><th>film</th><th>status</th></tr></thead>
+            <tbody>
+              {shown.map((f) => (
+                <tr key={f.identifier}>
+                  <td><a href={`#/film/${encodeURIComponent(f.identifier)}`}>{f.title}</a>{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
+                  <td><StatusChip status={f.status} label={MY_STATUS_LABEL[f.status]} /></td>
+                </tr>
+              ))}
+              {shown.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--muted)' }}>You have rated every film.</td></tr>}
+            </tbody>
+          </table>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
@@ -1405,7 +1459,9 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)     // submit sent, next film not shown yet
   const [flash, setFlash] = useState('')                  // one-off message above the film
   const [results, setResults] = useState(null)            // a judge's own ranked list
-  const [showResults, setShowResults] = useState(false)
+  const [myFilms, setMyFilms] = useState(null)            // the list on the "My films" page
+  const [route, setRoute] = useState(parseRoute)
+  const loadedFor = useRef('')                            // "<user id>|<page>" whose data is on screen
 
   async function apiJson(path, opts = {}) {
     const res = await fetch(path, { credentials: 'include', ...opts })
@@ -1437,7 +1493,8 @@ export default function App() {
     setComment('')
     setFlash('')
     setResults(null)
-    setShowResults(false)
+    setMyFilms(null)
+    loadedFor.current = ''
   }
 
   async function loadResults() {
@@ -1446,9 +1503,32 @@ export default function App() {
     return null
   }
 
-  async function openResults() {
-    await loadResults()
-    setShowResults(true)
+  // Go to another page: a new history entry (so Back works), or replace the current one.
+  function navigate(hash, { replace = false } = {}) {
+    if (replace) {
+      window.history.replaceState({}, '', `/${hash}`)
+      setRoute(parseRoute())
+    } else {
+      window.location.hash = hash   // fires hashchange, which updates the route
+    }
+  }
+
+  async function loadMyFilms() {
+    const { ok, data } = await apiJson('/api/me/films')
+    setMyFilms(ok ? data.films : [])
+  }
+
+  // One particular film, opened from the list (opening it marks it seen).
+  async function loadFilm(identifier) {
+    setError(''); setNotice(null); setSubmitError('')
+    const { ok, data } = await apiJson(`/api/films/${encodeURIComponent(identifier)}`)
+    if (ok) {
+      setFilm(data); setScores({}); setComment('')
+      window.scrollTo(0, 0)
+    } else {
+      setFilm(null)
+      setError(data?.error || 'Could not load that film')
+    }
   }
 
   async function loadCategories() {
@@ -1457,6 +1537,7 @@ export default function App() {
   }
 
   async function loadNextFilm() {
+    if (me) loadedFor.current = `${me.id}|rate`
     setError('')
     setNotice(null)
     setSubmitError('')
@@ -1497,6 +1578,7 @@ export default function App() {
     }
 
     await loadNextFilm()
+    if (parseRoute().view !== 'rate') navigate('', { replace: true })   // opened from the list: carry on with the next film
     setConfirmOpen(false)
     setSubmitting(false)
     if (status === 409) setFlash('That film had already been submitted (scores can’t be changed). Here is your next film.')
@@ -1512,10 +1594,14 @@ export default function App() {
   // Pasting a link into a tab that already shows /signin only changes the fragment (no reload).
   useEffect(() => {
     const onHash = () => {
-      if (window.location.pathname === '/signin' && window.location.hash.length > 1) {
-        setSigninToken(window.location.hash.slice(1))
-        setSigninError('')
-        window.history.replaceState({}, '', '/signin')
+      if (window.location.pathname === '/signin') {
+        if (window.location.hash.length > 1) {
+          setSigninToken(window.location.hash.slice(1))
+          setSigninError('')
+          window.history.replaceState({}, '', '/signin')
+        }
+      } else {
+        setRoute(parseRoute())
       }
     }
     window.addEventListener('hashchange', onHash)
@@ -1536,25 +1622,45 @@ export default function App() {
     await loadMe()
   }
 
+  // Load what the current page needs, when the person or the page changes. (After a submit the next
+  // film is loaded directly and `loadedFor` already says so, so nothing is fetched twice.)
   useEffect(() => {
-    if (me) {
+    if (!me) return
+    const page = route.view === 'film' ? `film:${route.id}` : route.view
+    const key = `${me.id}|${page}`
+    if (loadedFor.current === key) return
+    const newPerson = !loadedFor.current.startsWith(`${me.id}|`)
+    loadedFor.current = key
+    if (newPerson) {
       // A different person (e.g. after opening another sign-in link): drop everything of the last one.
-      setFilm(null); setScores({}); setComment(''); setFlash(''); setSubmitError(''); setNotice(null)
-      setResults(null); setShowResults(false); setConfirmOpen(false)
-      setLoading(true)
-      Promise.all([loadCategories(), loadNextFilm()]).finally(() => setLoading(false))
+      setScores({}); setComment(''); setSubmitError(''); setResults(null); setMyFilms(null); setConfirmOpen(false)
     }
-  }, [me?.id])
+    setFilm(null); setNotice(null); setError(''); setFlash('')
+    setLoading(true)
+    const run = {
+      rate: () => loadNextFilm(),
+      film: () => loadFilm(route.id),
+      films: () => loadMyFilms(),
+      results: () => loadResults(),
+    }[route.view]
+    Promise.all([newPerson ? loadCategories() : null, run()]).finally(() => setLoading(false))
+  }, [me?.id, route.view, route.id])
 
   // After a judge's last film, go straight to their ranked list (only once a judges' pool exists).
   useEffect(() => {
-    if (notice?.code === 'all_rated' && me?.is_judge) {
-      loadResults().then((d) => { if (d && d.pool_size > 0) setShowResults(true) })
+    if (notice?.code === 'all_rated' && me?.is_judge && route.view === 'rate') {
+      loadResults().then((d) => { if (d && d.pool_size > 0) navigate('#/results', { replace: true }) })
     }
   }, [notice?.code, me?.is_judge])
 
-  const allChosen = !!film?.identifier && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
-  const total = categories.reduce((sum, c) => sum + (scores[c.key] || 0), 0)
+  const inRateView = route.view === 'rate' || route.view === 'film'
+  const canRate = !!me && (me.is_reviewer || me.is_judge)
+  // A film the person has already rated opens read-only, showing their own submitted rating.
+  const readOnly = film?.status === 'rated'
+  const shownScores = readOnly ? (film.rating?.scores || {}) : scores
+  const shownComment = readOnly ? (film.rating?.comment || '') : comment
+  const allChosen = !!film?.identifier && !readOnly && categories.length > 0 && categories.every((c) => Number.isInteger(scores[c.key]))
+  const total = categories.reduce((sum, c) => sum + (shownScores[c.key] || 0), 0)
 
   // Also when someone is already signed in: opening a new link means they want to switch accounts.
   if (window.location.pathname === '/signin' && (!me || signinToken)) {
@@ -1628,35 +1734,38 @@ export default function App() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <ThemeToggle />
           <span style={{ fontSize: 14, color: 'var(--text-2)' }}>{me.email}</span>
-          {me.is_judge && <button onClick={() => (showResults ? setShowResults(false) : openResults())}>{showResults ? 'Back to films' : 'My ranked films'}</button>}
+          {canRate && <button onClick={() => navigate('')} disabled={route.view === 'rate'}>Rate</button>}
+          {canRate && <button onClick={() => navigate('#/films')} disabled={route.view === 'films'}>My films</button>}
+          {me.is_judge && <button onClick={() => navigate('#/results')} disabled={route.view === 'results'}>My ranked films</button>}
           <button onClick={logout}>Logout</button>
         </div>
       </div>
 
       {me?.is_admin ? (
-        <AdminPanel apiJson={apiJson} onDataChanged={loadNextFilm} meId={me.id} />
+        <AdminPanel apiJson={apiJson} onDataChanged={() => { loadedFor.current = ''; if (parseRoute().view === 'rate') loadNextFilm() }} meId={me.id} />
       ) : null}
 
-      {showResults && results ? (
-        <ResultsScreen
-          results={results}
-          categories={categories}
-          onBack={film ? () => setShowResults(false) : null}
-        />
+      {route.view === 'results' && results ? (
+        <ResultsScreen results={results} categories={categories} onBack={() => navigate('')} />
       ) : null}
+      {route.view === 'films' && myFilms ? <MyFilmsScreen films={myFilms} /> : null}
 
       {loading ? <p>Loading…</p> : null}
-      {error ? <div style={{ marginTop: 12, color: 'var(--danger)' }}>{error}</div> : null}
-      {notice && !(showResults && results) ? (
+      {error ? (
+        <div role="alert" style={{ marginTop: 12, color: 'var(--danger)' }}>
+          {error}{route.view === 'film' && <> <a href="#/films">Back to my films</a></>}
+        </div>
+      ) : null}
+      {notice && inRateView ? (
         <div role="status" style={{ marginTop: 12, padding: '12px 14px', border: '1px solid var(--info-border)', background: 'var(--info-bg)', borderRadius: 8, maxWidth: 620 }}>
           {notice.text}
           {me?.is_admin && notice.code === 'no_films' ? <div style={{ marginTop: 6, fontSize: 13, color: 'var(--muted-2)' }}>As an admin, use Admin → Import.</div> : null}
         </div>
       ) : null}
 
-      {flash && !(showResults && results) ? <div role="status" style={{ marginTop: 12, color: 'var(--chip-seen-fg)' }}>{flash}</div> : null}
+      {flash && inRateView ? <div role="status" style={{ marginTop: 12, color: 'var(--chip-seen-fg)' }}>{flash}</div> : null}
 
-      {film && !(showResults && results) ? (
+      {film && inRateView ? (
         <div className="film-panel">
           <h3 className="film-title">
             <a href={film.archiveUrl} target="_blank" rel="noreferrer">{film.title}</a>
@@ -1677,6 +1786,13 @@ export default function App() {
             <iframe className="player" src={film.embedUrl} allowFullScreen title={film.title} />
           ) : null}
 
+          {readOnly ? (
+            <div role="status" style={{ margin: '10px 0', padding: '10px 14px', border: '1px solid var(--ok-border)', background: 'var(--ok-bg)', borderRadius: 8 }}>
+              You rated this film. Scores can’t be changed.{' '}
+              <a href="#/films">Back to my films</a> · <a href="#/">Rate the next film</a>
+            </div>
+          ) : null}
+
           {categories.map((c) => (
             <div className="category" key={c.key}>
               <h4>{c.label}</h4>
@@ -1686,9 +1802,9 @@ export default function App() {
                   <button
                     key={n}
                     type="button"
-                    className={scores[c.key] === n ? 'chosen' : ''}
-                    aria-pressed={scores[c.key] === n}
-                    disabled={submitting}
+                    className={shownScores[c.key] === n ? 'chosen' : ''}
+                    aria-pressed={shownScores[c.key] === n}
+                    disabled={submitting || readOnly}
                     onClick={() => setScores((prev) => ({ ...prev, [c.key]: n }))}
                   >
                     {n}
@@ -1702,8 +1818,8 @@ export default function App() {
           ))}
 
           <div className="total" aria-live="polite">
-            {allChosen
-              ? <>Your score: <strong>{categories.map((c) => scores[c.key]).join(' + ')} = {total}</strong></>
+            {allChosen || (readOnly && categories.every((c) => Number.isInteger(shownScores[c.key])))
+              ? <>Your score: <strong>{categories.map((c) => shownScores[c.key]).join(' + ')} = {total}</strong></>
               : <span style={{ color: 'var(--muted)', fontSize: 14 }}>Choose a score in every category to see your total.</span>}
           </div>
 
@@ -1712,20 +1828,23 @@ export default function App() {
             <small>(May be used in presentation)</small>
           </div>
           <textarea
-            value={comment}
+            value={shownComment}
             onChange={(e) => setComment(e.target.value.slice(0, 1000))}
             rows={5}
             disabled={submitting}
+            readOnly={readOnly}
             aria-label="Comments on Film"
             style={{ display: 'block', width: '100%', boxSizing: 'border-box', font: 'inherit', padding: 8, marginTop: 6 }}
           />
-          <div style={{ fontSize: 12, color: 'var(--muted)' }}>{comment.length} / 1000</div>
+          {!readOnly && <div style={{ fontSize: 12, color: 'var(--muted)' }}>{comment.length} / 1000</div>}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-            <button className="btn-primary" onClick={() => setConfirmOpen(true)} disabled={!allChosen || submitting}>
-              {submitting ? 'Loading next film…' : 'Submit & Next'}
-            </button>
-          </div>
+          {!readOnly && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+              <button className="btn-primary" onClick={() => setConfirmOpen(true)} disabled={!allChosen || submitting}>
+                {submitting ? 'Loading next film…' : 'Submit & Next'}
+              </button>
+            </div>
+          )}
 
           {submitError ? <div role="alert" style={{ marginTop: 10, color: 'var(--danger)' }}>{submitError}</div> : null}
         </div>

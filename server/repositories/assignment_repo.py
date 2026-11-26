@@ -38,6 +38,19 @@ class AssignmentRepository:
         row = self.db.fetchone("SELECT COUNT(1) AS n FROM assignments WHERE user_id = ?", (int(user_id),))
         return int(row["n"]) if row else 0
 
+    def list_for_user(self, user_id: int) -> list[sqlite3.Row]:
+        """The person's films with their status, alphabetical by title."""
+        return self.db.fetchall(
+            """
+            SELECT f.ia_identifier, f.title, f.creator, a.status
+            FROM assignments a
+            JOIN films f ON f.id = a.film_id
+            WHERE a.user_id = ?
+            ORDER BY LOWER(COALESCE(f.title, f.ia_identifier)), f.ia_identifier
+            """,
+            (int(user_id),),
+        )
+
     def next_for_user(self, user_id: int) -> Optional[sqlite3.Row]:
         """The film to show next: one the person opened but did not finish (oldest first),
         otherwise a random one that has not been opened yet. None when nothing is left."""

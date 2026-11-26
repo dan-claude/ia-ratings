@@ -56,6 +56,18 @@ class RatingService:
             payload["rating"] = self.ratings.get_for_user_film(user_id, int(film["id"]))
         return payload
 
+    def my_films(self, user_id: int) -> Optional[list[dict]]:
+        """Every film assigned to the person with its status (assigned / seen / rated), or None if
+        they hold neither the reviewer nor the judge role. Listing a film does not mark it seen."""
+        if not self._can_rate(user_id):
+            return None
+        return [{
+            "identifier": r["ia_identifier"],
+            "title": r["title"] or r["ia_identifier"],
+            "creator": r["creator"],
+            "status": r["status"],
+        } for r in self.assignments.list_for_user(user_id)]
+
     def get_next_film(self, user_id: int) -> dict:
         """The film to rate next (opening it marks it `seen`). Raises NothingToRate when none."""
         if not self._can_rate(user_id):

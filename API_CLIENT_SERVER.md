@@ -4,8 +4,7 @@ This document defines the **binding API contract** between the client (React/Vit
 and the server (Flask). A change is invalid if the implementation diverges from
 this contract without updating this file.
 
-Last verified against the code: 2026-11-25 (`major-changes` branch, step 7: judge export and final screen).
-**Work in progress:** the contract below describes the app after step 7.
+Last verified against the code: 2026-11-25 (`major-changes` branch, after step 8 plus the "My films" list).
 Film distribution and the ranking/judge screens arrive in later steps and will be
 added here as they land.
 
@@ -155,6 +154,15 @@ the client shows them as notices):
 ```json
 { "error": "No films have been assigned to you yet.", "code": "no_assignments" }
 ```
+
+### GET /api/me/films — user (reviewers and judges)
+Every film assigned to the caller with its status, alphabetical by title (case-insensitive). 403
+`{ "error": "Forbidden" }` if the caller holds neither the reviewer nor the judge role. Listing does
+**not** mark anything as seen.
+```json
+{ "films": [ { "identifier": "film-a", "title": "A Film", "creator": "Sam B", "status": "assigned" } ] }
+```
+`status` is `assigned`, `seen` or `rated` (the client labels them *unseen*, *seen*, *rated*).
 
 ### GET /api/films/<identifier> — user
 One of the caller's own films (marks an unopened one `seen`).
@@ -570,7 +578,7 @@ error nothing is changed.
 
 The client (`client/src/App.jsx`) calls:
 - `/api/me`, `/api/auth/signin`, `/api/auth/logout`
-- `/api/me/results` and `/api/me/results.csv` (judges), `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
+- `/api/me/films`, `/api/films/<identifier>` (the list's links), `/api/me/results` and `/api/me/results.csv` (judges), `/api/categories`, `/api/films/next`, `/api/films/<identifier>/ratings`
 - Admin panel: `/api/admin/jobs/status`, `/api/admin/import/preview`, `/api/admin/import`,
   `/api/admin/db/empty`, `/api/admin/progress`, `/api/admin/distribute`, `/api/admin/distribute/reset`,
   `/api/admin/assignments` (POST) and `/api/admin/assignments/<user_id>/<identifier>` (DELETE),
@@ -581,5 +589,5 @@ The client (`client/src/App.jsx`) calls:
   `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab
   uses `/api/admin/users`), `/api/admin/db/backup`, `/api/admin/db/restore`
 
-The client does not call `/api/films/<identifier>`, `/api/admin/db/schema`,
+The client does not call `/api/admin/db/schema`,
 `make-admin`/`revoke-admin` or `/api/health`.

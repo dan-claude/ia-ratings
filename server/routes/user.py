@@ -40,6 +40,19 @@ def _require_judge():
     return uid, None
 
 
+@user_bp.get("/api/me/films")
+def my_films():
+    """The films assigned to the caller with their status, alphabetical by title. Reviewers and
+    judges only (403 otherwise). Listing does not mark anything as seen."""
+    uid, err = _require_auth()
+    if err:
+        return err
+    films = current_app.services["rating"].my_films(uid)
+    if films is None:
+        return jsonify({"error": "Forbidden"}), 403
+    return jsonify({"films": films})
+
+
 @user_bp.get("/api/me/results")
 def my_results():
     """A judge's own ranked list of the pool films they have rated, with their scores and comments."""
