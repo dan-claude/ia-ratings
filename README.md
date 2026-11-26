@@ -42,7 +42,7 @@ Production runs on Railway (new deployment being set up; URL to follow).
   - *Films* — film count and title-lookup progress, and the spreadsheet **import** (see below)
   - *People* — invite people, filter by role, tick Admin / Reviewer / Judge, and manage sign-in links (new link, change expiry, cancel)
   - *Progress* — hand the films out to reviewers (every film to 2 different reviewers, at random, once), the "N of M films fully reviewed" counter, a per-person table and a per-film table showing who still owes a review, with hand assign / remove
-  - *Rankings and pool* — every film by average score (details, `rankings.csv`); choose the **judges' pool**: preview the top N, with a check that the cut-off isn't a tie, blocked until every film has both its reviews; confirming gives every judge all the pool films (judges never see scores)
+  - *Rankings and pool* — every film by average score (details, `rankings.csv`); once the pool is set, a **Judges' results** section ranks the pool films by the judges' own average (with the reviewers' average beside it, and `judges_results.csv`); choose the **judges' pool**: preview the top N, with a check that the cut-off isn't a tie, blocked until every film has both its reviews; confirming gives every judge all the pool films (judges never see scores)
   - *Exports and safety* — `ratings.csv` and `rankings.csv`, backup and restore, the database browser, and the **danger zone**: empty the film database, reset the distribution, clear the judges' pool (each says what it deletes and needs a typed confirmation)
 - Cookie sessions backed by a server-side record (8-hour lifetime, `HttpOnly`,
   `SameSite=Lax`, `Secure`): logging out really ends the session, and restoring a

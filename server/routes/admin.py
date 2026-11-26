@@ -573,6 +573,34 @@ def judges_pool():
     return jsonify(status)
 
 
+@admin_bp.get("/api/admin/judges-pool/results")
+def judges_pool_results():
+    """The pool films ranked by the judges' own average score (ratings submitted so far), with the
+    reviewers' average beside it. Admin only; judges never see this. 409 `no_pool` before the pool is set."""
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        data = current_app.services["ranking"].judge_rankings()
+    except PoolError as exc:
+        return _pool_error(exc)
+    data["films"] = [{k: v for k, v in r.items() if k != "id"} for r in data["films"]]
+    return jsonify(data)
+
+
+@admin_bp.get("/api/admin/judges-pool/results.csv")
+def judges_pool_results_csv():
+    ok, err = _require_admin_user()
+    if err:
+        return err
+    try:
+        text = current_app.services["ranking"].judge_rankings_csv()
+    except PoolError as exc:
+        return _pool_error(exc)
+    return Response(text, mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="judges_results.csv"'})
+
+
 @admin_bp.get("/api/admin/judges-pool/preview")
 def judges_pool_preview():
     """The ranked list a pool of `count` films (default 20) would be, with the tie check.

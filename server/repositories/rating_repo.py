@@ -108,6 +108,24 @@ class RatingRepository:
         )
         return {int(r["film_id"]): (int(r["n"]), int(r["total"])) for r in rows}
 
+    def judge_totals(self) -> dict[int, tuple[int, int]]:
+        """film_id -> (number of judges' ratings, sum of all their scores) for judges' pool films.
+
+        A judge's rating counts whichever round it was made in (a judge who reviewed a pool film
+        keeps that rating as their judge rating). Only people who hold the judge role count.
+        """
+        rows = self.db.fetchall(
+            """
+            SELECT r.film_id AS film_id, COUNT(DISTINCT r.id) AS n, SUM(s.score) AS total
+            FROM ratings r
+            JOIN films f ON f.id = r.film_id AND f.in_judges_pool = 1
+            JOIN users u ON u.id = r.user_id AND u.is_judge = 1
+            JOIN rating_scores s ON s.rating_id = r.id
+            GROUP BY r.film_id
+            """
+        )
+        return {int(r["film_id"]): (int(r["n"]), int(r["total"])) for r in rows}
+
     def list_for_export(self) -> list[dict]:
         """Every submitted rating, newest first: who, which film, scores by category, comment."""
         rows = self.db.fetchall(

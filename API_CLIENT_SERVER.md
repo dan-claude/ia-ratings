@@ -393,6 +393,25 @@ only. Films nobody has rated come last with `rank`, `average` `null`.
 Download `rankings.csv`: `rank, title, creator, average, reviews, total, identifier, description,
 public_domain_works, ai_disclosure, in_judges_pool` (formula-like cells are prefixed with `'`).
 
+#### GET /api/admin/judges-pool/results — admin
+The pool films ranked by the **judges'** average score, with the reviewers' average beside it. Admin
+only (judges never see averages). 409 `no_pool` before a pool is set.
+```json
+{ "judges": 18, "pool_size": 20, "ratings": 311, "complete": false,
+  "films": [ { "rank": 1, "identifier": "film-a", "title": "A Film", "creator": "Sam B",
+               "description": "…", "public_domain_works": "…", "ai_disclosure": "…",
+               "reviews": 17, "total": 459, "average": 27.0, "reviewers_average": 25.5 } ] }
+```
+Only ratings submitted so far count, so `reviews` is how many judges have rated the film (`average` is
+`total / reviews` for display; ranking compares the exact fraction; films no judge has rated come
+last with `rank` and `average` null). A judge's rating counts whichever round it was made in (a judge
+who reviewed a pool film keeps that rating) and only people who currently hold the judge role count.
+`ratings` is the number of judge ratings in, `complete` is true when every judge has rated every pool film.
+
+#### GET /api/admin/judges-pool/results.csv — admin
+Download `judges_results.csv`: `rank, title, creator, judges_average, judges_rated, reviewers_average,
+identifier, description, public_domain_works, ai_disclosure`. 409 `no_pool` as above.
+
 #### GET /api/admin/judges-pool/preview?count=N — admin
 The ranked list a pool of `N` films would be (default `min(20, number of films)`). Changes nothing.
 200:
@@ -588,7 +607,7 @@ The client (`client/src/App.jsx`) calls:
   `/api/admin/db/empty`, `/api/admin/progress`, `/api/admin/distribute`, `/api/admin/distribute/reset`,
   `/api/admin/assignments` (POST) and `/api/admin/assignments/<user_id>/<identifier>` (DELETE),
   `/api/admin/rankings`, `/api/admin/rankings.csv`, `/api/admin/judges-pool` (GET, POST, DELETE),
-  `/api/admin/judges-pool/preview`, `/api/admin/judges-pool/assign`,
+  `/api/admin/judges-pool/preview`, `/api/admin/judges-pool/assign`, `/api/admin/judges-pool/results` (+ `.csv`),
   `/api/admin/ratings.csv`, `/api/admin/users`, `/api/admin/users/<id>/roles`,
   `/api/admin/users/<id>/login-link` (POST, PUT, DELETE),
   `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab

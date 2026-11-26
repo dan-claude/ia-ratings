@@ -283,6 +283,48 @@ function RankingTable({ films, openId, setOpenId }) {
   )
 }
 
+// The judges' own ranking of the pool films (admin only; judges never see this).
+function JudgeResults({ res, openId, setOpenId }) {
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 600 }}>Judges' results</span>
+        <span style={{ fontSize: 13, color: 'var(--muted-2)' }}>
+          {res.ratings} of {res.judges * res.pool_size} judge ratings in{res.complete ? ' (all judges are done)' : ''}. Averages use the ratings submitted so far.
+        </span>
+        <a href="/api/admin/judges-pool/results.csv" style={{ fontSize: 13 }}>⬇ Download judges_results.csv</a>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="grid-table" style={{ tableLayout: 'auto', fontSize: 13 }}>
+          <thead><tr><th>rank</th><th>film</th><th>judges' average</th><th>judges rated</th><th>reviewers' average</th><th></th></tr></thead>
+          <tbody>
+            {res.films.map((f) => (
+              <Fragment key={f.identifier}>
+                <tr>
+                  <td>{f.rank ?? '—'}</td>
+                  <td>{f.title}{f.creator && <span style={{ color: 'var(--muted)' }}> by {f.creator}</span>}</td>
+                  <td>{f.average === null ? <span style={{ color: 'var(--faint)' }}>—</span> : <strong>{f.average.toFixed(2)}</strong>}</td>
+                  <td>{f.reviews} of {res.judges}</td>
+                  <td>{f.reviewers_average === null ? '—' : f.reviewers_average.toFixed(2)}</td>
+                  <td><button style={{ fontSize: 12 }} onClick={() => setOpenId(openId === f.identifier ? null : f.identifier)}>{openId === f.identifier ? 'Hide details' : 'Details'}</button></td>
+                </tr>
+                {openId === f.identifier && (
+                  <tr><td colSpan={6} style={{ whiteSpace: 'pre-wrap', background: 'var(--surface-alt)', fontSize: 13 }}>
+                    <div><strong>Archive.org:</strong> <a href={`https://archive.org/details/${f.identifier}`} target="_blank" rel="noreferrer">{f.identifier}</a></div>
+                    {f.description && <div style={{ marginTop: 6 }}><strong>Description</strong>{'\n'}{f.description}</div>}
+                    {f.public_domain_works && <div style={{ marginTop: 6 }}><strong>Public domain works used</strong>{'\n'}{f.public_domain_works}</div>}
+                    {f.ai_disclosure && <div style={{ marginTop: 6 }}><strong>AI disclosure</strong>{'\n'}{f.ai_disclosure}</div>}
+                  </td></tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function RankingsTab({ apiJson, onDataChanged }) {
   const [rank, setRank] = useState(null)       // { films, overall }
   const [pool, setPool] = useState(null)       // { exists, films, judges }
@@ -293,12 +335,15 @@ function RankingsTab({ apiJson, onDataChanged }) {
   const [preview, setPreview] = useState(null) // ok preview, or { blocked: {...} }
   const [confirming, setConfirming] = useState(false)
   const [openId, setOpenId] = useState(null)
+  const [jres, setJres] = useState(null)       // the judges' own ranking, once a pool exists
+  const [openJudgeId, setOpenJudgeId] = useState(null)
 
   async function load() {
     setError('')
     const [r, p] = await Promise.all([apiJson('/api/admin/rankings'), apiJson('/api/admin/judges-pool')])
     if (r.ok && p.ok) {
       setRank(r.data); setPool(p.data)
+      if (p.data.exists) { const j = await apiJson('/api/admin/judges-pool/results'); setJres(j.ok ? j.data : null) } else setJres(null)
       setCount((c) => c || String(Math.min(20, r.data.films.length || 20)))
     } else setError((!r.ok ? r.data?.error : p.data?.error) || 'Could not load the rankings')
   }
@@ -410,9 +455,11 @@ function RankingsTab({ apiJson, onDataChanged }) {
         )}
       </div>
 
+      {pool.exists && jres && <JudgeResults res={jres} openId={openJudgeId} setOpenId={setOpenJudgeId} />}
+
       <div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontWeight: 600 }}>All films by average score</span>
+          <span style={{ fontWeight: 600 }}>All films by the reviewers' average score</span>
           <span style={{ fontSize: 13, color: 'var(--muted-2)' }}>{o.fully_reviewed} of {o.films} fully reviewed</span>
           <a href="/api/admin/rankings.csv" style={{ fontSize: 13 }}>⬇ Download rankings.csv</a>
           <button onClick={load} style={{ fontSize: 12 }}>↻ Update</button>
@@ -1101,7 +1148,8 @@ function AdminPanel({ apiJson, onDataChanged, meId, page }) {
             <div style={{ fontWeight: 600, marginBottom: 6 }}>Exports</div>
             <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', fontSize: 14 }}>
               <a href="/api/admin/ratings.csv">⬇ ratings.csv (every submitted rating)</a>
-              <a href="/api/admin/rankings.csv">⬇ rankings.csv (films by average score)</a>
+              <a href="/api/admin/rankings.csv">⬇ rankings.csv (films by the reviewers' average)</a>
+              <a href="/api/admin/judges-pool/results.csv">⬇ judges_results.csv (the pool by the judges' average; once the pool is set)</a>
             </div>
           </div>
         )}
@@ -1546,6 +1594,8 @@ export default function App() {
 
   // Go to another page: a new history entry (so Back works), or replace the current one.
   function navigate(hash, { replace = false } = {}) {
+    // While a sign-in link is open, nothing may move the page away from it (the person is about to switch account).
+    if (replace && window.location.pathname === '/signin') return
     if (replace) {
       window.history.replaceState({}, '', `/${hash}`)
       setRoute(parseRoute())

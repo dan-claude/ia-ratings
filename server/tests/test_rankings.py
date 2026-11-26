@@ -266,3 +266,84 @@ def test_every_route_is_admin_only(app, client):
     for method, path in calls:
         assert getattr(client, method)(path).status_code == 401, path
         assert getattr(other, method)(path).status_code == 403, path
+
+
+# ---- the judges' own ranking of the pool ---------------------------------------------------
+
+def judged_pool(app, n_pool=3, judges=2):
+    """Pool of n_pool films (f0.. in reviewer order f(n-1) best), `judges` judges. Returns (admin, [(client, uid)])."""
+    admin, _ = build(app, [[3 * 0 + 1 + i, 1 + i] for i in range(n_pool)])      # reviewers' scores rise with i
+    js = [make_user(app, f"j{i}@example.com", ["judge"]) for i in range(judges)]
+    assert admin.post("/api/admin/judges-pool", json={"count": n_pool}).status_code == 201
+    return admin, js
+
+
+def jrate(c, ident, a, s, p):
+    assert c.post(f"/api/films/{ident}/ratings", json={"scores": {"aesthetic": a, "sound": s, "appeal": p}}).status_code == 200
+
+
+def test_judges_results_rank_the_pool_by_the_judges_average_with_the_reviewers_average_beside(app):
+    admin, [(j0, _), (j1, _)] = judged_pool(app)
+    jrate(j0, "f0", 10, 10, 10); jrate(j1, "f0", 8, 8, 8)       # judges: 30 and 24 -> 27.0
+    jrate(j0, "f1", 5, 5, 5);    jrate(j1, "f1", 9, 9, 9)       # 15 and 27 -> 21.0
+    jrate(j0, "f2", 1, 1, 1);    jrate(j1, "f2", 2, 2, 2)       # 3 and 6 -> 4.5
+    d = admin.get("/api/admin/judges-pool/results").get_json()
+    assert [(f["identifier"], f["rank"], f["average"], f["reviews"]) for f in d["films"]] == [
+        ("f0", 1, 27.0, 2), ("f1", 2, 21.0, 2), ("f2", 3, 4.5, 2)]
+    assert [f["reviewers_average"] for f in d["films"]] == [3.0, 6.0, 9.0]      # reviewers' averages (f0 lowest)
+    assert (d["judges"], d["pool_size"], d["ratings"], d["complete"]) == (2, 3, 6, True)
+    assert "id" not in d["films"][0] and d["films"][0]["creator"] is None
+
+
+def test_partial_results_count_only_submitted_ratings_and_unrated_films_come_last(app):
+    admin, [(j0, _), (j1, _)] = judged_pool(app)
+    jrate(j0, "f1", 9, 9, 9)
+    jrate(j0, "f0", 3, 3, 3); jrate(j1, "f0", 6, 6, 6)
+    d = admin.get("/api/admin/judges-pool/results").get_json()
+    assert [(f["identifier"], f["rank"], f["average"], f["reviews"]) for f in d["films"]] == [
+        ("f1", 1, 27.0, 1), ("f0", 2, 13.5, 2), ("f2", None, None, 0)]
+    assert d["complete"] is False and d["ratings"] == 3
+
+
+def test_only_people_with_the_judge_role_count_and_a_reviewers_rating_of_a_pool_film_does_not(app):
+    admin, [(j0, jid0)] = judged_pool(app, judges=1)
+    jrate(j0, "f0", 6, 6, 6)
+    d = admin.get("/api/admin/judges-pool/results").get_json()
+    assert next(f for f in d["films"] if f["identifier"] == "f0")["reviews"] == 1      # not the 2 reviewers' ratings
+    app.repos["users"].set_roles(jid0, ["admin"])                                       # no longer a judge
+    d = admin.get("/api/admin/judges-pool/results").get_json()
+    assert d["judges"] == 0 and d["ratings"] == 0 and d["complete"] is False
+
+
+def test_a_judge_who_reviewed_a_pool_film_counts_with_that_rating(app):
+    admin, revs = build(app, [[2, 2], [9, 9]])
+    app.repos["users"].set_roles(app.repos["users"].get_by_email("r0@example.com")["id"], ["reviewer", "judge"])
+    admin.post("/api/admin/judges-pool", json={"count": 1})                                # pool: f1
+    d = admin.get("/api/admin/judges-pool/results").get_json()
+    f1 = d["films"][0]
+    assert (f1["identifier"], f1["reviews"], f1["average"]) == ("f1", 1, 27.0)             # r0's reviewing-round rating
+    assert (d["judges"], d["ratings"], d["complete"]) == (1, 1, True)
+
+
+def test_judges_results_need_a_pool_and_an_admin(app, client):
+    admin, _ = build(app, [[5, 5], [6, 6]])
+    r = admin.get("/api/admin/judges-pool/results")
+    assert r.status_code == 409 and r.get_json()["code"] == "no_pool"
+    assert admin.get("/api/admin/judges-pool/results.csv").status_code == 409
+    other, _ = make_user(app, "o@example.com", ["reviewer", "judge"])
+    for path in ("/api/admin/judges-pool/results", "/api/admin/judges-pool/results.csv"):
+        assert client.get(path).status_code == 401
+        assert other.get(path).status_code == 403
+
+
+def test_judges_results_csv(app):
+    admin, [(j0, _), (j1, _)] = judged_pool(app)
+    jrate(j0, "f0", 10, 10, 10); jrate(j1, "f0", 8, 8, 8)
+    r = admin.get("/api/admin/judges-pool/results.csv")
+    assert r.mimetype == "text/csv" and "judges_results.csv" in r.headers["Content-Disposition"]
+    rows = list(csv.reader(io.StringIO(r.get_data(as_text=True))))
+    assert rows[0] == ["rank", "title", "creator", "judges_average", "judges_rated", "reviewers_average", "identifier",
+                       "description", "public_domain_works", "ai_disclosure"]
+    assert rows[1][:6] == ["1", "Film 0", "", "27.0", "2", "3.0"]
+    assert rows[2][0] == "" and rows[2][3] == ""                 # unrated films have no rank or average
+    assert len(rows) == 4

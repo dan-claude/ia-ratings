@@ -90,6 +90,51 @@ class RankingService:
             ])
         return out.getvalue()
 
+    # -- the judges' own ranking of the pool ------------------------------------
+
+    def judge_rankings(self) -> dict:
+        """The pool films ranked by the judges' average score (so far: only submitted ratings count),
+        each with the reviewers' average for comparison. PoolError if there is no pool."""
+        reviewers = {r["id"]: r for r in self.rankings()}
+        pool = [r for r in reviewers.values() if r["in_judges_pool"]]
+        if not pool:
+            raise PoolError("no_pool", "There is no judges' pool yet.")
+        totals = self.ratings.judge_totals()
+        judges = len(self.users.list_with_role("judge"))
+        rows = []
+        for r in pool:
+            n, total = totals.get(r["id"], (0, 0))
+            rows.append({
+                "id": r["id"], "identifier": r["identifier"], "title": r["title"], "creator": r["creator"],
+                "description": r["description"], "public_domain_works": r["public_domain_works"],
+                "ai_disclosure": r["ai_disclosure"],
+                "reviews": n, "total": total,                       # the judges' ratings: count and sum
+                "average": round(total / n, 2) if n else None,      # display only; compare total / reviews
+                "reviewers_average": r["average"],
+            })
+        ranked = _ranked(rows)
+        rated = sum(totals.get(r["id"], (0, 0))[0] for r in pool)
+        return {
+            "judges": judges, "pool_size": len(pool), "ratings": rated,
+            "complete": judges > 0 and rated == judges * len(pool),
+            "films": ranked,
+        }
+
+    def judge_rankings_csv(self) -> str:
+        out = StringIO()
+        w = csv.writer(out)
+        w.writerow(["rank", "title", "creator", "judges_average", "judges_rated", "reviewers_average", "identifier",
+                    "description", "public_domain_works", "ai_disclosure"])
+        data = self.judge_rankings()
+        for r in data["films"]:
+            w.writerow([
+                "" if r["rank"] is None else r["rank"], csv_safe(r["title"]), csv_safe(r["creator"] or ""),
+                "" if r["average"] is None else r["average"], r["reviews"],
+                "" if r["reviewers_average"] is None else r["reviewers_average"], csv_safe(r["identifier"]),
+                csv_safe(r["description"] or ""), csv_safe(r["public_domain_works"] or ""), csv_safe(r["ai_disclosure"] or ""),
+            ])
+        return out.getvalue()
+
     # -- judges' pool ----------------------------------------------------------
 
     def _blocked_by_missing_reviews(self, ranked: list[dict]) -> Optional[PoolError]:
