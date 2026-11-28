@@ -26,11 +26,12 @@ COPY tools/ tools/
 COPY --from=client-builder /client/dist client/dist
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# TRUSTED_PROXY_HOPS=1: Railway puts one reverse proxy in front of the app, so the
-# client address comes from X-Forwarded-For (the login rate limit is per client).
+# TRUSTED_PROXY_HOPS=2: Railway puts two proxies in front of the app (measured from the
+# sign-in log: X-Forwarded-For was "<client>, <railway proxy>"), so the client address is the
+# second-to-last X-Forwarded-For entry (the sign-in rate limit is per client).
 ENV PYTHONPATH=/app \
     DB_PATH=/data/app.db \
-    TRUSTED_PROXY_HOPS=1
+    TRUSTED_PROXY_HOPS=2
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 # Production WSGI server. One worker process on purpose: SQLite and the in-memory

@@ -86,7 +86,7 @@ Magic-link details (`server/services/login_link_service.py`, `server/repositorie
 |----------|---------|-------------|
 | `DB_PATH` | `server/app.db` | Path to SQLite database file |
 | `SESSION_SECRET` | *(none)* | Flask session signing key — **required**: `create_app()` raises `RuntimeError` (so gunicorn won't boot) if it is unset or equals the public dev default. Only the local dev entrypoint (`python -m server.app`, `create_app(dev=True)`) may omit it: it uses a random per-process secret, so sessions reset on restart |
-| `TRUSTED_PROXY_HOPS` | `0` | Number of reverse proxies in front of the app; that many hops of `X-Forwarded-For`/`-Proto` are trusted (Werkzeug `ProxyFix`) so the sign-in rate limit is per real client. The Dockerfile sets `1` for Railway. Leave `0` with no proxy, or the header could be spoofed to dodge the limit |
+| `TRUSTED_PROXY_HOPS` | `0` | Number of reverse proxies in front of the app; that many hops of `X-Forwarded-For`/`-Proto` are trusted (Werkzeug `ProxyFix`) so the sign-in rate limit is per real client. The Dockerfile sets `2` for Railway (two proxies: its sign-in log showed `x_forwarded_for=<client>, <proxy>`; with `1` the limit would have counted a Railway proxy instead of the person). Leave `0` with no proxy, or the header could be spoofed to dodge the limit |
 | `FLASK_DEBUG` | `0` | Set to `1` to enable Werkzeug debugger (dev only) |
 | `RATELIMIT_STORAGE_URI` | `memory://` | Flask-Limiter storage; set to `redis://...` for multi-instance |
 | `PORT` | `5000` | HTTP port gunicorn binds to in the Docker image (Railway sets it) |
@@ -148,7 +148,7 @@ Deploys come from Railway's **GitHub integration**: the Railway service is conne
 
 Railway service variables:
 - `SESSION_SECRET` — **required**; a missing one now stops the app booting (deploy fails its health check and Railway keeps the previous deployment). Random secret: `python3 -c "import secrets; print(secrets.token_hex(32))"`, keep private
-- `TRUSTED_PROXY_HOPS` — set to `1` by the Dockerfile; don't override
+- `TRUSTED_PROXY_HOPS` — set to `2` by the Dockerfile; don't override
 - `LEGACY_DB` — one-time, only for the move to the new app; see **Resetting production for the new schema** below. Remove it afterwards.
 - `DB_PATH` — `/data/app.db`
 - `PORT` is provided by Railway; don't set it

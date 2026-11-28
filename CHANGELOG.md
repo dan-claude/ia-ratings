@@ -1,3 +1,6 @@
+## Unreleased (branch `security-hardening`, proxy hops)
+- `TRUSTED_PROXY_HOPS` is now `2` in the Dockerfile. Railway's sign-in log showed `X-Forwarded-For: <client>, <proxy>`, so there are two proxies in front of the app; with `1` the sign-in rate limit counted a Railway proxy's address, so everyone would have shared one 10/minute, 50/hour limit. With `2` it counts the person's own address.
+
 ## Unreleased (branch `security-hardening`)
 From the security audit (the sign-in link lifetime is deliberately left for later).
 - **Browser security headers** on every response: a minimal Content-Security-Policy (`script-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `frame-src https://archive.org`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, and `Strict-Transport-Security: max-age=15552000` (not in the local dev entrypoint). Another site can no longer frame the admin panel. The inline theme script moved to `client/public/theme-init.js` so the CSP can forbid inline scripts.

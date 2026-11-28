@@ -123,7 +123,7 @@ address, to open the dev page.)
 |----------|---------|---------|
 | `DB_PATH` | `server/app.db` | SQLite file location |
 | `SESSION_SECRET` | *(none)* | Session signing key. **Required**: the server refuses to start without it (gunicorn/Railway). Only `python -m server.app` for local development may omit it. |
-| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app (Railway: `1`, set by the Dockerfile) so the sign-in rate limit is per real client |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app (Railway: `2`, set by the Dockerfile) so the sign-in rate limit is per real client |
 | `LEGACY_DB` | *(unset)* | One-time: `move-aside` renames an old-style database to `<DB_PATH>.legacy-<time>` (nothing is deleted) and starts a fresh one; see `CLAUDE.md` "Resetting production" |
 | `PUBLIC_URL` | *(unset)* | Site address, used only by `tools/print_db.py --invite` to print full links |
 | `LOG_LEVEL` | `INFO` | Server log level |
