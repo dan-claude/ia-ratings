@@ -132,6 +132,29 @@ def test_restore_rejects_old_or_foreign_backups(app):
     assert app.db.fetchone("SELECT COUNT(*) AS n FROM users")["n"] == 1
 
 
+def test_restore_answers_400_not_500_for_malformed_backups(app):
+    admin, _ = make_user(app, "a@example.com", ["admin"])
+    other, _ = make_user(app, "o@example.com")
+    good = json.loads(admin.get("/api/admin/db/backup").data)
+    head = {"app": "ia_ratings", "format_version": 2, "schema_version": good["schema_version"]}
+    bad_bodies = [
+        [1, 2],                                                    # JSON, but not an object
+        {**head, "tables": {"users": "oops"}},                     # a table that is a string
+        {**head, "tables": {"films": {"id": 1}}},                  # ... or an object
+        {**head, "tables": {"films": ["x"]}},                      # rows that are not objects
+        {**head, "tables": {"users": [[1, "a@b.c"]]}},
+        {**head, "tables": {"films": [{"id": 1, "ia_identifier": None}]}},        # NOT NULL fails
+        {**head, "tables": {"users": [{"id": [1], "email": "x@y.z"}]}},           # wrong type
+        {**head, "tables": {"ratings": [{"id": 1, "user_id": 1, "film_id": 1, "comment": "x" * 2000}]}},  # CHECK fails
+    ]
+    for body in bad_bodies:
+        r = admin.post("/api/admin/db/restore", json=body)
+        assert r.status_code == 400, body
+        assert "error" in r.get_json()
+    assert other.get("/api/me").status_code == 200                # nothing changed, sessions kept
+    assert app.db.fetchone("SELECT COUNT(*) AS n FROM users")["n"] == 2
+
+
 def test_restoring_a_backup_without_dependent_tables_clears_stale_rows(app):
     admin, aid = make_user(app, "a@example.com", ["admin"])
     rev, rid = make_user(app, "r@example.com", ["reviewer"])

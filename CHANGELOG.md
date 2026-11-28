@@ -1,3 +1,12 @@
+## Unreleased (branch `security-hardening`)
+From the security audit (the sign-in link lifetime is deliberately left for later).
+- **Browser security headers** on every response: a minimal Content-Security-Policy (`script-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `frame-src https://archive.org`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, and `Strict-Transport-Security: max-age=15552000` (not in the local dev entrypoint). Another site can no longer frame the admin panel. The inline theme script moved to `client/public/theme-init.js` so the CSP can forbid inline scripts.
+- **Removed** `POST /api/admin/users/<id>/make-admin` and `/revoke-admin`: the latter let an admin remove their own admin role and lock themselves out. `PUT /api/admin/users/<id>/roles` (which refuses that) does the job; the CLI `--make-admin` / `--revoke-admin` are unchanged. The client never used them.
+- `POST /api/admin/db/restore` answers 400 (not 500) for a malformed backup: a body that isn't an object, a table that isn't a list of row objects, or rows that don't fit the schema. Nothing is changed.
+- CSV exports: `csv_safe` now looks at the first non-blank character, so `" =HYPERLINK(...)"` or a leading line break can't slip a formula past it.
+- Each sign-in attempt logs `signin.attempt remote_addr=... x_forwarded_for=...` (no token, no email) so `TRUSTED_PROXY_HOPS` can be checked on Railway.
+- gunicorn `--timeout 0` is now `--timeout 120` (the title lookup no longer runs inside a request). Dev dependency pytest 8.3.2 → 9.0.3.
+
 ## Unreleased (branch `major-changes`, restore message)
 - Restoring a backup from the old app (`format_version` 1) now says so in plain words ("made by the old version of the app and can't be restored into the new one") instead of "Unsupported format_version: 1". Still a 400; nothing is changed.
 

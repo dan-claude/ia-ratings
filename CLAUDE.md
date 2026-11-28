@@ -72,7 +72,13 @@ Magic-link details (`server/services/login_link_service.py`, `server/repositorie
 
 **Request size limits.** `MAX_CONTENT_LENGTH` is 1 MB (`server/app.py`: `MAX_BODY_BYTES`); bigger bodies get 413 `{"error": "Request body is too large"}` before any parsing, even on `/api/auth/login`. The admin CSV import routes allow 16 MB and restore 64 MB (`_LARGE_BODY_LIMITS`, set per request in a `before_request`).
 
-**CSV exports** (`ratings.csv`) pass every text cell through `csv_safe` (`server/services/csv_utils.py`): cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading `'` so spreadsheet apps don't run them as formulas (film titles and comments come from outside the app).
+**Browser security headers** (`SECURITY_HEADERS` and the `after_request` hook in `server/app.py`) go on every response: a deliberately minimal `Content-Security-Policy` (`script-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `frame-src https://archive.org`, `frame-ancestors 'none'`; no style/img/connect rules), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, and (not in the local dev entrypoint) `Strict-Transport-Security: max-age=15552000` (no includeSubDomains/preload: browsers remember it). Only the Flask-served build gets them, not the Vite dev server. **No inline scripts**: the theme script lives in `client/public/theme-init.js`; a new external resource (script, frame, etc.) needs the CSP edited or it is silently blocked.
+
+**Sign-in attempts** are logged (`signin.attempt remote_addr=… x_forwarded_for=…`, never the token or email) so you can check on Railway that `TRUSTED_PROXY_HOPS` makes `remote_addr` the person's own address; the rate limit counts that address.
+
+**Restore** validates its input before touching the database: the body must be a JSON object, each known table a list of row objects; rows that don't fit the schema give 400 and nothing changes.
+
+**CSV exports** (`ratings.csv`) pass every text cell through `csv_safe` (`server/services/csv_utils.py`): cells whose first non-blank character is `=`, `+`, `-` or `@` (or that start with tab or CR) get a leading `'` so spreadsheet apps don't run them as formulas (film titles and comments come from outside the app).
 
 ## Environment variables
 
@@ -172,11 +178,11 @@ Multi-stage build to avoid Python version conflicts:
 Production runs under **gunicorn** (pinned in `server/requirements.txt`), not Flask's dev server:
 
 ```
-gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} "server.app:create_app()"
+gunicorn --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:${PORT:-5000} "server.app:create_app()"
 ```
 
 - **Keep `--workers 1`.** SQLite writes and the Flask-Limiter `memory://` store assume a single process; more workers would give each its own rate-limit counters and more lock contention. Scale with `--threads`.
-- **`--timeout 0`** stops gunicorn killing a worker during long requests; the title lookup after an import can take minutes (it runs in a background thread, so the request itself returns at once).
+- **`--timeout 120`**: a worker that stops responding for 2 minutes is restarted. The title lookup after an import runs in a background thread, so no request needs longer.
 - `python -m server.app` (with its port-fallback and `--with-client` conveniences) is for local development only. Under gunicorn, settings come from env vars only.
 
 ### Resetting production for the new schema (one time)
@@ -283,8 +289,6 @@ Full request/response shapes are in `API_CLIENT_SERVER.md`.
 | PUT | `/api/admin/users/<id>/login-link` | Change the active link's expiry `{"expires_at"}` |
 | DELETE | `/api/admin/users/<id>/login-link` | Cancel the link and end their logins |
 | PUT | `/api/admin/users/<id>/roles` | Set a user's roles exactly (`{"roles": ["admin","reviewer","judge"]}`) |
-| POST | `/api/admin/users/<id>/make-admin` | Promote user to admin |
-| POST | `/api/admin/users/<id>/revoke-admin` | Revoke admin from user |
 
 ## Admin tools
 

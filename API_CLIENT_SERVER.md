@@ -19,6 +19,7 @@ added here as they land.
 - Unhandled server errors return 500
   `{ "ok": false, "error": "Internal Server Error", "request_id": "<id>" }`.
 - Every response carries an `X-Request-Id` header matching the server log line.
+- Every response carries the browser security headers (a minimal `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and HSTS outside local dev). They don't change any request or response.
 - Request bodies are limited to **1 MB** (admin CSV import 16 MB, backup restore
   64 MB). Larger ones get 413 `{ "error": "Request body is too large" }`.
 - Film text fields (`description`, `publicDomainWorks`, `aiDisclosure`, `creator`)
@@ -528,13 +529,6 @@ Response 200 `{ "ok": true, "user_id": 7, "roles": ["reviewer", "judge"] }`.
 Errors: 400 (`roles` not a list of strings, unknown role, or an admin removing
 their *own* admin role), 404 (unknown user).
 
-#### POST /api/admin/users/<id>/make-admin — admin
-#### POST /api/admin/users/<id>/revoke-admin — admin
-```json
-{ "ok": true, "user_id": 7, "is_admin": true }
-```
-The other roles are left alone. Errors: 404 (unknown user).
-
 ### Database inspection
 
 `user_sessions` and `login_links` are internal and never listed, dumped or backed up.
@@ -592,8 +586,9 @@ Response 200:
 { "ok": true, "exported_at": "...", "schema_version": 1,
   "restored": { "users": 3, "films": 140 } }
 ```
-Errors: 400 (not JSON, wrong `app`, unsupported `format_version` or `schema_version`,
-`tables` not an object, or a column that doesn't exist in the current schema). On
+Errors: 400 (not a JSON object, wrong `app`, unsupported `format_version` or `schema_version`,
+`tables` not an object, a table that is not a list of row objects, a column that doesn't exist in the current schema,
+or rows that don't fit the schema, such as a wrong type or a failed CHECK; nothing is changed). On
 error nothing is changed.
 
 ---
@@ -613,5 +608,4 @@ The client (`client/src/App.jsx`) calls:
   `/api/admin/db/tables`, `/api/admin/db/<table>` (the Users tab
   uses `/api/admin/users`), `/api/admin/db/backup`, `/api/admin/db/restore`
 
-The client does not call `/api/admin/db/schema`,
-`make-admin`/`revoke-admin` or `/api/health`.
+The client does not call `/api/admin/db/schema` or `/api/health`.

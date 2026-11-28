@@ -1,5 +1,6 @@
 import json
 import re
+import sqlite3
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, current_app, Response, session, request
 
@@ -146,7 +147,7 @@ def db_table(table: str):
         conn.close()
 
 # ---------------------------------------------------------------------------
-# User admin actions  (mirrors --make-admin / --revoke-admin in print_db.py)
+# User admin actions  (roles are changed with PUT .../roles; --make-admin / --revoke-admin in the CLI)
 # ---------------------------------------------------------------------------
 
 @admin_bp.get("/api/admin/users")
@@ -240,30 +241,6 @@ def _own_sid(target_user_id: int):
     """The admin's own session id when they act on themselves (so they aren't logged out of the panel)."""
     return session.get("sid") if current_user_id() == target_user_id else None
 
-
-@admin_bp.post("/api/admin/users/<int:user_id>/make-admin")
-def make_admin(user_id: int):
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    users = current_app.repos["users"]
-    row = users.get_by_id(user_id)
-    if not row:
-        return jsonify({"error": f"User not found: {user_id}"}), 404
-    users.set_admin(user_id, True)
-    return jsonify({"ok": True, "user_id": user_id, "is_admin": True})
-
-@admin_bp.post("/api/admin/users/<int:user_id>/revoke-admin")
-def revoke_admin(user_id: int):
-    ok, err = _require_admin_user()
-    if err:
-        return err
-    users = current_app.repos["users"]
-    row = users.get_by_id(user_id)
-    if not row:
-        return jsonify({"error": f"User not found: {user_id}"}), 404
-    users.set_admin(user_id, False)
-    return jsonify({"ok": True, "user_id": user_id, "is_admin": False})
 
 @admin_bp.put("/api/admin/users/<int:user_id>/roles")
 def set_roles(user_id: int):
@@ -362,8 +339,8 @@ def db_restore():
         return err
 
     backup = request.get_json(silent=True)
-    if not backup:
-        return jsonify({"error": "Request body must be JSON"}), 400
+    if not isinstance(backup, dict) or not backup:
+        return jsonify({"error": "Request body must be a JSON object"}), 400
     if backup.get("app") != "ia_ratings":
         return jsonify({"error": "Invalid backup: unexpected app identifier"}), 400
     if backup.get("format_version") == 1:
@@ -379,6 +356,10 @@ def db_restore():
     tables_data = backup.get("tables")
     if not isinstance(tables_data, dict):
         return jsonify({"error": "Invalid backup: 'tables' must be an object"}), 400
+    for table in _RESTORE_ORDER:
+        rows = tables_data.get(table)
+        if rows is not None and (not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows)):
+            return jsonify({"error": f"Invalid backup: table '{table}' must be a list of row objects"}), 400
 
     # A restore replaces the users table, so ids can end up belonging to different people.
     # Every login session is therefore revoked; the admin doing the restore keeps theirs
@@ -439,6 +420,9 @@ def db_restore():
                     restored[table] = len(rows)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        except (TypeError, sqlite3.Error) as exc:
+            # Rows that don't fit the schema (wrong types, a failed CHECK, ...): nothing was changed.
+            return jsonify({"error": f"Invalid backup: its data does not fit the database ({exc}). Nothing was changed."}), 400
         finally:
             conn.execute("PRAGMA foreign_keys = ON")
 

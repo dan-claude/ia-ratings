@@ -57,17 +57,6 @@ class UserRepository:
         cond = " OR ".join(f"{ROLE_COLUMNS[r]} = 1" for r in roles) or "0"
         return self.db.fetchall(f"SELECT {_COLUMNS} FROM users WHERE {cond} ORDER BY id")
 
-    def set_admin(self, user_id: int, is_admin: bool) -> None:
-        conn = self.db.connect()
-        try:
-            conn.execute(
-                "UPDATE users SET is_admin = ? WHERE id = ?",
-                (1 if is_admin else 0, int(user_id)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
     @staticmethod
     def roles_of(row) -> list[str]:
         """Role names held by a users row (in ROLE_COLUMNS order)."""

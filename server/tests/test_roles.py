@@ -51,14 +51,15 @@ def test_set_roles_requires_admin(app, client):
     assert other.put(f"/api/admin/users/{uid}/roles", json={"roles": ["admin"]}).status_code == 403
 
 
-def test_make_and_revoke_admin_keep_the_other_roles(app):
-    admin, _ = make_user(app, "a@example.com", ["admin"])
+def test_the_old_make_and_revoke_admin_routes_are_gone(app):
+    # They let an admin remove their own admin role; PUT .../roles does the job with a guard.
+    admin, aid = make_user(app, "a@example.com", ["admin"])
     _, uid = make_user(app, "u@example.com", ["reviewer", "judge"])
-    assert admin.post(f"/api/admin/users/{uid}/make-admin").status_code == 200
-    assert app.repos["users"].roles_of(app.repos["users"].get_by_id(uid)) == ["admin", "reviewer", "judge"]
-    assert admin.post(f"/api/admin/users/{uid}/revoke-admin").status_code == 200
-    assert app.repos["users"].roles_of(app.repos["users"].get_by_id(uid)) == ["reviewer", "judge"]
-    assert admin.post("/api/admin/users/9999/make-admin").status_code == 404
+    for action in ("make-admin", "revoke-admin"):
+        assert admin.post(f"/api/admin/users/{uid}/{action}").status_code in (404, 405)
+        assert admin.post(f"/api/admin/users/{aid}/{action}").status_code in (404, 405)
+    assert app.repos["users"].roles_of(app.repos["users"].get_by_id(aid)) == ["admin"]
+    assert admin.put(f"/api/admin/users/{aid}/roles", json={"roles": []}).status_code == 400
 
 
 def test_users_dump_has_the_role_columns_and_no_secrets(app):

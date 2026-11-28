@@ -241,3 +241,52 @@ def test_csv_safe_helper():
     from server.services.csv_utils import csv_safe
     assert [csv_safe(x) for x in ("=1", "+1", "-1", "@a", "\tx", "\rx", "ok", "", 5, None)] == [
         "'=1", "'+1", "'-1", "'@a", "'\tx", "'\rx", "ok", "", 5, None]
+
+
+def test_csv_safe_looks_past_leading_blanks():
+    from server.services.csv_utils import csv_safe
+    for evil in (" =HYPERLINK(\"x\")", "\n=1+1", "  \t@SUM(A1)", "\u00a0+1", " \r\n-2"):
+        assert csv_safe(evil) == "'" + evil
+    assert csv_safe("a = b") == "a = b" and csv_safe("  hello") == "  hello" and csv_safe("   ") == "   "
+
+
+# ---- browser security headers -------------------------------------------------------
+
+def test_every_response_carries_the_security_headers(app):
+    for r in (app.test_client().get("/api/health"), app.test_client().get("/api/me")):
+        csp = r.headers["Content-Security-Policy"]
+        assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+        assert "frame-src https://archive.org" in csp and "object-src 'none'" in csp
+        assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+        assert r.headers["Strict-Transport-Security"] == "max-age=15552000"
+
+
+def test_local_dev_does_not_send_hsts(monkeypatch, tmp_path):
+    m = build_app(monkeypatch, tmp_path, SESSION_SECRET=None)
+    r = m.create_app(dev=True).test_client().get("/api/health")
+    assert "Strict-Transport-Security" not in r.headers
+    assert "Content-Security-Policy" in r.headers
+
+
+def test_the_client_page_has_no_inline_script():
+    import re
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[2] / "client" / "index.html").read_text()
+    # every <script> must load a file (the CSP forbids inline scripts)
+    assert all("src=" in tag for tag in re.findall(r"<script[^>]*>", html))
+    assert not re.search(r"<script(?![^>]*src=)[^>]*>\s*\S", html)
+
+
+# ---- sign-in log line (to check TRUSTED_PROXY_HOPS in production) --------------------
+
+def test_signin_logs_the_client_address_but_not_the_token(app, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    r = app.test_client().post("/api/auth/signin", json={"token": "super-secret-token"},
+                               headers={"X-Forwarded-For": "203.0.113.9"})
+    assert r.status_code == 401
+    text = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "signin.attempt remote_addr=" in text and "203.0.113.9" in text
+    assert "super-secret-token" not in text

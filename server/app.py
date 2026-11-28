@@ -64,6 +64,18 @@ logger = logging.getLogger(__name__)
 # Request-body limits. Everything the app accepts is small JSON except these admin
 # uploads; Flask would otherwise read any size into memory (even before login).
 MAX_BODY_BYTES = 1 * 1024 * 1024
+
+# Sent with every response. The CSP is deliberately minimal: scripts only from this site
+# (no inline scripts), no plugins, no <base> tricks, nobody may frame the app, and the only
+# thing the app may frame is the archive.org player. It does not restrict styles or images.
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "script-src 'self'; object-src 'none'; base-uri 'self'; "
+        "frame-src https://archive.org; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+}
 _LARGE_BODY_LIMITS = {
     "admin.import_preview": 16 * 1024 * 1024,   # CSV text (2 MB max once decoded) inside JSON
     "admin.import_films": 16 * 1024 * 1024,
@@ -198,6 +210,11 @@ def create_app(settings: "Settings | None" = None, dev: bool = False) -> Flask:
             request.path,
         )
         response.headers["X-Request-Id"] = rid
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if not dev:
+            # Browsers remember this: keep it modest (no includeSubDomains / preload).
+            response.headers.setdefault("Strict-Transport-Security", "max-age=15552000")
         return response
 
     @app.before_request

@@ -35,6 +35,7 @@ ENV PYTHONPATH=/app \
 ENTRYPOINT ["docker-entrypoint.sh"]
 # Production WSGI server. One worker process on purpose: SQLite and the in-memory
 # login rate limiter both expect a single process; threads give concurrency.
-# --timeout 0: never kill a worker for a slow request (a title lookup after an import can take minutes).
+# --timeout 120: a worker that stops responding for 2 minutes is restarted. (The title lookup after an
+# import runs in a background thread, so no request needs longer than that.)
 # Access logging is left off because the app already logs every request.
-CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:${PORT:-5000} \"server.app:create_app()\""]
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:${PORT:-5000} \"server.app:create_app()\""]
